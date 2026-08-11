@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Node / Frontend
+node_modules/
+frontend/dist/
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# 数据库（含用户数据与加密凭证，绝不提交）
+*.db
+*.sqlite
+*.sqlite3
+
+# 环境变量 / 密钥
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# 日志
+*.log
+backend/uvicorn_*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# OpenCode / Agent 内部
+.omo/
+
+# Pake 打包产物（二进制不入 git；如需分发走 release）
+build/
+
+# 临时文件
+*.tmp
+*.bak
+*.orig
