@@ -50,3 +50,8 @@ build/
 *.tmp
 *.bak
 *.orig
+
+# 运行时错误输出/日志（uvicorn 重启产生）
+*.err
+backend/uvicorn.*
+
