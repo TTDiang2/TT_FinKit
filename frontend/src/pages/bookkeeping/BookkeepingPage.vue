@@ -69,6 +69,7 @@
         <span class="text-sm text-text-secondary">分类</span>
         <select v-model="filterCatId" class="px-3 py-1.5 border border-border-default rounded-md text-sm">
           <option value="">全部</option>
+          <option value="__refund__">消费退货（负支出）</option>
           <option v-for="cat in allCategories" :key="cat.id" :value="cat.id">{{ cat.name }}</option>
         </select>
       </div>
@@ -91,7 +92,7 @@
             <h3 class="text-sm font-medium text-text-secondary uppercase">{{ section.label }}</h3>
           </button>
         </div>
-        <span class="text-sm font-medium" :class="section.amountClass">{{ sym }}{{ section.amount.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}</span>
+        <span class="text-sm font-medium" :class="signColorClass(section.amount, section.type)">{{ amountText(section.amount, section.type) }}</span>
       </div>
       <div v-show="!collapsed[section.type]" class="bg-white rounded-lg shadow-sm divide-y divide-border-default">
         <div v-for="txn in section.items" :key="txn.id" class="flex items-center justify-between px-4 py-3">
@@ -106,7 +107,7 @@
             </div>
           </div>
           <div class="flex items-center gap-3">
-            <span class="text-sm font-medium" :class="section.amountClass">{{ section.prefix }}{{ sym }}{{ txn.amount.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}</span>
+            <span class="text-sm font-medium" :class="signColorClass(txn.amount, section.type)">{{ amountText(txn.amount, section.type) }}</span>
             <button @click="editTxn(txn)" class="text-text-muted hover:text-text-primary"><Edit2 :size="14" /></button>
             <button @click="removeTxn(txn.id)" class="text-text-muted hover:text-expense-color"><Trash2 :size="14" /></button>
           </div>
@@ -149,6 +150,11 @@
       </template>
     </BaseModal>
     <ImportModal v-if="showImportModal" @close="showImportModal = false" @imported="onImported" />
+
+    <!-- 校验模块：月度汇总核对 + 今日余额核对（跟随当前记账月份） -->
+    <div class="mt-4">
+      <ReconciliationPanel :year="year" :month="month" />
+    </div>
   </div>
 </template>
 <script setup lang="ts">
@@ -165,6 +171,7 @@ import { useApi } from '@/composables/useApi'
 import { useToast } from '@/composables/useToast'
 import BaseModal from '@/components/common/BaseModal.vue'
 import ImportModal from '@/components/common/ImportModal.vue'
+import ReconciliationPanel from '@/components/common/ReconciliationPanel.vue'
 
 ChartJS.register(ArcElement, Tooltip, Legend, PointElement, LineElement, CategoryScale, LinearScale, Filler)
 
@@ -245,7 +252,9 @@ const monthOverview = ref<{ savings_rate?: number; necessary_expense_ratio?: num
 
 function applySortAndFilter(items: any[]) {
   let result = [...items]
-  if (filterCatId.value) {
+  if (filterCatId.value === '__refund__') {
+    result = result.filter(t => t.type === 'expense' && t.amount < 0)
+  } else if (filterCatId.value) {
     result = result.filter(t => t.category_id === filterCatId.value)
   }
   if (filterAccId.value) {
@@ -261,11 +270,41 @@ function applySortAndFilter(items: any[]) {
   return result
 }
 
-const sections = computed(() => [
-  { type: 'expense', label: '支出', color: 'bg-expense-color', amountClass: 'text-expense-color', prefix: '-', amount: monthStats.value.expense, items: applySortAndFilter(monthTxns.value.filter(t => t.type === 'expense')) },
-  { type: 'income', label: '收入', color: 'bg-income-color', amountClass: 'text-income-color', prefix: '+', amount: monthStats.value.income, items: applySortAndFilter(monthTxns.value.filter(t => t.type === 'income')) },
-  { type: 'transfer', label: '转账', color: 'bg-transfer-color', amountClass: 'text-transfer-color', prefix: '', amount: monthTxns.value.filter(t => t.type === 'transfer').reduce((s, t) => s + t.amount, 0), items: applySortAndFilter(monthTxns.value.filter(t => t.type === 'transfer')) },
-])
+// 金额显示（负负得正）：
+//   普通消费 amount>0 → -¥60；退款 amount<0 → +¥60（钱回来）
+//   普通收入 amount>0 → +¥60；收入冲减 amount<0 → -¥60
+//   转账 → ¥xx（无符号）
+function amountText(amount: number, type: string): string {
+  const num = Math.abs(amount).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  if (type === 'expense') return `${amount >= 0 ? '-' : '+'}${sym.value}${num}`
+  if (type === 'income') return `${amount >= 0 ? '+' : '-'}${sym.value}${num}`
+  return `${sym.value}${num}`
+}
+
+// 颜色：显示为正数（钱进）→ 红；显示为负数（钱出）→ 绿；转账 → 蓝
+// 与 amountText 的显示符号一致（普通消费绿、退款红、普通收入红、收入冲减绿）
+function signColorClass(amount: number, type: string): string {
+  if (type === 'transfer') return 'text-transfer-color'
+  // expense: amount>=0 显示负(绿)；amount<0 显示正(红)
+  // income:  amount>=0 显示正(红)；amount<0 显示负(绿)
+  const positiveDisplay = (type === 'expense') ? (amount < 0) : (amount >= 0)
+  return positiveDisplay ? 'text-income-color' : 'text-expense-color'
+}
+
+const sections = computed(() => {
+  const build = (type: 'expense' | 'income' | 'transfer') => {
+    const items = applySortAndFilter(monthTxns.value.filter(t => t.type === type))
+    return { items, amount: items.reduce((s, t) => s + t.amount, 0) }
+  }
+  const expense = build('expense')
+  const income = build('income')
+  const transfer = build('transfer')
+  return [
+    { type: 'expense', label: '支出', color: 'bg-expense-color', amountClass: 'text-expense-color', ...expense },
+    { type: 'income', label: '收入', color: 'bg-income-color', amountClass: 'text-income-color', ...income },
+    { type: 'transfer', label: '转账', color: 'bg-transfer-color', amountClass: 'text-transfer-color', ...transfer },
+  ]
+})
 
 async function loadMonth() { await txnStore.fetchTransactions({ year: year.value, month: month.value }); await loadMonthStats() }
 
