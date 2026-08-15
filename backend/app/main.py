@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from .database import engine, Base
-from .routers import auth, accounts, categories, tags, transactions, statistics, reports, settings, assets, investments, ai_presets, ai_export, ai_investment
+from .routers import auth, accounts, categories, tags, transactions, statistics, reports, settings, assets, investments, ai_presets, ai_export, ai_investment, reconciliation
 
 # Built frontend (frontend/dist) — served by the backend so the whole app
 # runs on a single port (http://127.0.0.1:8000). Used by the desktop build.
@@ -33,6 +33,7 @@ app.include_router(investments.router)
 app.include_router(ai_presets.router)
 app.include_router(ai_export.router)
 app.include_router(ai_investment.router)
+app.include_router(reconciliation.router)
 
 
 @app.on_event("startup")
