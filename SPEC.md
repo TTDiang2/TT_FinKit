@@ -5,6 +5,30 @@
 
 ---
 
+## ⚠️ 文档状态（2026-08 更新）
+
+> **本文档为项目初始设计规范（2026 年初编写），已与当前实现存在显著偏差。**
+> 实际实现以代码为准；本文档保留作为设计意图参考。
+
+**与实际实现的差异对照：**
+
+| 章节 | 原设计 | 实际情况 |
+|------|--------|----------|
+| Tab 导航 | 6 个 tab（管理/首页/记账/审计/统计/报表 + 设置） | **8 个 tab**：首页/记账/**资产**/**投资**/统计/报表/设置/管理；**无"审计"tab**（审计功能未实现，记账页内可编辑） |
+| 记账 | 收入/支出/转账三类型 | 已实现（`/bookkeeping`） |
+| 资产 | 无此模块 | **新增**：资产模块（`/assets`，后端 `Asset` 模型 + `/api/assets`） |
+| 投资 | 无此模块（仅分类默认值含"投资"） | **新增**：完整投资管理模块（`/investments` + `/investments/ai`）→ 详见 `docs/INVESTMENTS.md` |
+| 统计 | 多维度图表 | 已实现（`/statistics`） |
+| 报表 | BS/PL/CF + 归档 | 已实现（`/reports`），V5 版含 `pl_section`/`cf_section` 分类体系 |
+| AI | 无设计 | **新增**：AiPreset 模型 + 投资 AI 分析（搜索→LLM→结构化报告）→ 详见 `docs/plans/2026-04-22-ai-integration-design.md` 及 `docs/INVESTMENTS.md` |
+| 加密 | 字段级 AES-256-GCM | iFinD 凭证等敏感字段加密存储（`utils/crypto.py`），其余未全面落地 |
+| 后端 | 纯 FastAPI | FastAPI + SQLAlchemy(async) + SQLite + **iFinD（同花顺行情）** + 腾讯财经兜底 |
+| 数据模型 | 6 个模型 | **13 个模型**：新增 `Investment`/`InvestmentTransaction`/`InvestmentNavSnapshot`/`InvestmentAiReport`/`AiPreset`/`Asset` 等 |
+
+> 下文各章节若与上述对照冲突，以"实际情况"列为准。
+
+---
+
 ## 一、项目概述
 
 ### 1.1 项目定位
