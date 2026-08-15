@@ -58,3 +58,9 @@ build/
 *.err
 backend/uvicorn.*
 
+# 银行流水样例数据（含真实交易记录，绝不提交）
+*.xls
+*.xlsx
+bank_data_convertor/
+docs/example_cashflow/
+
