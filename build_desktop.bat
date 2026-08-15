@@ -2,64 +2,77 @@
 title FinKit Desktop Build
 
 rem ============================================
-rem  FinKit ?????????????? (Pake)
-rem  ????????? build\desktop\
-rem  ???��??: build\desktop\FinKit-Desktop.bat
+rem  FinKit desktop one-click build script
+rem  Steps: build frontend -> pake package -> copy launcher
+rem  Output: build\desktop\ (exe/msi/bat/pyw)
 rem ============================================
 
 set "ROOT=%~dp0"
 set "ROOT=%ROOT:~0,-1%"
 
-rem ---- ?????????????????----
+rem ---- Tunable parameters (edit as needed) ----
 set "APP_NAME=FinKit"
 set "APP_URL=http://127.0.0.1:8000"
 set "APP_ICON=%ROOT%\build\finkit.ico"
 set "WIN_WIDTH=1280"
 set "WIN_HEIGHT=800"
-rem --------------------------------
+rem --------------------------------------------
 
 echo ========================================
-echo   FinKit Desktop ??????
-echo   ?????? + Pake ??? exe/msi
+echo   FinKit Desktop one-click build
+echo   frontend build + Pake exe/msi + launcher
 echo ========================================
 echo.
 
-rem 1. ??? pake ????
+rem 1. Check pake is installed
 where pake >nul 2>&1
 if errorlevel 1 (
-    echo [????] ��??? pake????????: npm i -g pake-cli
+    echo [ERROR] pake not found. Install it first: npm i -g pake-cli
     pause
     exit /b 1
 )
 
-rem 2. ??????? (vue-tsc + vite build -> frontend/dist)
-echo [1/2] ??????? ...
+rem 2. Build frontend (vue-tsc + vite build -^> frontend/dist)
+echo [1/3] Building frontend ...
 cd /d "%ROOT%\frontend"
 call npm run build
 if errorlevel 1 (
     echo.
-    echo [????] ?????????????????
+    echo [ERROR] Frontend build failed. Aborting.
     pause
     exit /b 1
 )
 
-rem 3. Pake ???????��????? build\desktop??
+rem 3. Pake package into build\desktop
 echo.
-echo [2/2] Pake ???????? ...
+echo [2/3] Packaging desktop app with Pake ...
 cd /d "%ROOT%\build\desktop"
 pake "%APP_URL%" --name "%APP_NAME%" --icon "%APP_ICON%" --width %WIN_WIDTH% --height %WIN_HEIGHT% --keep-binary
 if errorlevel 1 (
     echo.
-    echo [????] Pake ??????????????
+    echo [ERROR] Pake packaging failed. Aborting.
+    pause
+    exit /b 1
+)
+
+rem 4. Copy launcher files (source lives in launcher\ for git)
+echo.
+echo [3/3] Copying launcher files ...
+copy /Y "%ROOT%\launcher\FinKit-Desktop.bat" "%ROOT%\build\desktop\FinKit-Desktop.bat" >nul
+copy /Y "%ROOT%\launcher\FinKit.pyw" "%ROOT%\build\desktop\FinKit.pyw" >nul
+if errorlevel 1 (
+    echo.
+    echo [ERROR] Failed to copy launcher files. Aborting.
     pause
     exit /b 1
 )
 
 echo.
 echo ========================================
-echo   ???????
-echo   ????: build\desktop\FinKit.exe
-echo        build\desktop\FinKit.msi
-echo   ???: build\desktop\FinKit-Desktop.bat
+echo   Build complete!
+echo   exe:      build\desktop\FinKit.exe
+echo   msi:      build\desktop\FinKit.msi
+echo   launcher: build\desktop\FinKit-Desktop.bat
+echo   Run:      build\desktop\FinKit-Desktop.bat
 echo ========================================
 pause
