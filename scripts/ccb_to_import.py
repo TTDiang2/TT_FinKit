@@ -9,7 +9,7 @@
 
 用法：
     python ccb_to_import.py <建行流水.xls> [输出.xlsx]
-    python ccb_to_import.py                              # 用默认样例
+    python ccb_to_import.py                              # 用当前目录下默认文件名 hqmx_export.xls
 
 设计文档/字段定义见 FinKit docs。
 """
@@ -382,7 +382,7 @@ def main():
     if len(sys.argv) >= 2:
         in_path = sys.argv[1]
     else:
-        in_path = r"hqmx_export.xls"
+        in_path = "hqmx_export.xls"  # 默认文件名；样例数据不随仓库分发，请传入你的建行流水文件
     if len(sys.argv) >= 3:
         out_path = sys.argv[2]
     else:

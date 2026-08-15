@@ -43,6 +43,9 @@ Thumbs.db
 # OpenCode / Agent 内部
 .omo/
 
+# 嵌套的独立项目仓库（勿纳入本仓库）
+TT_Automanga/
+
 # Pake 打包产物（二进制不入 git；如需分发走 release）
 build/
 
@@ -51,7 +54,7 @@ build/
 *.bak
 *.orig
 
-# ����ʱ�������/��־��uvicorn ����������
+# 运行时错误日志（uvicorn 等进程）
 *.err
 backend/uvicorn.*
 
