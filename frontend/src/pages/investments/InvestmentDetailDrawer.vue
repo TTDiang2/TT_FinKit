@@ -113,7 +113,7 @@
     </div>
     <MigrationWizard v-if="showMigration" :investment="investment"
                      @close="showMigration = false"
-                     @done="() => { showMigration = false; loadHistory() }" />
+                     @done="() => { showMigration = false; emit('updated'); loadHistory() }" />
   </teleport>
 </template>
 
@@ -129,7 +129,7 @@ import MigrationWizard from './MigrationWizard.vue'
 ChartJS.register(LineElement, PointElement, CategoryScale, LinearScale, Tooltip, Legend, Filler)
 
 const props = defineProps<{ investment: Investment }>()
-defineEmits<{ close: [] }>()
+const emit = defineEmits<{ close: []; updated: [] }>()
 
 const api = useApi()
 const settingsStore = useSettingsStore()

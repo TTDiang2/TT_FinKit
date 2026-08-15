@@ -145,7 +145,7 @@
         <ul class="mt-2 space-y-2 text-sm">
           <li v-for="(a, i) in currentReport.raw_articles" :key="i" class="bg-bg-secondary rounded p-2">
             <a :href="a.url" target="_blank" rel="noopener" class="text-accent-primary hover:underline font-medium">{{ a.title }}</a>
-            <div class="text-xs text-text-muted">{{ a.source }} · {{ a.published }}</div>
+            <div class="text-xs text-text-muted">{{ a.source }} · {{ a.date }}</div>
             <div class="text-xs text-text-secondary mt-1">{{ a.snippet }}</div>
           </li>
           <li v-if="!currentReport.raw_articles?.length" class="text-text-muted">无引用文章</li>
@@ -225,7 +225,7 @@ async function runAnalyze() {
   analyzing.value = true
   error.value = ''
   try {
-    const body: AnalyzeRequest = { days: days.value, max_articles: maxArticles.value }
+    const body: AnalyzeRequest = { days: days.value, max_results: maxArticles.value }
     if (customQuery.value.trim()) body.query = customQuery.value.trim()
     const res = await api.post(`/investments/${selectedId.value}/ai-analysis`, body)
     currentReport.value = res.data

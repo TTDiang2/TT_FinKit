@@ -1,9 +1,41 @@
 <template>
   <div>
+    <!-- Toolbar -->
+    <div class="flex items-center justify-end gap-2 mb-4">
+      <button :disabled="refreshingAll || !activeInvestments.length" @click="refreshAllPrices"
+        :class="['px-3 py-2 border border-border-default rounded-md flex items-center gap-1 text-sm', refreshingAll || !activeInvestments.length ? 'text-text-muted' : 'text-text-secondary hover:bg-bg-tertiary']">
+        <RefreshCw v-if="!refreshingAll" :size="14" />
+        <span>{{ refreshingAll ? '刷新中…' : '刷新所有现价' }}</span>
+      </button>
+      <button @click="openProductModal()" class="px-4 py-2 bg-accent-primary text-white rounded-md hover:bg-accent-hover flex items-center gap-1">
+        <Plus :size="16" /> 添加投资
+      </button>
+    </div>
+
     <!-- Health Panel -->
     <HealthPanel />
 
-    <!-- Holdings Table (from HoldingsTab) -->
+    <!-- Investment consistency check -->
+    <div v-if="consistency" class="bg-white rounded-lg shadow-sm p-4 mb-4">
+      <div class="flex items-center justify-between mb-2">
+        <h3 class="font-semibold text-sm">投资账户一致性校验</h3>
+        <span :class="['text-xs px-2 py-0.5 rounded', consistency.status === 'ok' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800']">
+          {{ consistency.status === 'ok' ? '一致' : '有差异' }}
+        </span>
+      </div>
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 text-sm">
+        <div><div class="text-xs text-text-muted">记账 tab 投资账户余额</div><div class="font-medium">{{ sym }}{{ fmt(consistency.total_account_balance) }}</div></div>
+        <div><div class="text-xs text-text-muted">投资 tab 总投入</div><div class="font-medium">{{ sym }}{{ fmt(consistency.total_invested) }}</div></div>
+        <div><div class="text-xs text-text-muted">当前市值</div><div class="font-medium">{{ sym }}{{ fmt(consistency.total_current) }}</div></div>
+        <div><div class="text-xs text-text-muted">闲置现金</div><div class="font-medium" :class="consistency.idle_cash >= 0 ? '' : 'text-expense-color'">{{ sym }}{{ fmt(consistency.idle_cash) }}</div></div>
+      </div>
+      <div v-if="consistency.idle_cash > 0" class="text-xs text-text-muted mt-1">≈ 券商账户中未投资的现金</div>
+      <ul v-if="consistency.warnings.length" class="mt-2 space-y-1">
+        <li v-for="(w, i) in consistency.warnings" :key="i" class="text-xs text-expense-color">{{ w }}</li>
+      </ul>
+    </div>
+
+    <!-- Holdings Table -->
     <div class="bg-white rounded-lg shadow-sm overflow-hidden mb-4">
       <div class="p-4 border-b border-border-default flex items-center justify-between">
         <h3 class="font-semibold text-sm">当前持仓 ({{ activeInvestments.length }})</h3>
@@ -24,8 +56,8 @@
         </thead>
         <tbody>
           <template v-for="inv in activeInvestments" :key="inv.id">
-            <tr class="border-t border-border-default hover:bg-bg-secondary">
-              <td class="px-3 py-2">
+            <tr class="border-t border-border-default hover:bg-bg-secondary cursor-pointer" :title="expandedIds.has(inv.id) ? '点击收起流水' : '点击展开流水'" @click="onRowClick(inv)">
+              <td class="px-3 py-2" @click.stop>
                 <div class="font-medium cursor-pointer hover:text-accent-primary" @click="openDetail(inv)" title="查看净值曲线与买卖点">{{ inv.name }}</div>
                 <div class="text-xs text-text-muted">
                   {{ TYPE_LABELS[inv.investment_type] || inv.investment_type }}
@@ -40,7 +72,7 @@
               <td class="px-3 py-2 text-right font-medium">{{ sym }}{{ fmt(inv.total_value) }}</td>
               <td class="px-3 py-2 text-right font-medium" :class="colorClass(inv.profit_loss)">{{ signed(inv.profit_loss) }}</td>
               <td class="px-3 py-2 text-right" :class="colorClassNullable(productMetricMap[inv.id]?.xirr_annualized)">{{ xirrLabel(productMetricMap[inv.id]?.xirr_annualized) }}</td>
-              <td class="px-3 py-2 text-center whitespace-nowrap">
+              <td class="px-3 py-2 text-center whitespace-nowrap" @click.stop>
                 <button @click="openDetail(inv)" title="净值曲线与买卖点" class="text-text-secondary hover:text-accent-primary mr-2"><LineChart :size="14" /></button>
                 <button :disabled="refreshingId === inv.id" @click="refreshPrice(inv)" :title="supportsAutoRefresh(inv.exchange) ? '自动刷新现价' : '该市场不支持自动刷新，请手动编辑'" :class="['mr-2', supportsAutoRefresh(inv.exchange) ? 'text-accent-primary hover:text-accent-hover' : 'text-text-muted cursor-not-allowed']">
                   <RefreshCw v-if="refreshingId !== inv.id" :size="14" />
@@ -199,26 +231,21 @@
     </BaseModal>
 
     <!-- Per-product detail drawer (NAV curve + buy/sell markers) -->
-    <InvestmentDetailDrawer v-if="drawerInvestment" :investment="drawerInvestment" @close="drawerInvestment = null" />
+    <InvestmentDetailDrawer v-if="drawerInvestment" :investment="drawerInvestment" @close="drawerInvestment = null" @updated="onInvestmentUpdated" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { Plus, Edit2, Trash2, RefreshCw, ListPlus, LineChart } from 'lucide-vue-next'
-import { Doughnut, Bar, Line } from 'vue-chartjs'
-import { Chart as ChartJS, ArcElement, Tooltip, Legend, BarElement, LineElement, PointElement, CategoryScale, LinearScale } from 'chart.js'
 import { useInvestmentsStore } from '@/stores/investments'
 import { useSettingsStore } from '@/stores/settings'
 import { useApi } from '@/composables/useApi'
 import { useToast } from '@/composables/useToast'
 import BaseModal from '@/components/common/BaseModal.vue'
 import InvestmentDetailDrawer from './InvestmentDetailDrawer.vue'
-import StatCard from '@/components/common/StatCard.vue'
 import HealthPanel from './HealthPanel.vue'
-import type { Investment, InvestmentTransaction, InvestmentEventType, InvestmentMetrics } from '@/types'
-
-ChartJS.register(ArcElement, Tooltip, Legend, BarElement, LineElement, PointElement, CategoryScale, LinearScale)
+import type { Investment, InvestmentTransaction, InvestmentEventType, InvestmentMetrics, InvestmentConsistency } from '@/types'
 
 const store = useInvestmentsStore()
 const settingsStore = useSettingsStore()
@@ -233,7 +260,6 @@ const AUTO_EXCHANGES = ['SH', 'SZ', 'HK', 'FUND_CN']
 
 function fmt(n: number): string { return (n ?? 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }
 function signed(n: number): string { return (n >= 0 ? '+' : '') + sym.value + fmt(Math.abs(n)) }
-function pct(n: number): string { return (n ?? 0).toFixed(2) + '%' }
 function xirrLabel(n: number | null | undefined): string { return n === null || n === undefined ? '—' : (n * 100).toFixed(1) + '%' }
 function colorClass(n: number): string { return n >= 0 ? 'text-income-color' : 'text-expense-color' }
 function colorClassNullable(n: number | null | undefined): string { return n === null || n === undefined ? '' : (n >= 0 ? 'text-income-color' : 'text-expense-color') }
@@ -243,99 +269,30 @@ function formatDateShort(s: string) { return new Date(s).toLocaleDateString('zh-
 
 // Aggregate state
 const productMetricMap = ref<Record<string, InvestmentMetrics>>({})
-const portfolioMetrics = ref<InvestmentMetrics>({
-  total_invested: 0, total_redeemed: 0, total_dividends: 0, total_fees: 0,
-  current_value: 0, total_pnl: 0, total_return_pct: 0,
-  xirr_annualized: null, last_1y_xirr: null, last_1m_xirr: null,
-  days_held: 0, last_event_date: null
-})
-const allTransactions = ref<InvestmentTransaction[]>([])
-const allSnapshots = ref<{ investment_id: string; snapshot_date: string; unit_price: number; quantity_held: number; total_value: number }[]>([])
+const consistency = ref<InvestmentConsistency | null>(null)
 const expandedIds = ref<Set<string>>(new Set())
 const drawerInvestment = ref<Investment | null>(null)
 function openDetail(inv: Investment) { drawerInvestment.value = inv }
+async function onInvestmentUpdated() {
+  await store.fetchInvestments()
+  const current = drawerInvestment.value
+  if (current) {
+    const fresh = store.investments.find(i => i.id === current.id)
+    if (fresh) drawerInvestment.value = fresh
+  }
+  await loadAggregates()
+}
+
+async function loadConsistency() {
+  try {
+    const res = await api.get('/investments/consistency')
+    consistency.value = res.data
+  } catch { consistency.value = null }
+}
 const txMap = ref<Record<string, InvestmentTransaction[]>>({})
 
 const activeInvestments = computed(() => store.investments.filter(i => !i.sell_date))
 const soldInvestments = computed(() => store.investments.filter(i => !!i.sell_date))
-
-// Charts
-const allocationChart = computed(() => {
-  const grouped: Record<string, number> = {}
-  activeInvestments.value.forEach(i => { const k = i.underlying_asset_type || '未分类'; grouped[k] = (grouped[k] || 0) + (i.current_price * i.quantity) })
-  const entries = Object.entries(grouped).filter(([, v]) => v > 0)
-  const colors = ['#4CAF50', '#F44336', '#2196F3', '#FF9800', '#9C27B0', '#00BCD4', '#795548', '#607D8B']
-  return { labels: entries.map(([k]) => k), datasets: [{ data: entries.map(([, v]) => v), backgroundColor: entries.map((_, i) => colors[i % colors.length]) }] }
-})
-
-const perProductChart = computed(() => {
-  const items = activeInvestments.value.map(inv => ({ name: inv.name, xirr: productMetricMap.value[inv.id]?.xirr_annualized ?? null })).filter(x => x.xirr !== null)
-  return {
-    labels: items.map(x => x.name),
-    datasets: [{
-      label: 'XIRR',
-      data: items.map(x => Number(((x.xirr as number) * 100).toFixed(1))),
-      backgroundColor: items.map(x => (x.xirr as number) >= 0 ? '#4CAF50' : '#F44336')
-    }]
-  }
-})
-
-const valueCurveChart = computed(() => {
-  const byDate: Record<string, { invested: number; value: number }> = {}
-  // Track running totals across all products' transactions
-  const txsByDate = [...allTransactions.value].sort((a, b) => a.event_date.localeCompare(b.event_date))
-  for (const tx of txsByDate) {
-    const m = tx.event_date.substring(0, 7)
-    if (!byDate[m]) byDate[m] = { invested: 0, value: 0 }
-    if (tx.event_type === 'buy' || tx.event_type === 'adjustment') byDate[m].invested += tx.amount
-    else if (tx.event_type === 'sell') byDate[m].invested -= Math.abs(tx.amount)
-  }
-  // Snapshots: aggregate total_value by month
-  for (const snap of allSnapshots.value) {
-    const m = snap.snapshot_date.substring(0, 7)
-    if (!byDate[m]) byDate[m] = { invested: 0, value: 0 }
-    byDate[m].value += snap.total_value
-  }
-  // Also fold in current value at "today" month
-  const now = new Date().toISOString().substring(0, 7)
-  if (!byDate[now]) byDate[now] = { invested: 0, value: 0 }
-  byDate[now].value = activeInvestments.value.reduce((s, i) => s + i.current_price * i.quantity, 0)
-  const months = Object.keys(byDate).sort()
-  return {
-    labels: months,
-    datasets: [
-      { label: '累计投入', data: months.map(m => byDate[m].invested), borderColor: '#2196F3', backgroundColor: '#2196F320', tension: 0.2 },
-      { label: '市值', data: months.map(m => byDate[m].value), borderColor: '#4CAF50', backgroundColor: '#4CAF5020', tension: 0.2 }
-    ]
-  }
-})
-
-const cashFlowChart = computed(() => {
-  const byMonth: Record<string, { buy: number; sell: number; dividend: number; fee: number }> = {}
-  for (const tx of allTransactions.value) {
-    const m = tx.event_date.substring(0, 7)
-    if (!byMonth[m]) byMonth[m] = { buy: 0, sell: 0, dividend: 0, fee: 0 }
-    if (tx.event_type === 'buy') byMonth[m].buy += tx.amount
-    else if (tx.event_type === 'sell') byMonth[m].sell += Math.abs(tx.amount)
-    else if (tx.event_type === 'dividend') byMonth[m].dividend += Math.abs(tx.amount)
-    else if (tx.event_type === 'fee') byMonth[m].fee += Math.abs(tx.amount)
-  }
-  const months = Object.keys(byMonth).sort()
-  return {
-    labels: months,
-    datasets: [
-      { label: '买入', data: months.map(m => byMonth[m].buy), backgroundColor: '#4CAF50' },
-      { label: '卖出', data: months.map(m => -byMonth[m].sell), backgroundColor: '#F44336' },
-      { label: '分红', data: months.map(m => byMonth[m].dividend), backgroundColor: '#FF9800' },
-      { label: '费用', data: months.map(m => -byMonth[m].fee), backgroundColor: '#9C27B0' }
-    ]
-  }
-})
-
-const doughnutOpts = { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' as const, labels: { boxWidth: 12, font: { size: 11 } } } } }
-const barHorizontalOpts = { responsive: true, maintainAspectRatio: false, indexAxis: 'y' as const, plugins: { legend: { display: false } }, scales: { x: { ticks: { callback: (v: any) => v + '%' } } } }
-const lineDualOpts = { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' as const } } }
-const barStackedOpts = { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' as const } }, scales: { x: { stacked: true }, y: { stacked: true } } }
 
 // Data loading
 async function loadAggregates() {
@@ -343,37 +300,17 @@ async function loadAggregates() {
     const metricsRes = await api.get('/investments/metrics/all')
     const items: { investment_id: string; metrics: InvestmentMetrics }[] = metricsRes.data
     const map: Record<string, InvestmentMetrics> = {}
-    let pm: InvestmentMetrics = {
-      total_invested: 0, total_redeemed: 0, total_dividends: 0, total_fees: 0,
-      current_value: 0, total_pnl: 0, total_return_pct: 0,
-      xirr_annualized: null, last_1y_xirr: null, last_1m_xirr: null,
-      days_held: 0, last_event_date: null
-    }
     for (const it of items) {
       map[it.investment_id] = it.metrics
-      pm.total_invested += it.metrics.total_invested
-      pm.total_redeemed += it.metrics.total_redeemed
-      pm.total_dividends += it.metrics.total_dividends
-      pm.total_fees += it.metrics.total_fees
-      pm.current_value += it.metrics.current_value
-      pm.total_pnl += it.metrics.total_pnl
     }
-    pm.total_return_pct = pm.total_invested > 0 ? (pm.total_pnl / pm.total_invested) * 100 : 0
     productMetricMap.value = map
-    portfolioMetrics.value = pm
   } catch (e) {
     console.warn('Failed to load metrics', e)
   }
-  // Load all transactions and snapshots in parallel
-  const txPromises = activeInvestments.value.map(inv => api.get(`/investments/${inv.id}/transactions`).then(r => r.data).catch(() => []))
-  const snapPromises = activeInvestments.value.map(inv => api.get(`/investments/${inv.id}/snapshots`).then(r => r.data).catch(() => []))
-  const [txResults, snapResults] = await Promise.all([Promise.all(txPromises), Promise.all(snapPromises)])
-  allTransactions.value = txResults.flat()
-  allSnapshots.value = snapResults.flat()
 }
 
-async function loadTxsFor(invId: string) {
-  if (txMap.value[invId]) return
+async function loadTxsFor(invId: string, force = false) {
+  if (!force && txMap.value[invId]) return
   try { const res = await api.get(`/investments/${invId}/transactions`); txMap.value = { ...txMap.value, [invId]: res.data } }
   catch { txMap.value = { ...txMap.value, [invId]: [] } }
 }
@@ -407,12 +344,17 @@ async function refreshAllPrices() {
   refreshingAll.value = true
   try {
     const res = await api.post('/investments/refresh-prices/all')
-    const results: { id: string; data: Investment | null; error: string | null }[] = res.data
+    const results: { id: string; ok: boolean; price?: number; error?: string }[] = res.data
     let updated = 0, failed = 0
     for (const r of results) {
-      if (r.data) { const idx = store.investments.findIndex(i => i.id === r.id); if (idx !== -1) store.investments[idx] = r.data; updated++ }
-      else failed++
+      if (r.ok) {
+        // backend returns {id, name, ok, price, source}; reload the list to pick up new current_price
+        updated++
+      } else {
+        failed++
+      }
     }
+    await store.fetchInvestments()
     show(`已刷新 ${updated} 个，失败 ${failed} 个`, failed ? 'warning' : 'success')
     await loadAggregates()
   } catch (e: any) {
@@ -514,7 +456,7 @@ async function saveTx() {
     }
     showTxModal.value = false
     show('保存成功', 'success')
-    await Promise.all([store.fetchInvestments(), loadAggregates(), loadTxsFor(txForm.value.investment_id)])
+    await Promise.all([store.fetchInvestments(), loadAggregates(), loadTxsFor(txForm.value.investment_id, true)])
   } catch (e: any) { show(e.response?.data?.detail || '保存失败', 'error') }
 }
 
@@ -524,16 +466,14 @@ async function deleteTx() {
     await api.delete(`/investments/${txForm.value.investment_id}/transactions/${editingTx.value.id}`)
     showTxModal.value = false
     show('已删除', 'success')
-    await Promise.all([store.fetchInvestments(), loadAggregates(), loadTxsFor(txForm.value.investment_id)])
+    await Promise.all([store.fetchInvestments(), loadAggregates(), loadTxsFor(txForm.value.investment_id, true)])
   } catch (e: any) { show(e.response?.data?.detail || '删除失败', 'error') }
 }
 
-// I need to expand rows by clicking on the row (not just row click in template)
-// Let me re-add a click handler at row level
 function onRowClick(inv: Investment) { toggleExpand(inv.id) }
 
 onMounted(async () => {
   await store.fetchInvestments()
-  await loadAggregates()
+  await Promise.all([loadAggregates(), loadConsistency()])
 })
 </script>

@@ -31,6 +31,7 @@
               <td class="px-4 py-2"><span :class="acc.hidden ? 'text-expense-color' : 'text-income-color'">{{ acc.hidden ? '是' : '否' }}</span></td>
               <td class="px-4 py-2">
                 <button @click="openAccountModal(acc)" class="text-text-secondary hover:text-accent-primary mr-2">编辑</button>
+                <button @click="openBalanceCheck(acc)" class="text-text-secondary hover:text-accent-primary mr-2">校验</button>
                 <button @click="deleteAccount(acc.id)" class="text-text-secondary hover:text-expense-color">删除</button>
               </td>
             </tr>
@@ -228,6 +229,14 @@
             <option value="custodial">代管账户</option>
           </select>
         </div>
+        <div v-if="accForm.account_type === 'cash'">
+          <label class="block text-sm mb-1">银行口径（校验用）</label>
+          <select v-model="accForm.bank_statement_mode" class="w-full px-3 py-2 border border-border-default rounded-md">
+            <option value="direct">直接比：银行收支 = 系统收支（工资卡等）</option>
+            <option value="composite">组合比：转账+退款+利息 = 银行收入（消费卡）</option>
+          </select>
+          <div class="text-xs text-text-muted mt-1">影响"记账 → 校验"模块的月度汇总换算方式</div>
+        </div>
         <div><label class="block text-sm mb-1">货币</label><input v-model="accForm.currency" class="w-full px-3 py-2 border border-border-default rounded-md" /></div>
         <div><label class="block text-sm mb-1">初始余额</label><input v-model.number="accForm.initial_balance" type="number" class="w-full px-3 py-2 border border-border-default rounded-md" /></div>
         <div class="flex items-center gap-2"><input v-model="accForm.hidden" type="checkbox" id="accHidden" /><label for="accHidden" class="text-sm">隐藏</label></div>
@@ -235,6 +244,19 @@
       <template #footer>
         <button @click="showAccModal = false" class="px-4 py-2 text-text-secondary hover:text-text-primary">取消</button>
         <button @click="saveAccount" class="px-4 py-2 bg-accent-primary text-white rounded-md hover:bg-accent-hover">保存</button>
+      </template>
+    </BaseModal>
+
+    <BaseModal v-if="showBalanceCheckModal" :title="`余额校验：${balanceCheckAcc?.name || ''}`" @close="showBalanceCheckModal = false">
+      <div v-if="balanceCheckLoading" class="text-sm text-text-muted">加载中…</div>
+      <div v-else-if="balanceCheckData" class="space-y-3 text-sm">
+        <div>系统期望余额：<span class="font-medium">{{ sym }}{{ balanceCheckData.expected_balance.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}</span></div>
+        <div>最后流水日期：<span class="text-text-secondary">{{ balanceCheckData.last_recorded_date || '—' }}</span></div>
+        <div class="text-xs text-text-muted">{{ balanceCheckData.hint }}</div>
+        <div class="text-xs text-text-muted">若与银行 APP 当前余额不符，检查初始余额是否填对、流水是否记全。</div>
+      </div>
+      <template #footer>
+        <button @click="showBalanceCheckModal = false" class="px-4 py-2 text-text-secondary hover:text-text-primary">关闭</button>
       </template>
     </BaseModal>
 
@@ -330,7 +352,7 @@ const filteredCats = computed(() => catStore.categories.filter(c => c.type === c
 const presetColors = ['#4CAF50','#F44336','#2196F3','#FF9800','#9C27B0','#00BCD4','#795548','#607D8B','#E91E63','#3F51B5','#8BC34A','#FF5722','#673AB7','#009688','#CDDC39','#FFC107','#6735B4','#E91E63','#795548','#9E9E9E','#212121']
 
 const showAccModal = ref(false), editAcc = ref<any>(null)
-const accForm = ref({ name: '', currency: 'CNY', initial_balance: 0, hidden: false, account_type: 'cash' })
+const accForm = ref({ name: '', currency: 'CNY', initial_balance: 0, hidden: false, account_type: 'cash', bank_statement_mode: 'direct' })
 const showCatModal = ref(false), editCat = ref<any>(null)
 const catForm = ref<{ name: string; type: 'income' | 'expense'; color: string; is_necessary: boolean; pl_section: string; cf_section: string }>({ name: '', type: 'expense', color: '#6B6B6B', is_necessary: false, pl_section: '', cf_section: '' })
 const newTagName = ref(''), newTagColor = ref('#9B9E9E')
@@ -342,7 +364,24 @@ const pwd = ref({ current: '', newPass: '', confirm: '' })
 const showAiPresetModal = ref(false), editAiPreset = ref<any>(null)
 const aiPresetForm = ref({ name: '', api_url: '', api_key: '', model_name: '', system_prompt: '', is_default: false })
 
-function openAccountModal(acc?: any) { editAcc.value = acc; accForm.value = acc ? { name: acc.name, currency: acc.currency, initial_balance: acc.initial_balance, hidden: acc.hidden, account_type: acc.account_type || 'cash' } : { name: '', currency: 'CNY', initial_balance: 0, hidden: false, account_type: 'cash' }; showAccModal.value = true }
+function openAccountModal(acc?: any) { editAcc.value = acc; accForm.value = acc ? { name: acc.name, currency: acc.currency, initial_balance: acc.initial_balance, hidden: acc.hidden, account_type: acc.account_type || 'cash', bank_statement_mode: acc.bank_statement_mode || 'direct' } : { name: '', currency: 'CNY', initial_balance: 0, hidden: false, account_type: 'cash', bank_statement_mode: 'direct' }; showAccModal.value = true }
+
+// 账户初始余额校验（复用 /reconciliation/expected-balance）
+const showBalanceCheckModal = ref(false)
+const balanceCheckAcc = ref<any>(null)
+const balanceCheckData = ref<any>(null)
+const balanceCheckLoading = ref(false)
+async function openBalanceCheck(acc: any) {
+  balanceCheckAcc.value = acc
+  balanceCheckData.value = null
+  showBalanceCheckModal.value = true
+  balanceCheckLoading.value = true
+  try {
+    const res = await api.get('/reconciliation/expected-balance', { params: { account_id: acc.id } })
+    balanceCheckData.value = res.data
+  } catch (e: any) { show(e.response?.data?.detail || '加载失败', 'error') }
+  finally { balanceCheckLoading.value = false }
+}
 function openCatModal(cat?: any) { 
   editCat.value = cat; 
   catForm.value = cat ? { 
