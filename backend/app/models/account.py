@@ -14,6 +14,7 @@ class Account(Base):
     currency = Column(String, default="CNY")
     initial_balance = Column(Float, default=0.0)
     account_type = Column(String, default="cash")
+    bank_statement_mode = Column(String, default="direct")  # direct=银行收支=系统收支；composite=转账+退款+利息=银行收入
     hidden = Column(Boolean, default=False)
     sort_order = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)

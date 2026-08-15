@@ -19,6 +19,7 @@ class Transaction(Base):
     tag_ids = Column(JSON, default=list)
     description = Column(String, default="")
     remark = Column(String, default="")
+    location = Column(String, default="")  # 交易地点/附言（银行流水原始字段，辅助分类与审计）
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

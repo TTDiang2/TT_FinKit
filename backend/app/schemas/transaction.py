@@ -12,6 +12,7 @@ class TransactionCreate(BaseModel):
     tag_ids: List[str] = []
     description: str = ""
     remark: str = ""
+    location: str = ""
 
 
 class TransactionUpdate(BaseModel):
@@ -24,6 +25,7 @@ class TransactionUpdate(BaseModel):
     tag_ids: List[str] | None = None
     description: str | None = None
     remark: str | None = None
+    location: str | None = None
 
 
 class TransactionResponse(BaseModel):
@@ -38,6 +40,7 @@ class TransactionResponse(BaseModel):
     tag_ids: List[str]
     description: str
     remark: str
+    location: str = ""
     created_at: str
     updated_at: str
     account_name: str = ""
@@ -60,6 +63,8 @@ class ImportPreviewRow(BaseModel):
     remark: str = ""
     source_memo: str = ""
     counterparty: str = ""
+    location: str = ""                  # 交易地点/附言
+    confidence: str = ""                # 置信度 high/medium/low/none（ccb 脚本打标）
     # 解析结果
     error: str = ""                     # 非空=该行无法导入（格式错误/账户分类不存在）
     is_duplicate: bool = False          # 与现有交易重复
@@ -86,6 +91,7 @@ class ImportCommitRow(BaseModel):
     tags: str = ""
     description: str = ""
     remark: str = ""
+    location: str = ""
 
 
 class ImportCommitRequest(BaseModel):

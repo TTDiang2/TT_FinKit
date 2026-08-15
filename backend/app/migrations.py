@@ -33,3 +33,9 @@ async def run_lightweight_migrations(conn: AsyncConnection) -> None:
     await _add_column_if_missing(conn, "user_settings", "ai_search_backend", "VARCHAR DEFAULT 'duckduckgo'")
     await _add_column_if_missing(conn, "user_settings", "ai_search_api_key", "VARCHAR DEFAULT ''")
     await _add_column_if_missing(conn, "user_settings", "ai_investment_preset_id", "VARCHAR")
+
+    # accounts: reconciliation mode (direct vs composite bank-statement mapping)
+    await _add_column_if_missing(conn, "accounts", "bank_statement_mode", "VARCHAR DEFAULT 'direct' NOT NULL")
+
+    # transactions: 交易地点/附言（银行流水原始字段）
+    await _add_column_if_missing(conn, "transactions", "location", "VARCHAR DEFAULT '' NOT NULL")

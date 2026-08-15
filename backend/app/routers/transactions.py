@@ -66,6 +66,7 @@ async def get_transactions(
             id=t.id, user_id=t.user_id, type=t.type, date=t.date, amount=t.amount,
             account_id=t.account_id, dest_account_id=t.dest_account_id, category_id=t.category_id,
             tag_ids=t.tag_ids or [], description=t.description, remark=t.remark,
+            location=t.location or "",
             created_at=str(t.created_at), updated_at=str(t.updated_at),
             account_name=acc_map.get(t.account_id, ""),
             category_name=cat_name, category_color=cat_color
@@ -96,6 +97,7 @@ async def create_transaction(req: TransactionCreate, user_id: str = Depends(get_
         id=txn.id, user_id=txn.user_id, type=txn.type, date=txn.date, amount=txn.amount,
         account_id=txn.account_id, dest_account_id=txn.dest_account_id, category_id=txn.category_id,
         tag_ids=txn.tag_ids or [], description=txn.description, remark=txn.remark,
+        location=txn.location or "",
         created_at=str(txn.created_at), updated_at=str(txn.updated_at),
         account_name=account.name, category_name=cat_name, category_color=cat_color
     )
@@ -117,6 +119,7 @@ async def update_transaction(transaction_id: str, req: TransactionUpdate, user_i
         id=txn.id, user_id=txn.user_id, type=txn.type, date=txn.date, amount=txn.amount,
         account_id=txn.account_id, dest_account_id=txn.dest_account_id, category_id=txn.category_id,
         tag_ids=txn.tag_ids or [], description=txn.description, remark=txn.remark,
+        location=txn.location or "",
         created_at=str(txn.created_at), updated_at=str(txn.updated_at),
         account_name="", category_name="", category_color=""
     )
@@ -150,6 +153,8 @@ _COL_ALIASES = {
     "remark": ["remark", "备注"],
     "source_memo": ["source_memo", "原始摘要"],
     "counterparty": ["counterparty", "对方户名"],
+    "location": ["location", "交易地点", "交易地点/附言", "附言"],
+    "confidence": ["confidence", "置信度"],
 }
 
 
@@ -219,6 +224,24 @@ async def _resolve_user_maps(db: AsyncSession, user_id: str):
             [a.name for a in accs], list(exp_cat.keys()), list(inc_cat.keys()))
 
 
+def _default_transfer_dest(accounts_by_name: dict, account: str) -> str:
+    """转账默认对方账户：工资账户 → 消费账户场景（BOOKKEEPING 规范）。
+
+    规则：优先选名字含"工资"的账户；否则选第一个与本方不同的账户；都没有则空。
+    """
+    names = list(accounts_by_name.keys())
+    if not names:
+        return ""
+    # 本方在 names 里的位置
+    others = [n for n in names if n != account]
+    if not others:
+        return ""
+    for n in others:
+        if "工资" in n:
+            return n
+    return others[0]
+
+
 @router.post("/parse-import", response_model=ImportPreviewResponse)
 async def parse_import(
     file: UploadFile = File(...),
@@ -259,7 +282,7 @@ async def parse_import(
 
         date = get("date")
         direction = get("direction").lower()
-        amount = abs(_parse_amount(get("amount")))
+        amount = _parse_amount(get("amount"))  # 保留符号：负数=退款冲销（负支出）
         account = get("account")
         dest_account = get("dest_account")
         category = get("category")
@@ -268,12 +291,16 @@ async def parse_import(
         remark = get("remark")
         source_memo = get("source_memo")
         counterparty = get("counterparty")
+        location = get("location")
+        confidence = get("confidence")
 
         error = ""
         if direction not in ("income", "expense", "transfer"):
             error = f"方向无效: {direction!r}"
-        elif amount <= 0:
-            error = "金额必须为正数"
+        elif amount == 0:
+            error = "金额不能为 0"
+        elif amount < 0 and direction != "expense":
+            error = "负数金额仅支持支出（退款冲销）"
         elif not re.match(r"^\d{4}-\d{2}-\d{2}", date):
             error = f"日期格式错误: {date!r}（需 YYYY-MM-DD）"
         elif account not in accounts_by_name:
@@ -286,6 +313,10 @@ async def parse_import(
 
         if not error and direction == "transfer" and dest_account and dest_account not in accounts_by_name:
             error = f"对方账户不存在: {dest_account!r}"
+
+        if not error and direction == "transfer" and not dest_account:
+            # 转账未指定对方账户：默认工资账户 → 消费账户场景（BOOKKEEPING 规范）
+            dest_account = _default_transfer_dest(accounts_by_name, account)
 
         # 查重
         is_dup = False
@@ -304,6 +335,7 @@ async def parse_import(
             account=account, dest_account=dest_account, category=category,
             tags=tags, description=description, remark=remark,
             source_memo=source_memo, counterparty=counterparty,
+            location=location, confidence=confidence,
             error=error, is_duplicate=is_dup,
         ))
 
@@ -339,8 +371,12 @@ async def commit_import(req: ImportCommitRequest, user_id: str = Depends(get_cur
             errors.append(f"第{i}行: 方向无效 {r.direction!r}")
             skipped += 1
             continue
-        if r.amount <= 0:
-            errors.append(f"第{i}行: 金额必须为正数")
+        if r.amount == 0:
+            errors.append(f"第{i}行: 金额不能为 0")
+            skipped += 1
+            continue
+        if r.amount < 0 and r.direction != "expense":
+            errors.append(f"第{i}行: 负数金额仅支持支出（退款冲销）")
             skipped += 1
             continue
         acc_id = accounts_by_name.get(r.account)
@@ -353,10 +389,11 @@ async def commit_import(req: ImportCommitRequest, user_id: str = Depends(get_cur
         cat_id = None
 
         if r.direction == "transfer":
-            if r.dest_account:
-                dest_id = accounts_by_name.get(r.dest_account)
+            dest_account_name = r.dest_account or _default_transfer_dest(accounts_by_name, r.account)
+            if dest_account_name:
+                dest_id = accounts_by_name.get(dest_account_name)
                 if not dest_id:
-                    errors.append(f"第{i}行: 对方账户不存在 {r.dest_account!r}")
+                    errors.append(f"第{i}行: 对方账户不存在 {dest_account_name!r}")
                     skipped += 1
                     continue
         else:
@@ -380,6 +417,7 @@ async def commit_import(req: ImportCommitRequest, user_id: str = Depends(get_cur
             user_id=user_id, type=r.direction, date=r.date[:10], amount=r.amount,
             account_id=acc_id, dest_account_id=dest_id, category_id=cat_id,
             tag_ids=tag_list, description=r.description or "", remark=r.remark or "",
+            location=r.location or "",
         )
         db.add(txn)
         existing.add(dup_key)
