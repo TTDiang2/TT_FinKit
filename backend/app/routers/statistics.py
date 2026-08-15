@@ -112,6 +112,24 @@ async def get_overview(
     )
     total_assets = total_initial + float(all_inc.scalar() or 0) - float(all_exp.scalar() or 0)
 
+    # 投资市值与固定资产/其他资产（Bookkeeping 规范 §2.4：总资产 = 现金 + 投资市值 + 固定资产等）
+    inv_result = await db.execute(select(Investment).where(Investment.user_id == user_id, Investment.sell_date == None))
+    investments = inv_result.scalars().all()
+    total_invested = sum(inv.quantity * inv.purchase_price for inv in investments)
+    total_current = sum(inv.quantity * inv.current_price for inv in investments)
+    inv_unrealized = total_current - total_invested  # 浮盈（市值-成本），投资账户本金已在账户余额中
+
+    asset_cur_result = await db.execute(
+        select(Asset.asset_type, func.sum(Asset.value).label("total"))
+        .where(Asset.user_id == user_id)
+        .group_by(Asset.asset_type)
+    )
+    asset_cur_map = {r[0]: float(r[1]) for r in asset_cur_result.all()}
+    # 注意：不含 asset_type="investment"（手动投资资产与投资 tab 重复，见 AUDIT B1/D3）
+    fixed_plus_other = asset_cur_map.get("fixed_asset", 0) + asset_cur_map.get("other_asset", 0)
+
+    total_assets = total_assets + inv_unrealized + fixed_plus_other
+
     vs_income = ((total_income - total_income_last) / total_income_last * 100) if total_income_last else 0
     vs_expense = ((total_expense - total_expense_last) / total_expense_last * 100) if total_expense_last else 0
 
@@ -195,22 +213,14 @@ async def get_overview(
         .group_by(Asset.asset_type)
     )
     prev_asset_map = {r[0]: float(r[1]) for r in prev_asset_result.all()}
-    prev_fixed_plus = prev_asset_map.get("fixed_asset", 0) + prev_asset_map.get("other_asset", 0) + prev_asset_map.get("investment", 0)
+    # 与当月口径一致：fixed_asset + other_asset（不含手动 investment 资产）
+    prev_fixed_plus = prev_asset_map.get("fixed_asset", 0) + prev_asset_map.get("other_asset", 0)
     prev_liabilities = prev_asset_map.get("liability", 0)
     prev_net_worth = (prev_cash + prev_fixed_plus) - prev_liabilities
-    cur_net_worth = total_assets - sum(
-        float(r[1]) for r in (await db.execute(
-            select(Asset.asset_type, func.sum(Asset.value))
-            .where(Asset.user_id == user_id, Asset.asset_type == "liability")
-            .group_by(Asset.asset_type)
-        )).all()
-    ) if (await db.execute(select(func.count()).select_from(Asset).where(Asset.user_id == user_id, Asset.asset_type == "liability"))).scalar() else total_assets
+    cur_net_worth = total_assets - prev_liabilities
     net_worth_growth = ((cur_net_worth - prev_net_worth) / prev_net_worth * 100) if prev_net_worth != 0 else 0
 
-    inv_result = await db.execute(select(Investment).where(Investment.user_id == user_id, Investment.sell_date == None))
-    investments = inv_result.scalars().all()
-    total_invested = sum(inv.quantity * inv.purchase_price for inv in investments)
-    total_current = sum(inv.quantity * inv.current_price for inv in investments)
+    # investments 已在上面 total_assets 计算处加载（investments/total_invested/total_current）
     inv_return = ((total_current - total_invested) / total_invested * 100) if total_invested > 0 else 0
     investment_ratio = (total_current / total_assets * 100) if total_assets > 0 else 0
 
@@ -372,10 +382,10 @@ async def get_daily_spending(
 ):
     start, end = resolve_date_range(start_date, end_date, year, month)
 
+    # 按行查询后在 Python 侧聚合：负支出（退款冲销）不计入每日支出
     result = await db.execute(
-        select(Transaction.date, Transaction.type, func.sum(Transaction.amount))
+        select(Transaction.date, Transaction.type, Transaction.amount)
         .where(Transaction.user_id == user_id, Transaction.date >= start, Transaction.date < end)
-        .group_by(Transaction.date, Transaction.type)
         .order_by(Transaction.date)
     )
     rows = result.all()
@@ -385,9 +395,9 @@ async def get_daily_spending(
         if date not in daily:
             daily[date] = {"date": date, "income": 0.0, "expense": 0.0}
         if txn_type == "income":
-            daily[date]["income"] += float(amount)
+            daily[date]["income"] += max(0.0, float(amount))
         elif txn_type == "expense":
-            daily[date]["expense"] += float(amount)
+            daily[date]["expense"] += max(0.0, float(amount))  # 负支出（退款）不计入
 
     return [DailySpendingItem(**v) for v in sorted(daily.values(), key=lambda x: x["date"])]
 

@@ -192,6 +192,102 @@ async def get_portfolio_health(
     return portfolio_health.compute_health(investments_data, [])
 
 
+@router.get("/consistency")
+async def get_investment_consistency(
+    user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """投资账户内部一致性校验（BOOKKEEPING.md §3.3）。
+
+    记账 tab 投资账户余额（本金） vs 投资 tab 总投入：
+        余额 - 总投入 = 闲置现金（应 >= 0）
+    """
+    from ..models.account import Account
+    from ..models.transaction import Transaction as LedgerTxn
+
+    # 投资账户（account_type=investment）余额 = 初始 + 收入 - 支出（转账不计收支）
+    acc_res = await db.execute(
+        select(Account).where(Account.user_id == user_id, Account.account_type == "investment")
+    )
+    accounts = list(acc_res.scalars().all())
+    account_list = []
+    total_account_balance = 0.0
+    for acc in accounts:
+        inc = float(
+            (
+                await db.execute(
+                    select(func.coalesce(func.sum(LedgerTxn.amount), 0)).where(
+                        LedgerTxn.user_id == user_id,
+                        LedgerTxn.type == "income",
+                        LedgerTxn.account_id == acc.id,
+                    )
+                )
+            ).scalar()
+            or 0
+        )
+        exp = float(
+            (
+                await db.execute(
+                    select(func.coalesce(func.sum(LedgerTxn.amount), 0)).where(
+                        LedgerTxn.user_id == user_id,
+                        LedgerTxn.type == "expense",
+                        LedgerTxn.account_id == acc.id,
+                    )
+                )
+            ).scalar()
+            or 0
+        )
+        balance = (acc.initial_balance or 0) + inc - exp
+        account_list.append({"id": acc.id, "name": acc.name, "balance": round(balance, 2)})
+        total_account_balance += balance
+
+    # 总投入 = Σ buy 流水金额（含已平仓，其流水仍存在）；无流水的老数据回退 quantity*purchase_price
+    inv_res = await db.execute(select(Investment).where(Investment.user_id == user_id))
+    invs = list(inv_res.scalars().all())
+    inv_ids = [i.id for i in invs]
+    buy_tx_map: dict[str, float] = {}
+    if inv_ids:
+        tx_res = await db.execute(
+            select(InvestmentTransaction).where(
+                InvestmentTransaction.investment_id.in_(inv_ids),
+                InvestmentTransaction.event_type == "buy",
+            )
+        )
+        for tx in tx_res.scalars().all():
+            buy_tx_map[tx.investment_id] = buy_tx_map.get(tx.investment_id, 0.0) + float(tx.amount or 0)
+
+    total_invested = 0.0
+    for inv in invs:
+        if inv.id in buy_tx_map:
+            total_invested += buy_tx_map[inv.id]
+        else:
+            total_invested += (inv.quantity or 0) * (inv.purchase_price or 0)
+
+    total_current = sum(
+        (i.quantity or 0) * (i.current_price or 0)
+        for i in invs
+        if not i.sell_date
+    )
+
+    idle_cash = total_account_balance - total_invested
+    warnings = []
+    if idle_cash < -0.01:
+        status = "diff"
+        warnings.append("投资账户余额低于总投入，可能漏记转入或投资流水有误")
+    else:
+        status = "ok"
+
+    return {
+        "accounts": account_list,
+        "total_account_balance": round(total_account_balance, 2),
+        "total_invested": round(total_invested, 2),
+        "total_current": round(total_current, 2),
+        "idle_cash": round(idle_cash, 2),
+        "status": status,
+        "warnings": warnings,
+    }
+
+
 @router.get("/{investment_id}", response_model=InvestmentResponse)
 async def get_investment(
     investment_id: str,
