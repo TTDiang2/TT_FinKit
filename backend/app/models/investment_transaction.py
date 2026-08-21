@@ -17,6 +17,7 @@ class InvestmentTransaction(Base):
     quantity = Column(Float, default=0.0)          # signed: positive for buy, negative for sell
     unit_price = Column(Float, default=0.0)
     amount = Column(Float, default=0.0)            # signed: positive cost (buy), negative proceeds (sell/dividend)
+    fee = Column(Float, default=0.0)               # transaction fee (always a positive cost); standalone fee events carry it here too
     notes = Column(Text, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)

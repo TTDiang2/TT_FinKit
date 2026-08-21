@@ -5,9 +5,18 @@
         <button @click="showImportModal = true" class="px-4 py-2 border border-border-default rounded-md hover:bg-bg-tertiary flex items-center gap-1 text-sm">
           <Upload :size="16" /> 导入
         </button>
-        <select v-model="selectedYearMonth" @change="onMonthChange" class="px-3 py-2 border border-border-default rounded-md text-sm font-bold">
-          <option v-for="opt in monthOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
-        </select>
+        <div class="flex items-center gap-2">
+          <button @click="shiftYear(-1)" title="上一年" class="px-2 py-1.5 border border-border-default rounded-md hover:bg-bg-tertiary text-sm">◀</button>
+          <span class="font-bold text-sm px-1 whitespace-nowrap">{{ year }}年</span>
+          <button @click="shiftYear(1)" title="下一年" class="px-2 py-1.5 border border-border-default rounded-md hover:bg-bg-tertiary text-sm">▶</button>
+          <div class="grid grid-cols-6 gap-1">
+            <button v-for="m in 12" :key="m" @click="selectMonth(m)"
+                    :class="m === month ? 'bg-accent-primary text-white font-bold' : 'hover:bg-bg-tertiary'"
+                    class="px-2 py-1 rounded-md text-sm">{{ m }}月</button>
+          </div>
+          <button v-if="year !== now.year() || month !== now.month() + 1" @click="goCurrentMonth"
+                  class="text-xs text-text-secondary hover:text-accent-primary whitespace-nowrap">回到当前月</button>
+        </div>
       </div>
       <button @click="showModal = true; resetForm()" class="px-4 py-2 bg-accent-primary text-white rounded-md hover:bg-accent-hover flex items-center gap-1">
         <Plus :size="16" /> 添加记账
@@ -37,16 +46,80 @@
       </div>
     </div>
 
+    <div class="bg-white rounded-lg shadow-sm mb-6">
+      <div class="flex items-center justify-between px-4 py-3 border-b border-border-default">
+        <h4 class="font-semibold text-sm">账户余额（截至 {{ year }}年{{ String(month).padStart(2, '0') }}月）</h4>
+        <button @click="showBalances = !showBalances" class="text-xs text-text-secondary hover:text-accent-primary">
+          {{ showBalances ? '收起明细' : '展开明细' }}
+        </button>
+      </div>
+      <div class="px-4 py-3 flex flex-wrap gap-4">
+        <div v-for="b in balancesAsOf" :key="b.account_id" class="min-w-[140px]">
+          <div class="text-xs text-text-secondary">{{ b.account_name }}</div>
+          <div class="text-lg font-bold" :class="b.balance >= 0 ? 'text-income-color' : 'text-expense-color'">
+            {{ sym }}{{ b.balance.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}
+          </div>
+        </div>
+        <div v-if="!balancesAsOf.length" class="text-sm text-text-muted">加载中…</div>
+      </div>
+      <div v-if="showBalances" class="border-t border-border-default overflow-auto">
+        <table class="w-full text-xs">
+          <thead class="bg-bg-tertiary text-left">
+            <tr class="text-text-muted">
+              <th class="px-4 py-2 font-medium">账户</th>
+              <th class="px-4 py-2 text-right font-medium">期初</th>
+              <th class="px-4 py-2 text-right font-medium">收入</th>
+              <th class="px-4 py-2 text-right font-medium">支出</th>
+              <th class="px-4 py-2 text-right font-medium">转入</th>
+              <th class="px-4 py-2 text-right font-medium">转出</th>
+              <th class="px-4 py-2 text-right font-medium">余额</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="b in balancesAsOf" :key="b.account_id" class="border-t border-border-default">
+              <td class="px-4 py-2">{{ b.account_name }}</td>
+              <td class="px-4 py-2 text-right font-mono">{{ fmtAmount(b.initial_balance) }}</td>
+              <td class="px-4 py-2 text-right font-mono text-income-color">{{ fmtAmount(b.income) }}</td>
+              <td class="px-4 py-2 text-right font-mono text-expense-color">{{ fmtAmount(b.expense) }}</td>
+              <td class="px-4 py-2 text-right font-mono">{{ fmtAmount(b.transfer_in) }}</td>
+              <td class="px-4 py-2 text-right font-mono">{{ fmtAmount(b.transfer_out) }}</td>
+              <td class="px-4 py-2 text-right font-mono font-bold" :class="b.balance >= 0 ? 'text-income-color' : 'text-expense-color'">{{ fmtAmount(b.balance) }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
     <div class="grid grid-cols-3 gap-4 mb-6">
       <div class="bg-white rounded-lg p-4 shadow-sm">
         <h4 class="font-semibold mb-3">收入分类</h4>
         <div class="h-44"><Doughnut v-if="incomeCategoryData.labels.length" :data="incomeCategoryData" :options="{ responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'right' as const, labels: { boxWidth: 10, font: { size: 11 } } } } }" /></div>
         <div v-if="!incomeCategoryData.labels.length" class="text-center text-text-muted py-6">暂无数据</div>
+        <div v-if="incomeSummary.total > 0 || incomeSummary.negative > 0" class="mt-2">
+          <div class="flex h-2.5 rounded overflow-hidden bg-bg-tertiary" :title="`正向收入 ${fmtAmount(incomeSummary.positive)} | 净收入 ${fmtAmount(incomeSummary.total)}`">
+            <div v-if="incomeSummary.negative > 0" :style="{ width: (incomeSummary.negative / Math.max(incomeSummary.positive, 1) * 100) + '%' }" class="bg-expense-color"></div>
+            <div :style="{ width: '100%' }" class="bg-income-color opacity-90 -ml-1"></div>
+          </div>
+          <div class="flex justify-between text-xs text-text-muted mt-1">
+            <span>亏损 <span class="text-expense-color font-medium">{{ fmtAmount(incomeSummary.negative) }}</span></span>
+            <span>净收入 <span :class="incomeSummary.total >= 0 ? 'text-income-color' : 'text-expense-color'" class="font-medium">{{ fmtAmount(incomeSummary.total) }}</span></span>
+          </div>
+        </div>
       </div>
       <div class="bg-white rounded-lg p-4 shadow-sm">
         <h4 class="font-semibold mb-3">支出分类</h4>
         <div class="h-44"><Doughnut v-if="expenseCategoryData.labels.length" :data="expenseCategoryData" :options="{ responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'right' as const, labels: { boxWidth: 10, font: { size: 11 } } } } }" /></div>
         <div v-if="!expenseCategoryData.labels.length" class="text-center text-text-muted py-6">暂无数据</div>
+        <div v-if="expenseSummary.total > 0 || expenseSummary.negative > 0" class="mt-2">
+          <div class="flex h-2.5 rounded overflow-hidden bg-bg-tertiary" :title="`正向支出 ${fmtAmount(expenseSummary.positive)} | 净支出 ${fmtAmount(expenseSummary.total)}`">
+            <div v-if="expenseSummary.negative > 0" :style="{ width: (expenseSummary.negative / Math.max(expenseSummary.positive, 1) * 100) + '%' }" class="bg-income-color"></div>
+            <div :style="{ width: '100%' }" class="bg-expense-color opacity-90 -ml-1"></div>
+          </div>
+          <div class="flex justify-between text-xs text-text-muted mt-1">
+            <span>退款 <span class="text-income-color font-medium">{{ fmtAmount(expenseSummary.negative) }}</span></span>
+            <span>净支出 <span class="text-expense-color font-medium">{{ fmtAmount(expenseSummary.total) }}</span></span>
+          </div>
+        </div>
       </div>
       <div class="bg-white rounded-lg p-4 shadow-sm h-56">
         <h4 class="font-semibold mb-3">每日支出</h4>
@@ -187,6 +260,8 @@ const catsForType = computed(() => catStore.categories.filter(c => c.type === fo
 
 const expenseCategoryData = ref<{ labels: string[]; datasets: { data: number[]; backgroundColor: string[] }[] }>({ labels: [], datasets: [] })
 const incomeCategoryData = ref<{ labels: string[]; datasets: { data: number[]; backgroundColor: string[] }[] }>({ labels: [], datasets: [] })
+const incomeSummary = ref({ positive: 0, negative: 0, total: 0 })
+const expenseSummary = ref({ positive: 0, negative: 0, total: 0 })
 const dailySpendingData = ref<{ labels: string[]; datasets: { label: string; data: number[]; borderColor: string; backgroundColor: string; tension: number; fill: boolean }[] }>({ labels: [], datasets: [] })
 
 const dailySpendingOptions = {
@@ -199,16 +274,20 @@ const dailySpendingOptions = {
 
 const now = dayjs()
 const year = ref(now.year()), month = ref(now.month() + 1)
-const selectedYearMonth = ref(`${year.value}/${String(month.value).padStart(2, '0')}`)
 
-const monthOptions = computed(() => {
-  const opts: { value: string; label: string }[] = []
-  for (let i = -24; i <= 0; i++) {
-    const d = now.add(i, 'month')
-    opts.push({ value: `${d.year()}/${String(d.month() + 1).padStart(2, '0')}`, label: `${d.year()}年${String(d.month() + 1).padStart(2, '0')}月` })
-  }
-  return opts
-})
+function shiftYear(d: number) {
+  year.value += d
+  loadMonth()
+}
+function selectMonth(m: number) {
+  month.value = m
+  loadMonth()
+}
+function goCurrentMonth() {
+  year.value = now.year()
+  month.value = now.month() + 1
+  loadMonth()
+}
 
 const showModal = ref(false), editId = ref<string | null>(null)
 const showImportModal = ref(false)
@@ -233,10 +312,7 @@ const allCategories = computed(() => {
   return Array.from(cats.values())
 })
 
-function onMonthChange() {
-  const [y, m] = selectedYearMonth.value.split('/').map(Number)
-  year.value = y; month.value = m; loadMonth()
-}
+
 
 const monthTxns = computed(() => txnStore.transactions.filter(t => t.date.startsWith(`${year.value}-${String(month.value).padStart(2, '0')}`)))
 const monthStats = computed(() => {
@@ -306,7 +382,46 @@ const sections = computed(() => {
   ]
 })
 
-async function loadMonth() { await txnStore.fetchTransactions({ year: year.value, month: month.value }); await loadMonthStats() }
+const showBalances = ref(false)
+const balancesAsOf = ref<{ account_id: string; account_name: string; initial_balance: number; income: number; expense: number; transfer_in: number; transfer_out: number; balance: number }[]>([])
+function fmtAmount(n: number): string {
+  return n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+interface CategoryStat {
+  category_id: string; category_name: string; category_color: string;
+  total: number; count: number; positive_total: number; negative_total: number;
+}
+
+function aggregateSummary(items: CategoryStat[]) {
+  let positive = 0, negative = 0
+  for (const it of items) { positive += it.positive_total || 0; negative += it.negative_total || 0 }
+  return { positive, negative, total: positive - negative }
+}
+
+function buildIncomeDoughnut(items: CategoryStat[]) {
+  const labels = items.map(c => c.category_name)
+  const colors = items.map(c => c.category_color || '#9B9B9B')
+  const data = items.map(c => c.positive_total || 0)
+  return { labels, datasets: [{ data, backgroundColor: colors }] }
+}
+
+function buildExpenseDoughnut(items: CategoryStat[]) {
+  //净额支出 = 正支出 - 退款（后端 negative_total 已是绝对值，case((amount<0, -amount))）；过滤净额 ≤0（避免饼图出 0 值或全额退款脏数据）
+  const filtered = items.filter(c => (c.positive_total || 0) - (c.negative_total || 0) > 0)
+  const labels = filtered.map(c => c.category_name)
+  const colors = filtered.map(c => c.category_color || '#9B9B9B')
+  const data = filtered.map(c => (c.positive_total || 0) - (c.negative_total || 0))
+  return { labels, datasets: [{ data, backgroundColor: colors }] }
+}
+async function loadBalances() {
+  try {
+    const res = await api.get('/accounts/balances-as-of', { params: { year: year.value, month: month.value } })
+    balancesAsOf.value = res.data
+  } catch (e) { console.error(e) }
+}
+
+async function loadMonth() { await txnStore.fetchTransactions({ year: year.value, month: month.value }); await loadMonthStats(); await loadBalances() }
 
 async function loadMonthStats() {
   try {
@@ -316,14 +431,10 @@ async function loadMonthStats() {
       api.get('/statistics/daily-spending', { params: { year: year.value, month: month.value } }),
       api.get('/statistics/overview', { params: { year: year.value, month: month.value } })
     ])
-    expenseCategoryData.value = {
-      labels: expCatRes.data.map((c: { category_name: string }) => c.category_name),
-      datasets: [{ data: expCatRes.data.map((c: { total: number }) => c.total), backgroundColor: expCatRes.data.map((c: { category_color: string }) => c.category_color) }]
-    }
-    incomeCategoryData.value = {
-      labels: incCatRes.data.map((c: { category_name: string }) => c.category_name),
-      datasets: [{ data: incCatRes.data.map((c: { total: number }) => c.total), backgroundColor: incCatRes.data.map((c: { category_color: string }) => c.category_color) }]
-    }
+    expenseCategoryData.value = buildExpenseDoughnut(expCatRes.data)
+    incomeCategoryData.value = buildIncomeDoughnut(incCatRes.data)
+    expenseSummary.value = aggregateSummary(expCatRes.data)
+    incomeSummary.value = aggregateSummary(incCatRes.data)
     dailySpendingData.value = {
       labels: dailyRes.data.map((d: { date: string }) => d.date.slice(-2)),
       datasets: [{ label: '支出', data: dailyRes.data.map((d: { expense: number }) => d.expense), borderColor: '#4CAF50', backgroundColor: 'rgba(76, 175, 80, 0.2)', tension: 0.4, fill: true }]

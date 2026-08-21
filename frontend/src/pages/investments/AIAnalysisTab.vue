@@ -4,7 +4,7 @@
       <h2 class="font-semibold mb-3">AI 投资分析</h2>
       <p class="text-sm text-text-secondary mb-4">
         基于最新相关新闻与行情数据，自动生成结构化分析（情绪 / 关键发现 / 风险 / 建议）。
-        分析需在 <router-link to="/admin" class="text-accent-primary underline">管理 → AI 助手设置</router-link> 中预先配置至少一个默认预设。
+        分析需在 <router-link to="/settings" class="text-accent-primary underline">设置 → AI 助手</router-link> 中预先配置至少一个默认预设。
       </p>
 
       <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">

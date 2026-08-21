@@ -32,7 +32,7 @@
               <div class="flex items-center gap-4 text-xs">
                 <span class="text-text-secondary">共 <b class="text-text-primary">{{ preview!.total }}</b> 条</span>
                 <span class="text-expense-color">错误 <b>{{ preview!.error_count }}</b></span>
-                <span class="text-text-muted">重复 <b>{{ preview!.duplicate_count }}</b></span>
+                <button class="text-warning-color hover:underline" @click="confidenceFilter = 'dup'">疑似重复 <b>{{ preview!.duplicate_count }}</b></button>
                 <span class="text-income-color">已选 <b>{{ selectedCount }}</b></span>
               </div>
               <div class="flex items-center gap-2">
@@ -95,9 +95,8 @@
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="r in filteredRows" :key="r.row_index"
-                      :class="rowClass(r)"
-                      class="border-t border-border-default">
+                  <template v-for="r in filteredRows" :key="r.row_index">
+                    <tr :class="rowClass(r)" class="border-t border-border-default">
                     <td class="px-2 py-1.5">
                       <input type="checkbox" :checked="selected[r.row_index]" :disabled="!!r.error"
                              @change="toggleRow(r.row_index)" />
@@ -118,7 +117,18 @@
                     <td class="px-2 py-1.5 text-right whitespace-nowrap font-mono" :class="amountClass(effectiveDirection(r), r.amount)">
                       {{ amountText(effectiveDirection(r), r.amount) }}
                     </td>
-                    <td class="px-2 py-1.5 whitespace-nowrap text-text-secondary">{{ r.account }}</td>
+                    <td class="px-2 py-1.5 whitespace-nowrap">
+                      <select
+                        v-if="effectiveDirection(r) === 'transfer'"
+                        v-model="rowEdits[r.row_index].account"
+                        :disabled="!!r.error"
+                        class="text-xs border border-border-default rounded px-1 py-0.5 w-full"
+                        :title="r.account"
+                      >
+                        <option v-for="acc in preview?.accounts" :value="acc" :key="acc">{{ acc }}</option>
+                      </select>
+                      <span v-else class="text-text-secondary">{{ r.account }}</span>
+                    </td>
                     <td class="px-2 py-1.5 whitespace-nowrap">
                       <select
                         v-if="effectiveDirection(r) === 'transfer'"
@@ -150,12 +160,25 @@
                     <td class="px-2 py-1.5 max-w-[140px] truncate text-text-muted" :title="r.counterparty">{{ r.counterparty }}</td>
                     <td class="px-2 py-1.5 whitespace-nowrap">
                       <span v-if="r.error" class="text-expense-color">{{ r.error }}</span>
-                      <span v-else-if="r.is_duplicate" class="text-text-muted">重复</span>
+                      <button v-else-if="r.is_duplicate" @click="toggleDup(r.row_index)"
+                              class="text-warning-color underline decoration-dotted underline-offset-2 hover:font-semibold">
+                        疑似重复{{ dupOpen[r.row_index] ? ' ▾' : ' ▸' }}
+                      </button>
                       <span v-else-if="!rowEdits[r.row_index]?.category && rowEdits[r.row_index]?.direction !== 'transfer'" class="text-warning-color">待补分类</span>
                       <span v-else-if="rowEdits[r.row_index]?.direction === 'transfer' && !rowEdits[r.row_index]?.dest_account" class="text-warning-color">待填对方账户</span>
                       <span v-else class="text-income-color">可导入</span>
                     </td>
                   </tr>
+                    <tr v-if="dupOpen[r.row_index]" class="bg-yellow-50/60 border-t border-border-default">
+                      <td colspan="10" class="px-4 py-2">
+                        <div class="text-xs text-text-secondary mb-1">可能与以下现有记录重复：</div>
+                        <div v-for="(d, i) in r.duplicate_with" :key="i" class="text-xs font-mono text-text-secondary py-0.5">
+                          {{ d.date }} {{ dirLabel(d.type) }} {{ formatMoney(d.amount) }} · {{ d.account }}<span v-if="d.description"> · {{ d.description }}</span>
+                        </div>
+                        <div v-if="!r.duplicate_with?.length" class="text-xs text-text-muted">无候选详情</div>
+                      </td>
+                    </tr>
+                  </template>
                 </tbody>
               </table>
             </div>
@@ -223,6 +246,14 @@ interface PreviewRow {
   confidence: string
   error: string
   is_duplicate: boolean
+  duplicate_with: Array<{
+    date: string
+    amount: number
+    type: string
+    account: string
+    description: string
+    location: string
+  }>
 }
 interface PreviewResponse {
   rows: PreviewRow[]
@@ -245,14 +276,16 @@ const preview = ref<PreviewResponse | null>(null)
 const result = ref<ImportResult | null>(null)
 const selected = reactive<Record<number, boolean>>({})
 const importing = ref(false)
-const confidenceFilter = ref<'all' | 'high' | 'medium' | 'none'>('all')
+const confidenceFilter = ref<'all' | 'high' | 'medium' | 'none' | 'dup'>('all')
 const confidenceFilters = [
   { value: 'all' as const, label: '全部' },
   { value: 'high' as const, label: '高置信度' },
   { value: 'medium' as const, label: '需检查' },
   { value: 'none' as const, label: '未识别' },
+  { value: 'dup' as const, label: '疑似重复' },
 ]
-const rowEdits = reactive<Record<number, { direction: string; category: string; dest_account: string }>>({})
+const dupOpen = reactive<Record<number, boolean>>({})
+const rowEdits = reactive<Record<number, { direction: string; category: string; dest_account: string; account: string }>>({})
 function effectiveDirection(r: PreviewRow): string {
   return rowEdits[r.row_index]?.direction || r.direction
 }
@@ -295,6 +328,7 @@ const filteredRows = computed(() => {
   if (!preview.value) return []
   if (confidenceFilter.value === 'all') return preview.value.rows
   return preview.value.rows.filter(r => {
+    if (confidenceFilter.value === 'dup') return r.is_duplicate
     if (confidenceFilter.value === 'high') return r.confidence === 'high'
     if (confidenceFilter.value === 'medium') return r.confidence === 'medium' || r.confidence === 'low'
     if (confidenceFilter.value === 'none') return r.confidence === 'none' || !r.confidence
@@ -306,6 +340,7 @@ function confidenceCount(filter: string): number {
   if (!preview.value) return 0
   if (filter === 'all') return preview.value.rows.length
   return preview.value.rows.filter(r => {
+    if (filter === 'dup') return r.is_duplicate
     if (filter === 'high') return r.confidence === 'high'
     if (filter === 'medium') return r.confidence === 'medium' || r.confidence === 'low'
     if (filter === 'none') return r.confidence === 'none' || !r.confidence
@@ -330,7 +365,7 @@ function confidenceBadgeClass(c: string): string {
 
 function rowClass(r: PreviewRow): string {
   if (r.error) return 'bg-red-50'
-  if (r.is_duplicate) return 'bg-gray-100'
+  if (r.is_duplicate) return 'bg-yellow-50'
   return ''
 }
 function dirLabel(d: string): string {
@@ -342,19 +377,28 @@ function dirBadgeClass(d: string): string {
     : 'bg-info-bg text-transfer-color'
 }
 function amountClass(d: string, amount?: number): string {
-  // 与 amountText 显示符号一致：正数(钱进)→红，负数(钱出)→绿，转账→蓝
+  // 颜色仅由方向语义决定：收入=钱进(红)；支出=钱出(绿)，负数支出(退款)=钱回(红)；转账=蓝
   if (d === 'transfer') return 'text-transfer-color'
   const a = amount ?? 0
-  const positiveDisplay = (d === 'expense') ? (a < 0) : (a >= 0)
-  return positiveDisplay ? 'text-income-color' : 'text-expense-color'
+  if (d === 'income') return 'text-income-color'
+  return a < 0 ? 'text-income-color' : 'text-expense-color'
 }
 function onDirectionChange(rowIndex: number) {
   rowEdits[rowIndex].category = ''
-  rowEdits[rowIndex].dest_account = defaultTransferDest()
+  const pair = defaultTransferPair(rowEdits[rowIndex].account || preview.value?.rows.find(r => r.row_index === rowIndex)?.account || '')
+  rowEdits[rowIndex].account = pair[0]
+  rowEdits[rowIndex].dest_account = pair[1]
 }
-function defaultTransferDest(): string {
+// 转账默认方向：工资账户 → 消费账户（与后端 _default_transfer_pair 一致）
+function defaultTransferPair(account: string): [string, string] {
   const accs = preview.value?.accounts || []
-  return accs.find(a => a.includes('工资')) || accs.find(a => a !== preview.value?.rows[0]?.account) || ''
+  const others = accs.filter(a => a !== account)
+  if (!others.length) return [account, '']
+  const salary = accs.find(a => a.includes('工资'))
+  const consumer = accs.find(a => a.includes('消费'))
+  if (account.includes('工资')) return [account, consumer || others[0]]
+  if (account.includes('消费') && salary) return [salary, account]
+  return [account, others[0]]
 }
 function applyBatchDirection() {
   if (!batchDirection.value) return
@@ -362,7 +406,9 @@ function applyBatchDirection() {
     if (!r.error && selected[r.row_index]) {
       rowEdits[r.row_index].direction = batchDirection.value
       rowEdits[r.row_index].category = ''
-      rowEdits[r.row_index].dest_account = defaultTransferDest()
+      const pair = defaultTransferPair(rowEdits[r.row_index].account || r.account)
+      rowEdits[r.row_index].account = pair[0]
+      rowEdits[r.row_index].dest_account = pair[1]
     }
   }
   batchDirection.value = ''
@@ -376,15 +422,19 @@ function applyBatchCategory() {
   }
   batchCategory.value = ''
 }
-function amountPrefix(d: string): string {
-  return d === 'income' ? '+' : d === 'expense' ? '-' : ''
+function toggleDup(idx: number) {
+  dupOpen[idx] = !dupOpen[idx]
 }
-// 金额显示（负负得正）：普通消费 -¥60；退款（负支出）+¥60（钱回来）；收入 +¥xx；转账 ¥xx
+function formatMoney(n: number): string {
+  return `${settingsStore.settings.currency_symbol}${n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
+// 金额显示：收入恒显示 +（钱进）；支出正数显示 -（钱出）、负数支出（退款）显示 +（钱回）；转账无符号。
+// 切换方向不改变数字：退款改判收入时仍显示 +¥xx（用户 2026-08 要求）
 function amountText(d: string, amount: number): string {
   const sym = settingsStore.settings.currency_symbol
   const num = Math.abs(amount).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  if (d === 'income') return `+${sym}${num}`
   if (d === 'expense') return `${amount >= 0 ? '-' : '+'}${sym}${num}`
-  if (d === 'income') return `${amount >= 0 ? '+' : '-'}${sym}${num}`
   return `${sym}${num}`
 }
 
@@ -398,13 +448,19 @@ async function onFileChange(e: Event) {
   try {
     const res = await api.post<PreviewResponse>('/transactions/parse-import', fd)
     preview.value = res.data
-    const defaultDest = defaultTransferDest()
     for (const r of res.data.rows) {
-      selected[r.row_index] = !r.error && !r.is_duplicate
+      // 疑似重复行默认仍勾选，由用户决定；确认导入时再提示
+      selected[r.row_index] = !r.error
       rowEdits[r.row_index] = {
         direction: r.direction,
         category: r.category || '',
-        dest_account: r.direction === 'transfer' ? (r.dest_account || defaultDest) : '',
+        dest_account: r.direction === 'transfer' ? r.dest_account || '' : '',
+        account: r.account,
+      }
+      if (r.direction === 'transfer' && !rowEdits[r.row_index].dest_account) {
+        const pair = defaultTransferPair(r.account)
+        rowEdits[r.row_index].account = pair[0]
+        rowEdits[r.row_index].dest_account = pair[1]
       }
     }
     step.value = 'preview'
@@ -445,21 +501,30 @@ function resetToSelect() {
   preview.value = null
   result.value = null
   for (const k of Object.keys(selected)) delete selected[Number(k)]
+  for (const k of Object.keys(dupOpen)) delete dupOpen[Number(k)]
   selectError.value = ''
 }
 
 async function doImport() {
   if (!preview.value || selectedCount.value === 0) return
+  const dupSelected = selectedRows.value.filter(r => r.is_duplicate).length
+  if (dupSelected > 0) {
+    const ok = confirm(
+      `有 ${dupSelected} 条与现有记录疑似重复（同日、同账户、同金额、同类型）。` +
+      `可能是正常的同额交易，也可能是重复导入。确认仍然导入吗？`
+    )
+    if (!ok) return
+  }
   importing.value = true
   try {
         const payload = {
           rows: selectedRows.value.map(r => {
-            const edit = rowEdits[r.row_index] || { direction: r.direction, category: r.category, dest_account: r.dest_account }
+            const edit = rowEdits[r.row_index] || { direction: r.direction, category: r.category, dest_account: r.dest_account, account: r.account }
             return {
               date: r.date,
               direction: edit.direction,
               amount: r.amount,
-              account: r.account,
+              account: edit.direction === 'transfer' ? (edit.account || r.account) : r.account,
               dest_account: edit.direction === 'transfer' ? (edit.dest_account || r.dest_account || '') : '',
               category: edit.direction === 'transfer' ? '' : edit.category,
               tags: r.tags,

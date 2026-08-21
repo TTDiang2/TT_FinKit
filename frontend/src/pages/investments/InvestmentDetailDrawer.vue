@@ -22,14 +22,19 @@
       </div>
 
       <div class="p-6 space-y-5">
+        <!-- Closed banner -->
+        <div v-if="investment.sell_date" class="bg-amber-50 border border-amber-200 rounded-md px-3 py-2 text-sm text-amber-800">
+          已平仓（{{ investment.sell_date }} 卖出）— 下方展示完整持有期回顾：买卖时点净值与全部流水
+        </div>
+
         <!-- Metric cards -->
         <div class="grid grid-cols-3 gap-3">
           <div class="bg-white rounded-lg p-3 shadow-sm">
-            <div class="text-xs text-text-muted">成本价（均价）</div>
+            <div class="text-xs text-text-muted">成本价（摊薄）</div>
             <div class="text-base font-semibold mt-1">{{ sym }}{{ fmt(costBasis) }}</div>
           </div>
           <div class="bg-white rounded-lg p-3 shadow-sm">
-            <div class="text-xs text-text-muted">现价</div>
+            <div class="text-xs text-text-muted">现价{{ investment.sell_date ? '（末次）' : '' }}</div>
             <div class="text-base font-semibold mt-1">{{ sym }}{{ fmt(investment.current_price) }}</div>
           </div>
           <div class="bg-white rounded-lg p-3 shadow-sm">
@@ -51,6 +56,61 @@
           <div class="bg-white rounded-lg p-3 shadow-sm">
             <div class="text-xs text-text-muted">持有天数</div>
             <div class="text-base font-semibold mt-1">{{ daysHeld }} 天</div>
+          </div>
+          <div v-if="annVol !== null" class="bg-white rounded-lg p-3 shadow-sm">
+            <div class="text-xs text-text-muted">年化波动率({{ period.label }})</div>
+            <div class="text-base font-semibold mt-1">{{ (annVol * 100).toFixed(1) }}%</div>
+          </div>
+          <div v-if="annRet !== null" class="bg-white rounded-lg p-3 shadow-sm">
+            <div class="text-xs text-text-muted">年化收益({{ period.label }})</div>
+            <div class="text-base font-semibold mt-1" :class="annRet >= 0 ? 'text-income-color' : 'text-expense-color'">{{ (annRet * 100).toFixed(1) }}%</div>
+          </div>
+          <div v-if="sortino !== null" class="bg-white rounded-lg p-3 shadow-sm">
+            <div class="text-xs text-text-muted">Sortino({{ period.label }})</div>
+            <div class="text-base font-semibold mt-1" :class="sortino >= 0 ? 'text-income-color' : 'text-expense-color'">{{ sortino.toFixed(2) }}</div>
+          </div>
+          <div v-if="calmar !== null" class="bg-white rounded-lg p-3 shadow-sm">
+            <div class="text-xs text-text-muted">Calmar({{ period.label }})</div>
+            <div class="text-base font-semibold mt-1" :class="calmar >= 0 ? 'text-income-color' : 'text-expense-color'">{{ calmar.toFixed(2) }}</div>
+          </div>
+          <div v-if="downside !== null" class="bg-white rounded-lg p-3 shadow-sm">
+            <div class="text-xs text-text-muted">下行波动率({{ period.label }})</div>
+            <div class="text-base font-semibold mt-1">{{ (downside * 100).toFixed(1) }}%</div>
+          </div>
+          <div class="bg-white rounded-lg p-3 shadow-sm">
+            <div class="text-xs text-text-muted">最长回撤期({{ period.label }})</div>
+            <div class="text-base font-semibold mt-1">{{ mddDuration !== null ? mddDuration + ' 个交易日' : '—' }}</div>
+          </div>
+          <div class="bg-white rounded-lg p-3 shadow-sm">
+            <div class="text-xs text-text-muted">创新高恢复天数</div>
+            <div class="text-base font-semibold mt-1">{{ recoveryDays !== null ? recoveryDays + ' 天' : '尚未收复' }}</div>
+          </div>
+          <div class="bg-white rounded-lg p-3 shadow-sm">
+            <div class="text-xs text-text-muted">数据源</div>
+            <div class="text-base font-semibold mt-1 text-sm leading-5">{{ source || '—' }}</div>
+          </div>
+        </div>
+
+        <!-- Benchmark comparison -->
+        <div v-if="benchmark" class="bg-white rounded-lg p-3 shadow-sm">
+          <div class="text-xs text-text-muted mb-2">相对沪深300（{{ benchmark.name }} · 同期对比）</div>
+          <div class="grid grid-cols-2 lg:grid-cols-5 gap-3 text-sm">
+            <div><span class="text-text-muted text-xs">基准同期年化</span><div class="font-medium" :class="(benchmark.ann_return || 0) >= 0 ? 'text-income-color' : 'text-expense-color'">{{ pct(benchmark.ann_return) }}</div></div>
+            <div><span class="text-text-muted text-xs">Beta</span><div class="font-medium">{{ benchmark.beta !== null ? benchmark.beta.toFixed(2) : '—' }}</div></div>
+            <div><span class="text-text-muted text-xs">Alpha(年化)</span><div class="font-medium" :class="(benchmark.alpha || 0) >= 0 ? 'text-income-color' : 'text-expense-color'">{{ pct(benchmark.alpha) }}</div></div>
+            <div><span class="text-text-muted text-xs">超额收益(年化)</span><div class="font-medium" :class="(benchmark.excess_return || 0) >= 0 ? 'text-income-color' : 'text-expense-color'">{{ pct(benchmark.excess_return) }}</div></div>
+            <div><span class="text-text-muted text-xs">基准数据源</span><div class="font-medium">{{ benchmark.source }}</div></div>
+          </div>
+        </div>
+
+        <!-- Buy/sell averages (from ledger events) -->
+        <div v-if="buyAvg !== null || sellAvg !== null" class="bg-white rounded-lg p-3 shadow-sm">
+          <div class="text-xs text-text-muted mb-2">买卖时点回顾（按流水计算）</div>
+          <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 text-sm">
+            <div><span class="text-text-muted text-xs">买入总份额</span><div class="font-medium">{{ buyQty.toFixed(2) }}</div></div>
+            <div v-if="buyAvg !== null"><span class="text-text-muted text-xs">买入均价</span><div class="font-medium">{{ sym }}{{ fmt(buyAvg!) }}</div></div>
+            <div v-if="sellQty > 0"><span class="text-text-muted text-xs">卖出总份额</span><div class="font-medium">{{ sellQty.toFixed(2) }}</div></div>
+            <div v-if="sellAvg !== null"><span class="text-text-muted text-xs">卖出均价</span><div class="font-medium">{{ sym }}{{ fmt(sellAvg!) }}</div></div>
           </div>
         </div>
 
@@ -82,6 +142,7 @@
             <span class="flex items-center gap-1"><span class="inline-block w-3 h-0 border-t-2 border-dashed border-orange-500"></span> 成本线</span>
             <span class="flex items-center gap-1"><span class="inline-block w-2.5 h-2.5 rounded-full bg-emerald-500"></span> 买入</span>
             <span class="flex items-center gap-1"><span class="inline-block w-2.5 h-2.5 rounded-full bg-red-500"></span> 卖出</span>
+            <span v-if="benchmark" class="flex items-center gap-1"><span class="inline-block w-3 h-0 border-t-2 border-dashed border-emerald-500"></span> 沪深300(起点对齐)</span>
           </div>
         </div>
 
@@ -123,7 +184,7 @@ import { Line } from 'vue-chartjs'
 import { Chart as ChartJS, LineElement, PointElement, CategoryScale, LinearScale, Tooltip, Legend, Filler } from 'chart.js'
 import { useSettingsStore } from '@/stores/settings'
 import { useApi } from '@/composables/useApi'
-import type { Investment, InvestmentTransaction, NavHistoryPoint } from '@/types'
+import type { Investment, InvestmentTransaction, NavHistoryPoint, BenchmarkInfo } from '@/types'
 import MigrationWizard from './MigrationWizard.vue'
 
 ChartJS.register(LineElement, PointElement, CategoryScale, LinearScale, Tooltip, Legend, Filler)
@@ -134,6 +195,10 @@ const emit = defineEmits<{ close: []; updated: [] }>()
 const api = useApi()
 const settingsStore = useSettingsStore()
 const sym = computed(() => settingsStore.settings.currency_symbol)
+
+function pct(n: number | null | undefined): string {
+  return n === null || n === undefined ? '—' : (n * 100).toFixed(2) + '%'
+}
 
 const TYPE_LABELS: Record<string, string> = { stock: '股票', fund: '基金', bond: '债券', crypto: '加密货币', deposit: '存款', other: '其他' }
 const TX_LABELS: Record<string, string> = { buy: '买入', sell: '卖出', dividend: '分红', fee: '费用', adjustment: '调整' }
@@ -161,6 +226,30 @@ const series = ref<NavHistoryPoint[]>([])
 const events = ref<InvestmentTransaction[]>([])
 const costBasis = ref(0)
 const maxDrawdown = ref(0)
+const annVol = ref<number | null>(null)
+const annRet = ref<number | null>(null)
+const source = ref('')
+const sortino = ref<number | null>(null)
+const calmar = ref<number | null>(null)
+const downside = ref<number | null>(null)
+const mddDuration = ref<number | null>(null)
+const recoveryDays = ref<number | null>(null)
+const benchmark = ref<BenchmarkInfo | null>(null)
+
+const buyQty = computed(() => events.value.filter(t => t.event_type === 'buy').reduce((s, t) => s + Math.abs(t.quantity || 0), 0))
+const buyAvg = computed(() => {
+  const buys = events.value.filter(t => t.event_type === 'buy' && t.amount)
+  const amt = buys.reduce((s, t) => s + Math.abs(t.amount || 0), 0)
+  const qty = buys.reduce((s, t) => s + Math.abs(t.quantity || 0), 0)
+  return qty > 0 ? amt / qty : null
+})
+const sellQty = computed(() => events.value.filter(t => t.event_type === 'sell').reduce((s, t) => s + Math.abs(t.quantity || 0), 0))
+const sellAvg = computed(() => {
+  const sells = events.value.filter(t => t.event_type === 'sell' && t.amount)
+  const amt = sells.reduce((s, t) => s + Math.abs(t.amount || 0), 0)
+  const qty = sells.reduce((s, t) => s + Math.abs(t.quantity || 0), 0)
+  return qty > 0 ? amt / qty : null
+})
 
 const costDist = computed(() => {
   const cb = costBasis.value || props.investment.purchase_price || 0
@@ -211,6 +300,19 @@ const chartData = computed(() => {
     ;(markerMeta[key] = markerMeta[key] || []).push({ type: tx.event_type, idx, tx })
   }
 
+  // Benchmark overlay: scale index closes so its start equals the fund's first close
+  const bmSeries = benchmark.value?.series ?? []
+  let bmLine: (number | null)[] = []
+  if (bmSeries.length && series.value.length && series.value[0].close) {
+    const scale = series.value[0].close / bmSeries[0].close
+    let bi = 0
+    bmLine = labels.map(d => {
+      while (bi + 1 < bmSeries.length && bmSeries[bi + 1].date <= d) bi++
+      if (bmSeries[bi].date <= d) return bmSeries[bi].close * scale
+      return null
+    })
+  }
+
   return {
     labels,
     datasets: [
@@ -253,6 +355,16 @@ const chartData = computed(() => {
         borderDash: [5, 5],
         pointRadius: 0,
         tension: 0.3,
+        fill: false,
+      },
+      {
+        label: '沪深300(起点对齐)',
+        data: bmLine,
+        borderColor: '#10b981',
+        borderWidth: 1.5,
+        borderDash: [6, 4],
+        pointRadius: 0,
+        pointHoverRadius: 0,
         fill: false,
       },
       {
@@ -332,6 +444,15 @@ async function loadHistory() {
     events.value = [...events.value].reverse()
     costBasis.value = data.cost_basis || 0
     maxDrawdown.value = data.max_drawdown || 0
+    annVol.value = data.ann_volatility ?? null
+    annRet.value = data.ann_return ?? null
+    source.value = data.source || ''
+    sortino.value = data.sortino ?? null
+    calmar.value = data.calmar ?? null
+    downside.value = data.downside_deviation ?? null
+    mddDuration.value = data.max_drawdown_duration ?? null
+    recoveryDays.value = data.recovery_days ?? null
+    benchmark.value = data.benchmark ?? null
   } catch (e: any) {
     series.value = []
     error.value = e.response?.data?.detail || e.message || '获取净值历史失败'

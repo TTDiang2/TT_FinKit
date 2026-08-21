@@ -14,7 +14,8 @@ class Account(Base):
     currency = Column(String, default="CNY")
     initial_balance = Column(Float, default=0.0)
     account_type = Column(String, default="cash")
-    bank_statement_mode = Column(String, default="direct")  # direct=银行收支=系统收支；composite=转账+退款+利息=银行收入
+    bank_statement_mode = Column(String, default="direct")  # 兼容旧字段；direct=工资账户式；composite=消费账户式；custom=自定义
+    bank_formula = Column(String, nullable=True)  # 校验口径公式 JSON：{"income":["transfer_in","refund","income"],"expense":["expense_positive"]}
     hidden = Column(Boolean, default=False)
     sort_order = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)

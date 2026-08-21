@@ -41,7 +41,7 @@ SALARY_ACCOUNT = "工资账户"
 # FinKit 账户清单（用于 dest_account 下拉）
 ACCOUNT_OPTIONS = ["消费账户", "工资账户", "投资账户"]
 
-# 转账摘要（汇兑类）
+# 转账摘要（汇兑类；"电子汇入/电子汇出"是建行流水常见摘要，也属于转账）
 TRANSFER_SUMMARIES = {"汇兑", "普通汇兑"}
 
 # 摘要 → 直接判定为消费退货（负支出）
@@ -82,12 +82,12 @@ EXPENSE_RULES = [
     # 网购：电商
     (["淘宝", "天猫", "京东", "拼多多", "得物", "苏宁", "抖音商城", "7-11", "seven", "罗森", " Lawson",
       "九木杂物社", "杂物社"], "网购", "high"),
+    # 酒店（必须优先于医疗：如"桔子酒店（上海中山医院店）"是酒店不是医院）
+    (["桔子酒店", "如家", "汉庭", "全季", "希尔顿", "民宿", "旅馆", "宾馆"], "酒店", "high"),
     # 医疗
     (["大药房", "老百姓大药房", "药店", "医院", "医药", "诊所", "牙科"], "医疗", "high"),
     # 生活杂项：水电煤话费宽带
     (["中国电信", "中国联通", "中国移动", "电费", "水费", "燃气", "物业", "宽带", "话费"], "生活杂项", "high"),
-    # 酒店
-    (["桔子酒店", "如家", "汉庭", "全季", "希尔顿", "民宿", "旅馆", "宾馆"], "酒店", "high"),
     # 旅游：景点/旅行社
     (["携程", "飞猪", "去哪儿", "八达通", "octopus", "迪士尼", "环球影城", "乐园", "景点", "门票",
       "森林公园", "钟山风景区", "钟山风景区", "长生鹿苑", "夫子庙", "同程文旅", "清华印象",
@@ -115,7 +115,7 @@ EXPENSE_RULES = [
     (["便利", "超市", "百货", "商店", "购物", "旗舰", "电商", "生鲜"], "网购", "medium"),
     # 衣物（补充）
     (["衣", "服饰", "鞋", "服装"], "衣物", "medium"),
-    # 酒店（补充）
+    # 酒店（补充，同样优先于医疗）
     (["酒店", "住宿"], "酒店", "medium"),
     # 医疗（补充）
     (["药房", "医药"], "医疗", "medium"),
@@ -259,13 +259,14 @@ def normalize_amount(v):
 # =====================================================================
 
 def classify(row):
-    """返回 (direction, category, dest_account, confidence, note, negate)
+    """返回 (direction, category, dest_account, confidence, note, negate, account)
     direction: income / expense / transfer
     category: 分类名（可能为 ""）
-    dest_account: 转账对方账户（仅 transfer）
+    dest_account: 转账转入账户（仅 transfer；FinKit 语义：转入方）
     confidence: "high" / "medium" / "low" / "none"
     note: 打标说明
     negate: True = 金额取负（消费退货，记负支出冲销）
+    account: 本方账户（FinKit 语义：转出方；仅 transfer 时可能不等于 DEFAULT_ACCOUNT）
     """
     summary = row["summary"]
     cp_name = row["counterparty_name"]
@@ -277,45 +278,56 @@ def classify(row):
     # 1. 消费退货 → 负支出，按交易地点推断原分类
     if summary in REFUND_SUMMARIES:
         cat, conf = match_expense(text)
-        return ("expense", cat, "", conf, f"退款冲销:{cat}" if cat else "退款-未识别分类", True)
+        return ("expense", cat, "", conf, f"退款冲销:{cat}" if cat else "退款-未识别分类", True, DEFAULT_ACCOUNT)
 
     # 2. 利息存入 → 收入
     if summary in INCOME_SUMMARIES:
-        return ("income", INCOME_FALLBACK, "", "high", "利息收入", False)
+        return ("income", INCOME_FALLBACK, "", "high", "利息收入", False, DEFAULT_ACCOUNT)
 
-    # 3. 转账：汇兑 + 电子汇入 + 本人户名 → 工资转入
-    if summary in TRANSFER_SUMMARIES:
+    # 3. 转账（汇兑/电子汇入类）：按金额符号定方向。
+    #    符号为正 = 钱进入本方账户 → 转出方=对方账户，转入方=本方账户；
+    #    符号为负 = 钱离开本方账户 → 转出方=本方账户，转入方留空待填。
+    if summary in TRANSFER_SUMMARIES or "电子汇入" in summary or "电子汇出" in summary:
         is_self = any(name in cp_name for name in SELF_HOLDER_NAMES)
-        if "电子汇入" in location and is_self:
-            return ("transfer", "", SALARY_ACCOUNT, "high", "工资转入", False)
+        if ("电子汇入" in location or "电子汇入" in summary) and is_self:
+            return ("transfer", "", DEFAULT_ACCOUNT, "high", "工资转入", False, SALARY_ACCOUNT)
         # 普通汇兑 + 电子退库 → 退税（收入）
         if any(k in location for k in INCOME_LOCATION_CONTAINS):
-            return ("income", INCOME_FALLBACK, "", "high", "退税/退费收入", False)
-        # 其他汇兑 + 本人 → 转账
+            return ("income", INCOME_FALLBACK, "", "high", "退税/退费收入", False, DEFAULT_ACCOUNT)
+        # 其他汇兑 + 本人 → 转账（按符号定方向）
         if is_self:
-            return ("transfer", "", SALARY_ACCOUNT, "medium", "转账-本人账户", False)
-        return ("transfer", "", SALARY_ACCOUNT, "low", "汇兑-待确认", False)
+            if is_income_amount:
+                return ("transfer", "", DEFAULT_ACCOUNT, "medium", "转账-本人转入", False, SALARY_ACCOUNT)
+            return ("transfer", "", "", "medium", "转账-本人转出", False, DEFAULT_ACCOUNT)
+        if is_income_amount:
+            return ("transfer", "", DEFAULT_ACCOUNT, "low", "汇兑转入-待确认", False, SALARY_ACCOUNT)
+        return ("transfer", "", "", "low", "汇兑转出-待确认", False, DEFAULT_ACCOUNT)
 
     # 4. 退费类摘要 → 收入
     if any(k in summary for k in INCOME_LOCATION_CONTAINS) or "退费" in summary:
-        return ("income", INCOME_FALLBACK, "", "high", "退费收入", False)
+        return ("income", INCOME_FALLBACK, "", "high", "退费收入", False, DEFAULT_ACCOUNT)
 
     # 5. 充值 → 看交易地点：微信扫码/红包/群收款是消费
     if summary == "充值":
         if any(k in location for k in ["扫二维码", "红包", "群收款", "微信支付"]):
             cat, conf = match_expense(text)
             return ("expense", cat or "生活杂项", "", conf or "medium",
-                    f"充值消费:{cat}" if cat else "充值消费-默认生活杂项", False)
-        return ("expense", "生活杂项", "", "low", "充值-默认生活杂项", False)
+                    f"充值消费:{cat}" if cat else "充值消费-默认生活杂项", False, DEFAULT_ACCOUNT)
+        return ("expense", "生活杂项", "", "low", "充值-默认生活杂项", False, DEFAULT_ACCOUNT)
 
     # 6. 消费/缴费/有卡自助消费 → 支出，按规则识别
     cat, conf = match_expense(text)
     if cat:
         # 亚朵特殊：>2000 → 旅游
         if cat == "酒店" and "亚朵" in text and amount > HOTEL_TO_TOURISM_THRESHOLD:
-            return ("expense", "旅游", "", conf, f"亚朵大额→旅游(>{HOTEL_TO_TOURISM_THRESHOLD})", False)
-        return ("expense", cat, "", conf, f"命中:{cat}", False)
-    return ("expense", "", "", "none", "未命中规则-待手动", False)
+            return ("expense", "旅游", "", conf, f"亚朵大额→旅游(>{HOTEL_TO_TOURISM_THRESHOLD})", False, DEFAULT_ACCOUNT)
+        return ("expense", cat, "", conf, f"命中:{cat}", False, DEFAULT_ACCOUNT)
+    # 7. 兜底规则（用户指定，2026-08）：未识别 + 金额 < 100 → 生活杂项；> 100 且附言含"财付通-微信支付-群收款" → 娱乐
+    if amount < 100:
+        return ("expense", "生活杂项", "", "medium", "兜底:小额生活杂项", False, DEFAULT_ACCOUNT)
+    if amount > 100 and "财付通-微信支付-群收款" in location:
+        return ("expense", "娱乐", "", "medium", "兜底:微信群收款→娱乐", False, DEFAULT_ACCOUNT)
+    return ("expense", "", "", "none", "未命中规则-待手动", False, DEFAULT_ACCOUNT)
 
 
 def match_expense(text: str):
@@ -384,7 +396,7 @@ def write_import_xlsx(rows, out_path):
     stats = Counter()
     by_confidence = Counter()
     for ri, row in enumerate(rows, start=2):
-        direction, category, dest_account, confidence, note, negate = classify(row)
+        direction, category, dest_account, confidence, note, negate, account = classify(row)
         stats[direction] += 1
         by_confidence[confidence] += 1
         if not category and direction != "transfer":
@@ -395,7 +407,7 @@ def write_import_xlsx(rows, out_path):
             "date":         row["date"],
             "direction":    direction,
             "amount":       -row["amount"] if negate else row["amount"],
-            "account":      DEFAULT_ACCOUNT,
+            "account":      account,
             "dest_account": dest_account,
             "category":     category,
             "confidence":   confidence,

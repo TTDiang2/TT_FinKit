@@ -224,22 +224,25 @@ async def _resolve_user_maps(db: AsyncSession, user_id: str):
             [a.name for a in accs], list(exp_cat.keys()), list(inc_cat.keys()))
 
 
-def _default_transfer_dest(accounts_by_name: dict, account: str) -> str:
-    """转账默认对方账户：工资账户 → 消费账户场景（BOOKKEEPING 规范）。
+def _default_transfer_pair(accounts_by_name: dict, account: str) -> tuple[str, str]:
+    """转账默认方向：工资账户 → 消费账户（BOOKKEEPING 规范）。
 
-    规则：优先选名字含"工资"的账户；否则选第一个与本方不同的账户；都没有则空。
+    返回 (转出账户, 转入账户)：
+    - 本方是工资账户 → (工资, 消费)
+    - 本方是消费账户且有工资账户 → (工资, 消费)，即把消费账户当转入方
+    - 其他 → (本方, 第一个其他账户)
     """
     names = list(accounts_by_name.keys())
-    if not names:
-        return ""
-    # 本方在 names 里的位置
     others = [n for n in names if n != account]
     if not others:
-        return ""
-    for n in others:
-        if "工资" in n:
-            return n
-    return others[0]
+        return (account, "")
+    salary = next((n for n in names if "工资" in n), None)
+    consumer = next((n for n in names if "消费" in n), None)
+    if "工资" in account:
+        return (account, consumer or others[0])
+    if "消费" in account and salary:
+        return (salary, account)
+    return (account, others[0])
 
 
 @router.post("/parse-import", response_model=ImportPreviewResponse)
@@ -263,13 +266,23 @@ async def parse_import(
 
     accounts_by_name, exp_cat, inc_cat, acc_names, exp_names, inc_names = await _resolve_user_maps(db, user_id)
 
-    # 查重：取该用户全部现有交易的关键字段集合
+    # 查重：取该用户全部现有交易（含账户名，供前端展示重复候选）
     dup_result = await db.execute(
-        select(Transaction.account_id, Transaction.date, Transaction.amount, Transaction.type).where(
+        select(Transaction, Account.name).join(Account, Account.id == Transaction.account_id).where(
             Transaction.user_id == user_id
         )
     )
-    existing = {(r[0], r[1], round(float(r[2]), 2), r[3]) for r in dup_result.all()}
+    existing_by_key = {}
+    for txn, acc_name in dup_result.all():
+        key = (txn.account_id, txn.date, round(float(txn.amount), 2), txn.type)
+        existing_by_key.setdefault(key, []).append({
+            "date": txn.date,
+            "amount": round(float(txn.amount), 2),
+            "type": txn.type,
+            "account": acc_name,
+            "description": txn.description or "",
+            "location": txn.location or "",
+        })
 
     preview_rows = []
     err_count = 0
@@ -299,8 +312,8 @@ async def parse_import(
             error = f"方向无效: {direction!r}"
         elif amount == 0:
             error = "金额不能为 0"
-        elif amount < 0 and direction != "expense":
-            error = "负数金额仅支持支出（退款冲销）"
+        elif amount < 0 and direction not in ("expense", "income"):
+            error = "负数金额仅支持支出（退款冲销）或收入（人工改判）"
         elif not re.match(r"^\d{4}-\d{2}-\d{2}", date):
             error = f"日期格式错误: {date!r}（需 YYYY-MM-DD）"
         elif account not in accounts_by_name:
@@ -315,15 +328,16 @@ async def parse_import(
             error = f"对方账户不存在: {dest_account!r}"
 
         if not error and direction == "transfer" and not dest_account:
-            # 转账未指定对方账户：默认工资账户 → 消费账户场景（BOOKKEEPING 规范）
-            dest_account = _default_transfer_dest(accounts_by_name, account)
+            src, dst = _default_transfer_pair(accounts_by_name, account)
+            account, dest_account = src, dst
 
         # 查重
         is_dup = False
+        dup_with = []
         if not error and account in accounts_by_name:
             key = (accounts_by_name[account], date[:10], round(amount, 2), direction)
-            if key in existing:
-                is_dup = True
+            dup_with = existing_by_key.get(key, [])
+            is_dup = bool(dup_with)
 
         if error:
             err_count += 1
@@ -337,6 +351,7 @@ async def parse_import(
             source_memo=source_memo, counterparty=counterparty,
             location=location, confidence=confidence,
             error=error, is_duplicate=is_dup,
+            duplicate_with=dup_with[:5],
         ))
 
     return ImportPreviewResponse(
@@ -358,14 +373,6 @@ async def commit_import(req: ImportCommitRequest, user_id: str = Depends(get_cur
     skipped = 0
     errors = []
 
-    # 再次查重（防止并发；按用户勾选，重复的不强阻拦，跳过）
-    existing_result = await db.execute(
-        select(Transaction.account_id, Transaction.date, Transaction.amount, Transaction.type).where(
-            Transaction.user_id == user_id
-        )
-    )
-    existing = {(r[0], r[1], round(float(r[2]), 2), r[3]) for r in existing_result.all()}
-
     for i, r in enumerate(req.rows, start=1):
         if r.direction not in ("income", "expense", "transfer"):
             errors.append(f"第{i}行: 方向无效 {r.direction!r}")
@@ -375,8 +382,8 @@ async def commit_import(req: ImportCommitRequest, user_id: str = Depends(get_cur
             errors.append(f"第{i}行: 金额不能为 0")
             skipped += 1
             continue
-        if r.amount < 0 and r.direction != "expense":
-            errors.append(f"第{i}行: 负数金额仅支持支出（退款冲销）")
+        if r.amount < 0 and r.direction not in ("expense", "income"):
+            errors.append(f"第{i}行: 负数金额仅支持支出（退款冲销）或收入（人工改判）")
             skipped += 1
             continue
         acc_id = accounts_by_name.get(r.account)
@@ -389,7 +396,16 @@ async def commit_import(req: ImportCommitRequest, user_id: str = Depends(get_cur
         cat_id = None
 
         if r.direction == "transfer":
-            dest_account_name = r.dest_account or _default_transfer_dest(accounts_by_name, r.account)
+            if r.dest_account:
+                dest_account_name = r.dest_account
+            else:
+                src_name, dest_account_name = _default_transfer_pair(accounts_by_name, r.account)
+                if src_name != r.account:
+                    acc_id = accounts_by_name.get(src_name)
+                    if not acc_id:
+                        errors.append(f"第{i}行: 账户不存在 {src_name!r}")
+                        skipped += 1
+                        continue
             if dest_account_name:
                 dest_id = accounts_by_name.get(dest_account_name)
                 if not dest_id:
@@ -405,22 +421,16 @@ async def commit_import(req: ImportCommitRequest, user_id: str = Depends(get_cur
                     skipped += 1
                     continue
 
-        dup_key = (acc_id, r.date[:10], round(r.amount, 2), r.direction)
-        if dup_key in existing:
-            skipped += 1
-            errors.append(f"第{i}行: 与现有交易重复，已跳过 ({r.date} {r.amount})")
-            continue
-
         tag_list = [t.strip() for t in r.tags.replace(";", ",").replace("；", ",").split(",") if t.strip()] if r.tags else []
 
         txn = Transaction(
-            user_id=user_id, type=r.direction, date=r.date[:10], amount=r.amount,
+            user_id=user_id, type=r.direction, date=r.date[:10],
+            amount=(abs(r.amount) if r.direction == "income" else r.amount),
             account_id=acc_id, dest_account_id=dest_id, category_id=cat_id,
             tag_ids=tag_list, description=r.description or "", remark=r.remark or "",
             location=r.location or "",
         )
         db.add(txn)
-        existing.add(dup_key)
         inserted += 1
 
     await db.commit()

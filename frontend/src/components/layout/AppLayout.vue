@@ -16,11 +16,14 @@ import { useAccountsStore } from '@/stores/accounts'
 import { useCategoriesStore } from '@/stores/categories'
 import { useTagsStore } from '@/stores/tags'
 import { useSettingsStore } from '@/stores/settings'
+import { useGlobalChecksAuto } from '@/composables/useGlobalChecks'
 
 const accountsStore = useAccountsStore()
 const categoriesStore = useCategoriesStore()
 const tagsStore = useTagsStore()
 const settingsStore = useSettingsStore()
+
+useGlobalChecksAuto()
 
 onMounted(async () => {
   await Promise.all([

@@ -95,6 +95,7 @@ class PriceQuote:
     timestamp: datetime
     raw_symbol: str = ""
     currency: str = "CNY"
+    name: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -103,6 +104,7 @@ class PriceQuote:
             "timestamp": self.timestamp.isoformat(),
             "raw_symbol": self.raw_symbol,
             "currency": self.currency,
+            "name": self.name,
         }
 
 
@@ -189,6 +191,7 @@ class TencentFinanceProvider(PriceProvider):
             timestamp=datetime.now(timezone.utc),
             raw_symbol=f"{self.url_prefix}{sym}",
             currency=self.currency,
+            name=parts[1].strip() if len(parts) > 1 else "",
         )
         _cache_put(cache_key, quote)
         return quote
@@ -226,24 +229,73 @@ class TencentFundProvider(TencentFinanceProvider):
             r.raise_for_status()
             text = r.text
         except Exception as e:
-            raise ProviderError(f"Fundgz request failed: {e}") from e
-        m = re.search(r"jsonpgz\((.*)\);?", text)
-        if not m:
-            raise ProviderError(f"Fundgz: unexpected response: {text[:120]}")
-        import json
+            text = ""
+        if "jsonpgz" in text:
+            import json
+            m = re.search(r"jsonpgz\((.*)\);?", text)
+            if not m:
+                raise ProviderError(f"Fundgz: unexpected response: {text[:120]}")
+            try:
+                data = json.loads(m.group(1))
+            except Exception as e:
+                raise ProviderError(f"Fundgz: JSON parse failed: {e}") from e
+            price_str = data.get("dwjz") or data.get("gsz")
+            if not price_str:
+                raise ProviderError("Fundgz: missing dwjz/gsz field")
+            return PriceQuote(
+                price=float(price_str),
+                source="fundgz",
+                timestamp=datetime.now(timezone.utc),
+                raw_symbol=symbol,
+                currency=self.currency,
+                name=str(data.get("name") or ""),
+            )
+        # fundgz has no estimate coverage for some funds (QDII / non-estimate) —
+        # fall back to Eastmoney pingzhongdata: fS_name + latest unit NAV
+        return await self._fetch_pingzhongdata(client, symbol)
+
+    async def _fetch_pingzhongdata(self, client: httpx.AsyncClient, symbol: str) -> PriceQuote:
+        url = f"https://fund.eastmoney.com/pingzhongdata/{symbol}.js"
         try:
-            data = json.loads(m.group(1))
+            r = await client.get(url, headers=_BROWSER_HEADERS, timeout=15.0)
+            r.raise_for_status()
+            text = r.text
         except Exception as e:
-            raise ProviderError(f"Fundgz: JSON parse failed: {e}") from e
-        price_str = data.get("dwjz") or data.get("gsz")
-        if not price_str:
-            raise ProviderError("Fundgz: missing dwjz/gsz field")
+            raise ProviderError(f"Fund quote unavailable for {symbol}: {e}") from e
+        m_name = re.search(r'fS_name = "(.*?)"', text)
+        # Money-market funds have no unit NAV series (nav is pinned at 1.0);
+        # pingzhongdata flags them with ishb=true and carries the per-10k
+        # income series instead — quote them at par so refresh works.
+        m_ishb = re.search(r'ishb\s*=\s*"?([^";]*)', text)
+        if m_ishb and m_ishb.group(1) == "true":
+            return PriceQuote(
+                price=1.0,
+                source="eastmoney-money-market",
+                timestamp=datetime.now(timezone.utc),
+                raw_symbol=symbol,
+                currency=self.currency,
+                name=m_name.group(1) if m_name else "",
+            )
+        # unit NAV series only (not the accumulated-NAV series that follows it);
+        # string slicing instead of a DOTALL regex — the 700KB payload would
+        # cause catastrophic backtracking and block the event loop
+        last_nav = None
+        idx = text.find("Data_netWorthTrend")
+        if idx != -1:
+            end = text.find("];", idx)
+            seg = text[idx:end]
+            ys = re.findall(r'"y":([0-9.]+)', seg)
+            if ys:
+                last_nav = float(ys[-1])
+        if last_nav is None or last_nav <= 0:
+            raise ProviderError(f"Eastmoney: no NAV data for {symbol}")
         return PriceQuote(
-            price=float(price_str),
-            source="fundgz",
+            price=last_nav,
+            source="eastmoney",
             timestamp=datetime.now(timezone.utc),
             raw_symbol=symbol,
             currency=self.currency,
+            name=m_name.group(1) if m_name else "",
         )
 
 
@@ -297,6 +349,7 @@ async def fetch_price(
                     timestamp=datetime.now(timezone.utc),
                     raw_symbol=q["thscode"],
                     currency=q["currency"],
+                    name=q.get("name") or "",
                 )
         except Exception as e:
             # Degrade to Tencent rather than surfacing the iFinD error — but
@@ -320,3 +373,24 @@ _last_ifind_error: list[str] = [""]
 
 def last_ifind_error() -> str:
     return _last_ifind_error[0]
+
+
+async def fetch_fund_meta(symbol: str) -> Optional[tuple[str, bool]]:
+    """(name, is_money_market) from eastmoney pingzhongdata; None if unreachable.
+
+    Needed because the iFinD realtime branch of fetch_price returns no name —
+    pingzhongdata's fS_name / ishb headers fill that gap for CN funds.
+    """
+    url = f"https://fund.eastmoney.com/pingzhongdata/{symbol}.js"
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(url, headers=_BROWSER_HEADERS, timeout=15.0)
+            r.raise_for_status()
+            text = r.text
+        m_name = re.search(r'fS_name = "(.*?)"', text)
+        m_ishb = re.search(r'ishb\s*=\s*"?([^";]*)', text)
+        if not m_name:
+            return None
+        return m_name.group(1), m_ishb is not None and m_ishb.group(1) == "true"
+    except Exception:
+        return None

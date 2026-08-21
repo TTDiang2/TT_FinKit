@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Float, DateTime, ForeignKey, Text
+from sqlalchemy import Column, String, Float, DateTime, ForeignKey, Text, Boolean
 from datetime import datetime
 import uuid
 from ..database import Base
@@ -35,6 +35,11 @@ class Investment(Base):
 
     # Price provider bookkeeping
     last_price_update = Column(DateTime, nullable=True)
+
+    # Money-market fund support: flagged on create/refresh; seven-day annualized
+    # yield shown in the UI instead of unit price
+    is_money_market = Column(Boolean, default=False)
+    seven_day_yield = Column(Float, nullable=True)  # percent, e.g. 1.45
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

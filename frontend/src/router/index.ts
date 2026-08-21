@@ -11,7 +11,6 @@ const router = createRouter({
       path: '/', component: () => import('@/components/layout/AppLayout.vue'), meta: { requiresAuth: true },
       children: [
         { path: '', name: 'home', component: () => import('@/pages/home/HomePage.vue') },
-        { path: 'admin', name: 'admin', component: () => import('@/pages/admin/AdminPage.vue') },
         { path: 'bookkeeping', name: 'bookkeeping', component: () => import('@/pages/bookkeeping/BookkeepingPage.vue') },
         { path: 'statistics', name: 'statistics', component: () => import('@/pages/statistics/StatisticsPage.vue') },
         { path: 'assets', name: 'assets', component: () => import('@/pages/assets/AssetsPage.vue') },
@@ -24,8 +23,10 @@ const router = createRouter({
               name: 'investments-strategies',
               component: () => import('@/pages/investments/StrategyLibraryPage.vue'),
             },
+            { path: 'assets', name: 'investments-assets', component: () => import('@/pages/investments/AssetPoolPage.vue') },
+            { path: 'factors', name: 'investments-factors', component: () => import('@/pages/investments/FactorPage.vue') },
             { path: 'ai', name: 'investments-ai', component: () => import('@/pages/investments/AIAnalysisTab.vue') },
-          ]
+          ],
         },
         { path: 'reports', name: 'reports', component: () => import('@/pages/reports/ReportsPage.vue') },
         { path: 'settings', name: 'settings', component: () => import('@/pages/settings/SettingsPage.vue') },

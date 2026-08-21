@@ -24,19 +24,41 @@ class DuckDuckGoSearchBackend(SearchBackend):
 
             timelimit = "m" if days >= 30 else ("w" if days >= 7 else "d")
             with DDGS() as ddgs:
-                try:
-                    raw = list(
+                attempts = []
+                # DDG news is flaky for narrow/CN queries — fall back through wider tiers
+                attempts.append(
+                    lambda: list(
                         ddgs.news(
-                            keywords=query,
+                            query,
                             region="wt-wt",
                             safesearch="off",
                             timelimit=timelimit,
                             max_results=max_results,
                         )
                     )
-                except Exception as e:
-                    raise SearchBackendError(f"DuckDuckGo search failed: {e}") from e
-            return raw
+                )
+                attempts.append(
+                    lambda: list(
+                        ddgs.news(query, region="wt-wt", safesearch="off", max_results=max_results)
+                    )
+                )
+                attempts.append(
+                    lambda: list(
+                        ddgs.text(query, region="wt-wt", safesearch="off", max_results=max_results)
+                    )
+                )
+
+                last_err: Exception | None = None
+                for attempt in attempts:
+                    try:
+                        raw = attempt()
+                        if raw:
+                            return raw
+                    except Exception as e:  # noqa: BLE001 — try the next fallback
+                        last_err = e
+                raise SearchBackendError(
+                    f"DuckDuckGo search failed: {last_err or 'No results found.'}"
+                ) from last_err
 
         try:
             raw = await asyncio.to_thread(_do_search)
@@ -48,8 +70,8 @@ class DuckDuckGoSearchBackend(SearchBackend):
             results.append(
                 SearchResult(
                     title=item.get("title", "") or "",
-                    url=item.get("url", "") or "",
-                    snippet=self._trim(item.get("body", "") or ""),
+                    url=item.get("url", "") or item.get("href", "") or "",
+                    snippet=self._trim(item.get("body", "") or item.get("description", "") or ""),
                     date=item.get("date", "") or None,
                     source=item.get("source", "") or None,
                 )

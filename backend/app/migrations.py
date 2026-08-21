@@ -29,6 +29,10 @@ async def run_lightweight_migrations(conn: AsyncConnection) -> None:
     await _add_column_if_missing(conn, "investments", "exchange", "VARCHAR DEFAULT '' NOT NULL")
     await _add_column_if_missing(conn, "investments", "last_price_update", "DATETIME")
 
+    # investments: money-market fund flags (P5)
+    await _add_column_if_missing(conn, "investments", "is_money_market", "BOOLEAN DEFAULT 0")
+    await _add_column_if_missing(conn, "investments", "seven_day_yield", "FLOAT")
+
     # user_settings: AI investment analysis knobs
     await _add_column_if_missing(conn, "user_settings", "ai_search_backend", "VARCHAR DEFAULT 'duckduckgo'")
     await _add_column_if_missing(conn, "user_settings", "ai_search_api_key", "VARCHAR DEFAULT ''")
@@ -36,6 +40,19 @@ async def run_lightweight_migrations(conn: AsyncConnection) -> None:
 
     # accounts: reconciliation mode (direct vs composite bank-statement mapping)
     await _add_column_if_missing(conn, "accounts", "bank_statement_mode", "VARCHAR DEFAULT 'direct' NOT NULL")
+    # accounts: free-form reconciliation formula (JSON); backfill preset by legacy mode
+    await _add_column_if_missing(conn, "accounts", "bank_formula", "TEXT")
+    await conn.execute(
+        text(
+            "UPDATE accounts SET bank_formula = CASE bank_statement_mode "
+            "WHEN 'composite' THEN '{\"income\": [\"transfer_in\", \"refund\", \"income\"], \"expense\": [\"expense_positive\"]}' "
+            "ELSE '{\"income\": [\"income\"], \"expense\": [\"expense_net\"]}' END "
+            "WHERE bank_formula IS NULL"
+        )
+    )
 
     # transactions: 交易地点/附言（银行流水原始字段）
     await _add_column_if_missing(conn, "transactions", "location", "VARCHAR DEFAULT '' NOT NULL")
+
+    # investment_transactions: per-transaction fee (cost, counts into diluted cost basis)
+    await _add_column_if_missing(conn, "investment_transactions", "fee", "FLOAT DEFAULT 0 NOT NULL")

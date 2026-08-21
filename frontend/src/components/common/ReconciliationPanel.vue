@@ -27,7 +27,7 @@
       <div v-if="accountId" class="border border-border-default rounded-md p-3">
         <div class="flex items-center justify-between mb-2">
           <span class="text-sm font-medium">月度汇总核对</span>
-          <span v-if="summary?.bank_statement_mode === 'composite'" class="text-xs text-amber-600">已按银行口径换算（转账+退款+利息 / 毛支出）</span>
+          <span v-if="summary" class="text-xs text-amber-600">{{ summary.formula_text }}（口径可在设置 tab 修改）</span>
         </div>
         <div v-if="summaryLoading" class="text-sm text-text-muted">加载中…</div>
         <div v-else-if="summaryError" class="text-sm text-expense-color">{{ summaryError }}</div>
@@ -68,6 +68,7 @@
           <div class="text-sm">系统期望余额：<span class="font-medium">{{ sym }}{{ fmt(balanceCheck.expected_balance) }}</span>
             <span v-if="!balanceCheck.can_check" class="text-xs text-amber-600 ml-2">{{ balanceCheck.hint }}</span>
           </div>
+          <div class="text-xs text-text-muted">期望余额 = 期初 + 收入 − 支出 + 转入 − 转出（转账计入余额）</div>
           <div class="flex items-center gap-3">
             <input v-model.number="actualBalance" type="number" step="0.01" placeholder="银行 APP 当前余额"
               class="w-56 px-3 py-2 border border-border-default rounded-md text-sm" :disabled="!balanceCheck.can_check" />

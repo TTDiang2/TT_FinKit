@@ -39,7 +39,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { Home, Edit3, Wallet, TrendingUp, BarChart2, FileText, Settings, Shield, ChevronLeft, ChevronRight } from 'lucide-vue-next'
+import { Home, Edit3, Wallet, TrendingUp, BarChart2, FileText, Settings, ChevronLeft, ChevronRight } from 'lucide-vue-next'
 import { useSettingsStore } from '@/stores/settings'
 
 const route = useRoute()
@@ -52,7 +52,6 @@ const navItems = [
   { path: '/statistics', label: '统计', icon: BarChart2 },
   { path: '/reports', label: '报表', icon: FileText },
   { path: '/settings', label: '设置', icon: Settings },
-  { path: '/admin', label: '管理', icon: Shield },
 ]
 const expanded = ref(settingsStore.settings.sidebar_expanded)
 function isActive(path: string) { return path === '/' ? route.path === '/' : route.path.startsWith(path) }

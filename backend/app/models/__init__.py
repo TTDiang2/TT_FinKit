@@ -8,8 +8,11 @@ from .user_settings import UserSettings
 from .asset import Asset
 from .investment import Investment
 from .investment_transaction import InvestmentTransaction
+from .investment_cash_flow import InvestmentCashFlow
 from .investment_nav_snapshot import InvestmentNavSnapshot
 from .investment_ai_report import InvestmentAiReport
 from .ai_preset import AiPreset
 from .reconciliation import ReconciliationRecord
 from .strategy import Strategy
+from .research_asset import ResearchAsset, ResearchAssetPrice
+from .factor import Factor, FactorValue, FactorExposure

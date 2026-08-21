@@ -50,6 +50,16 @@ class TransactionResponse(BaseModel):
 
 # ---- 批量导入 ----
 
+class DuplicateCandidate(BaseModel):
+    """与待导入行可能重复的现有交易（用于前端展示"与什么重复"）。"""
+    date: str
+    amount: float
+    type: str                          # income / expense / transfer
+    account: str = ""                  # 本方账户名
+    description: str = ""
+    location: str = ""
+
+
 class ImportPreviewRow(BaseModel):
     row_index: int                      # Excel 中的行号（从 2 开始，1=表头）
     date: str
@@ -68,6 +78,7 @@ class ImportPreviewRow(BaseModel):
     # 解析结果
     error: str = ""                     # 非空=该行无法导入（格式错误/账户分类不存在）
     is_duplicate: bool = False          # 与现有交易重复
+    duplicate_with: List[DuplicateCandidate] = []  # 重复候选（is_duplicate=True 时有值）
 
 
 class ImportPreviewResponse(BaseModel):

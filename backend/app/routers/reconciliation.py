@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import List, Optional
 
@@ -15,7 +16,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_db
 from ..models.account import Account
-from ..models.category import Category
 from ..models.transaction import Transaction
 from ..models.reconciliation import ReconciliationRecord
 from ..middleware.auth import get_current_user_id
@@ -24,37 +24,90 @@ router = APIRouter(prefix="/api/reconciliation", tags=["reconciliation"])
 
 
 # --------------------------------------------------------------------------- #
-# 纯计算辅助（供单元测试）
+# 校验口径公式引擎（银行收支换算）
 # --------------------------------------------------------------------------- #
 
-def map_bank_expected(mode: str, income_total: float, interest: float,
-                      expense_net: float, expense_positive: float,
-                      refund_abs: float, transfer_in: float) -> dict:
-    """按账户银行口径模式映射系统侧数字 -> 银行期望值。
+# 每个账户可自定义：银行收入/支出 各由哪些系统口径分项求和组成。
+# 分项（收入侧）：transfer_in=转入转账，refund=退款绝对值，income=收入合计
+# 分项（支出侧）：expense_positive=正支出合计（毛支出），expense_net=支出净额（含退款冲销）
+VALID_INCOME_COMPONENTS = {"transfer_in", "refund", "income"}
+VALID_EXPENSE_COMPONENTS = {"expense_positive", "expense_net"}
 
-    - direct（工资/普通卡）：银行收入=系统收入合计，银行支出=系统支出净额
-    - composite（消费卡，转账+退款+利息都算入账）：
-        银行收入 = 转入转账 + |退款| + 利息；银行支出 = 正支出合计（毛消费）
+BANK_FORMULA_PRESETS = {
+    "direct": {"income": ["income"], "expense": ["expense_net"]},
+    "composite": {"income": ["transfer_in", "refund", "income"], "expense": ["expense_positive"]},
+}
+
+COMPONENT_LABELS = {
+    "transfer_in": "转入转账",
+    "refund": "退款（负支出绝对值）",
+    "income": "收入合计",
+    "expense_positive": "正支出合计（毛支出）",
+    "expense_net": "支出净额（正支出−退款）",
+}
+
+
+def _formula_matches_preset(formula: dict) -> Optional[str]:
+    for name, preset in BANK_FORMULA_PRESETS.items():
+        if (sorted(formula.get("income", [])) == sorted(preset["income"])
+                and sorted(formula.get("expense", [])) == sorted(preset["expense"])):
+            return name
+    return "custom"
+
+
+def resolve_bank_formula(account: Account) -> dict:
+    """返回账户的校验口径公式 {income: [...], expense: [...]}。
+
+    优先用自定义 bank_formula（JSON，非法则忽略）；否则按 bank_statement_mode 预设回退。
     """
-    if mode == "composite":
-        return {
-            "income": round(transfer_in + refund_abs + interest, 2),
-            "expense": round(expense_positive, 2),
-        }
-    return {
-        "income": round(income_total, 2),
-        "expense": round(expense_net, 2),
+    if getattr(account, "bank_formula", None):
+        try:
+            f = json.loads(account.bank_formula)
+            inc = [c for c in f.get("income", []) if c in VALID_INCOME_COMPONENTS]
+            exp = [c for c in f.get("expense", []) if c in VALID_EXPENSE_COMPONENTS]
+            if inc and exp:
+                return {"income": inc, "expense": exp}
+        except (json.JSONDecodeError, AttributeError, TypeError):
+            pass
+    return dict(BANK_FORMULA_PRESETS.get(account.bank_statement_mode or "direct", BANK_FORMULA_PRESETS["direct"]))
+
+
+def normalize_bank_formula(raw: dict | None) -> dict | None:
+    """清洗并校验前端提交的公式；非法返回 None。"""
+    if not raw:
+        return None
+    inc = [c for c in raw.get("income", []) if c in VALID_INCOME_COMPONENTS]
+    exp = [c for c in raw.get("expense", []) if c in VALID_EXPENSE_COMPONENTS]
+    if not inc or not exp:
+        return None
+    return {"income": list(dict.fromkeys(inc)), "expense": list(dict.fromkeys(exp))}
+
+
+def formula_text(formula: dict) -> str:
+    income_part = " + ".join(COMPONENT_LABELS.get(c, c) for c in formula.get("income", []))
+    expense_part = " + ".join(COMPONENT_LABELS.get(c, c) for c in formula.get("expense", []))
+    return f"银行收入 = {income_part}；银行支出 = {expense_part}"
+
+
+def map_bank_expected(formula: dict, income_total: float, expense_net: float,
+                      expense_positive: float, refund_abs: float, transfer_in: float) -> dict:
+    """按账户校验口径公式，把系统侧数字映射为银行期望收入/支出。"""
+    parts = {
+        "transfer_in": transfer_in,
+        "refund": refund_abs,
+        "income": income_total,
+        "expense_positive": expense_positive,
+        "expense_net": expense_net,
     }
+    income = round(sum(parts[c] for c in formula["income"]), 2)
+    expense = round(sum(parts[c] for c in formula["expense"]), 2)
+    return {"income": income, "expense": expense}
 
 
-def is_interest_category(category_name: Optional[str]) -> bool:
-    """利息分类识别：分类名包含"利息"即计入（BOOKKEEPING.md 约定）。"""
-    return bool(category_name) and "利息" in category_name
-
-
-def calc_expected_balance(initial_balance: float, total_income: float, total_expense: float) -> float:
-    """期望余额 = 期初 + 累计收入 - 累计支出（转账不计）。"""
-    return initial_balance + total_income - total_expense
+def calc_expected_balance(initial_balance: float, total_income: float, total_expense: float,
+                          transfer_in: float = 0.0, transfer_out: float = 0.0) -> float:
+    """期望余额 = 期初 + 收入 − 支出 + 转入 − 转出（转账计入余额，口径无关）。"""
+    return initial_balance + total_income - total_expense + transfer_in - transfer_out
 
 
 def calc_unrecorded_months(last_recorded_date: Optional[str], now: Optional[datetime] = None) -> List[str]:
@@ -96,34 +149,28 @@ async def _get_owned_account(db: AsyncSession, user_id: str, account_id: str) ->
 
 
 async def _account_summary(db: AsyncSession, user_id: str, account: Account, year: int, month: int) -> dict:
-    """计算某账户某月的拆分数字（P/R/T/I）。"""
+    """计算某账户某月的拆分数字（收入/支出/退款/转入），并按校验口径公式映射银行期望值。"""
     if month == 12:
         end = f"{year + 1}-01-01"
     else:
         end = f"{year}-{month + 1:02d}-01"
     start = f"{year}-{month:02d}-01"
 
-    # 收入合计 + 利息拆分
-    inc_rows = (
-        await db.execute(
-            select(Transaction, Category.name)
-            .outerjoin(Category, Transaction.category_id == Category.id)
-            .where(
-                Transaction.user_id == user_id,
-                Transaction.type == "income",
-                Transaction.account_id == account.id,
-                Transaction.date >= start,
-                Transaction.date < end,
+    # 收入合计
+    income_total = float(
+        (
+            await db.execute(
+                select(func.coalesce(func.sum(Transaction.amount), 0)).where(
+                    Transaction.user_id == user_id,
+                    Transaction.type == "income",
+                    Transaction.account_id == account.id,
+                    Transaction.date >= start,
+                    Transaction.date < end,
+                )
             )
-        )
-    ).all()
-    income_total = 0.0
-    interest = 0.0
-    for txn, cat_name in inc_rows:
-        amt = txn.amount or 0
-        income_total += amt
-        if is_interest_category(cat_name):
-            interest += amt
+        ).scalar()
+        or 0
+    )
 
     # 支出拆分：net / positive / refund
     exp_txns = (
@@ -165,9 +212,9 @@ async def _account_summary(db: AsyncSession, user_id: str, account: Account, yea
         or 0
     )
 
-    mode = account.bank_statement_mode or "direct"
+    formula = resolve_bank_formula(account)
     bank_expected = map_bank_expected(
-        mode, income_total, interest,
+        formula, income_total,
         expense_net, expense_positive,
         abs(refund), transfer_in,
     )
@@ -176,10 +223,12 @@ async def _account_summary(db: AsyncSession, user_id: str, account: Account, yea
         "account_id": account.id,
         "account_name": account.name,
         "account_type": account.account_type,
-        "bank_statement_mode": mode,
+        "bank_statement_mode": account.bank_statement_mode or "direct",
+        "bank_formula": formula,
+        "formula_text": formula_text(formula),
         "year": year,
         "month": month,
-        "income_breakdown": {"total": round(income_total, 2), "interest": round(interest, 2)},
+        "income_breakdown": {"total": round(income_total, 2)},
         "expense_breakdown": {
             "net": round(expense_net, 2),
             "positive": round(expense_positive, 2),
@@ -192,7 +241,7 @@ async def _account_summary(db: AsyncSession, user_id: str, account: Account, yea
 
 
 async def _expected_balance(db: AsyncSession, user_id: str, account: Account) -> dict:
-    """今日余额核对：期望余额 + 未记月份。"""
+    """今日余额核对：期望余额 + 未记月份。转账计入余额（口径无关）。"""
     total_income = float(
         (
             await db.execute(
@@ -217,6 +266,30 @@ async def _expected_balance(db: AsyncSession, user_id: str, account: Account) ->
         ).scalar()
         or 0
     )
+    transfer_in = float(
+        (
+            await db.execute(
+                select(func.coalesce(func.sum(Transaction.amount), 0)).where(
+                    Transaction.user_id == user_id,
+                    Transaction.type == "transfer",
+                    Transaction.dest_account_id == account.id,
+                )
+            )
+        ).scalar()
+        or 0
+    )
+    transfer_out = float(
+        (
+            await db.execute(
+                select(func.coalesce(func.sum(Transaction.amount), 0)).where(
+                    Transaction.user_id == user_id,
+                    Transaction.type == "transfer",
+                    Transaction.account_id == account.id,
+                )
+            )
+        ).scalar()
+        or 0
+    )
     last_date = (
         await db.execute(
             select(func.max(Transaction.date)).where(
@@ -226,7 +299,10 @@ async def _expected_balance(db: AsyncSession, user_id: str, account: Account) ->
         )
     ).scalar()
 
-    expected = calc_expected_balance(account.initial_balance or 0, total_income, total_expense)
+    expected = calc_expected_balance(
+        account.initial_balance or 0, total_income, total_expense,
+        transfer_in, transfer_out,
+    )
     unrecorded = calc_unrecorded_months(last_date)
     can_check = bool(last_date) and not unrecorded
 
@@ -235,7 +311,7 @@ async def _expected_balance(db: AsyncSession, user_id: str, account: Account) ->
     elif unrecorded:
         hint = f"还有 {'、'.join(unrecorded)} 未记完，请先补记或用月度汇总核对"
     else:
-        hint = "该账户已记到当前月，可以核对今日余额"
+        hint = "该账户已记到当前月，可以核对今日余额（= 期初 + 收入 − 支出 + 转入 − 转出）"
 
     return {
         "account_id": account.id,

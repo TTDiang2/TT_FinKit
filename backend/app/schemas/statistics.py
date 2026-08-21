@@ -26,6 +26,8 @@ class CategoryStatItem(BaseModel):
     category_color: str
     total: float
     count: int
+    positive_total: float = 0.0       # 同方向正向聚合（income 取正数部分、expense 取正数部分）
+    negative_total: float = 0.0       # 反向绝对值（income 负数 part、expense 负数 part=退款）
 
 
 class MonthlyTrendItem(BaseModel):

@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, extract
+from sqlalchemy import select, func, extract, case
 from datetime import datetime, timedelta
 from calendar import monthrange
 from ..database import get_db
@@ -273,7 +273,19 @@ async def get_by_category(
     start, end = resolve_date_range(start_date, end_date, year, month)
 
     result = await db.execute(
-        select(Transaction.category_id, func.sum(Transaction.amount).label("total"), func.count(Transaction.id).label("count"))
+        select(
+            Transaction.category_id,
+            func.sum(Transaction.amount).label("total"),
+            func.count(Transaction.id).label("count"),
+            func.coalesce(
+                func.sum(case((Transaction.amount > 0, Transaction.amount), else_=0.0)),
+                0.0,
+            ).label("positive_total"),
+            func.coalesce(
+                func.sum(case((Transaction.amount < 0, -Transaction.amount), else_=0.0)),
+                0.0,
+            ).label("negative_total"),
+        )
         .where(
             Transaction.user_id == user_id,
             Transaction.type == type_filter,
@@ -295,7 +307,9 @@ async def get_by_category(
     return [CategoryStatItem(
         category_id=r[0], category_name=cat_map.get(r[0], ("未知", "#9B9B9B"))[0],
         category_color=cat_map.get(r[0], ("未知", "#9B9B9B"))[1],
-        total=float(r[1]), count=int(r[2])
+        total=float(r[1]), count=int(r[2]),
+        positive_total=float(r[3] or 0.0),
+        negative_total=float(r[4] or 0.0),
     ) for r in rows]
 
 

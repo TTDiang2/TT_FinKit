@@ -1,5 +1,9 @@
 export interface User { id: string; email: string; name: string; created_at: string }
-export interface Account { id: string; user_id: string; name: string; currency: string; initial_balance: number; hidden: boolean; sort_order: number; current_balance: number; account_type: string; bank_statement_mode?: string; created_at: string; updated_at: string }
+export interface BankFormula {
+  income: string[]   // 收入侧分项: transfer_in | refund | income
+  expense: string[]  // 支出侧分项: expense_positive | expense_net
+}
+export interface Account { id: string; user_id: string; name: string; currency: string; initial_balance: number; hidden: boolean; sort_order: number; current_balance: number; account_type: string; bank_statement_mode?: string; bank_formula?: BankFormula | null; created_at: string; updated_at: string }
 export interface Category { id: string; user_id: string; type: 'income' | 'expense'; name: string; color: string; icon: string; sort_order: number; is_necessary: boolean; pl_section: string; cf_section: string; created_at: string; updated_at: string }
 export interface Tag { id: string; user_id: string; name: string; color: string; created_at: string }
 export interface Transaction { id: string; user_id: string; type: 'income' | 'expense' | 'transfer'; date: string; amount: number; account_id: string; dest_account_id?: string; category_id?: string; tag_ids: string[]; description: string; remark: string; location?: string; created_at: string; updated_at: string; account_name?: string; category_name?: string; category_color?: string }
@@ -32,7 +36,9 @@ export interface Investment {
   quantity: number; purchase_price: number; current_price: number;
   purchase_date: string; sell_date: string; notes: string;
   symbol: string; exchange: string; last_price_update: string | null;
+  is_money_market: boolean; seven_day_yield: number | null; mmf_shares: number | null;
   total_value: number; profit_loss: number;
+  ann_volatility: number | null; sharpe_ratio: number | null; ann_return: number | null;
   created_at: string; updated_at: string;
 }
 
@@ -42,9 +48,65 @@ export interface InvestmentTransaction {
   id: string; investment_id: string; user_id: string;
   event_type: InvestmentEventType;
   event_date: string;
-  quantity: number; unit_price: number; amount: number;
+  quantity: number; unit_price: number; amount: number; fee: number;
   notes: string;
   created_at: string; updated_at: string;
+}
+
+export type CashFlowType = 'deposit' | 'withdrawal';
+
+export interface InvestmentCashFlow {
+  id: string; user_id: string;
+  flow_type: CashFlowType;
+  amount: number;
+  flow_date: string;
+  notes: string | null;
+  created_at: string; updated_at: string;
+}
+
+export interface ClosedPosition {
+  id: string; name: string; symbol: string; exchange: string; investment_type: string;
+  purchase_date: string; sell_date: string;
+  buy_amount: number; proceeds: number; total_fee: number; cost: number;
+  realized_pnl: number; return_rate: number | null;
+  days_held: number; ann_return: number | null;
+  ann_volatility: number | null; sharpe_ratio: number | null;
+}
+
+export interface ClosedPositionsResponse {
+  positions: ClosedPosition[];
+  total_realized: number; total_cost: number;
+  total_return_rate: number | null;
+  count: number;
+}
+
+export interface PortfolioOverview {
+  total_deposits: number;
+  total_withdrawals: number;
+  old_principal: number;
+  principal: number;
+  current_market_value: number;
+  idle_cash: number;
+  total_pnl: number;
+  realized_pnl: number;
+  dividend_total: number;
+  floating_pnl: number;
+  total_return_pct: number;
+  xirr_annualized: number | null;
+  days_held: number;
+}
+
+export interface LookupCandidate {
+  exchange: string;
+  name: string;
+  price: number;
+  currency: string;
+  source: string;
+}
+
+export interface RefreshResult {
+  id: string; name: string; ok: boolean;
+  price?: number; source?: string; error?: string;
 }
 
 export interface InvestmentNavSnapshot {
@@ -118,16 +180,25 @@ export interface AiPreset { id: string; user_id: string; name: string; api_url: 
 
 // ---- 校验（Reconciliation）----
 
-export interface ReconciliationIncomeBreakdown { total: number; interest: number }
+export interface ReconciliationIncomeBreakdown { total: number }
 export interface ReconciliationExpenseBreakdown { net: number; positive: number; refund: number; refund_abs: number }
 export interface AccountSummary {
   account_id: string; account_name: string; account_type: string;
-  bank_statement_mode: 'direct' | 'composite';
+  bank_statement_mode: 'direct' | 'composite' | 'custom';
+  bank_formula: BankFormula;
+  formula_text: string;
   year: number; month: number;
   income_breakdown: ReconciliationIncomeBreakdown;
   expense_breakdown: ReconciliationExpenseBreakdown;
   transfer_in: number;
   bank_expected: { income: number; expense: number };
+}
+export interface BalancesAsOfRow {
+  account_id: string; account_name: string; account_type: string;
+  initial_balance: number;
+  income: number; expense: number;
+  transfer_in: number; transfer_out: number;
+  balance: number;
 }
 export interface ExpectedBalance {
   account_id: string; account_name: string;
@@ -144,25 +215,134 @@ export interface ReconciliationRecord {
 }
 export interface InvestmentConsistency {
   accounts: { id: string; name: string; balance: number }[];
-  total_account_balance: number; total_invested: number; total_current: number;
-  idle_cash: number; status: 'ok' | 'diff'; warnings: string[];
+  total_account_balance: number;
+  total_deposits: number; total_withdrawals: number;
+  old_principal: number; principal: number;
+  total_current: number; floating_pnl: number;
+  realized_pnl: number; dividend_total: number;
+  current_month_pnl: number;
+  idle_cash: number; diff: number;
+  status: 'ok' | 'diff'; warnings: string[];
+}
+
+export interface ReconciliationItem {
+  label: string;
+  value: number;
+  operator: '+' | '-' | '';
+}
+
+export interface InvestmentReconciliation {
+  identity: {
+    left_side: { label: string; value: number };
+    right_side: {
+      items: ReconciliationItem[];
+      total: number;
+      diff: number;
+      passed: boolean;
+    };
+  };
+  auxiliary: {
+    market_value: number;
+    idle_cash: number;
+    idle_cash_check: { label: string; value: number };
+    status: 'ok' | 'diff';
+    warnings: string[];
+  };
+  account_checks: {
+    account_id: string;
+    account_name: string;
+    account_type: string;
+    initial_balance: number;
+    income: number;
+    expense: number;
+    transfer_in: number;
+    transfer_out: number;
+    expected_balance: number;
+    actual_balance: number;
+    diff: number;
+    passed: boolean;
+  }[];
+  flow_checks: {
+    deposits: {
+      investment_tab_total: number;
+      bookkeeping_transfer_in: number;
+      initial_balance_deposit: number;
+      implied_transfer_in: number;
+      diff: number;
+    };
+    withdrawals: {
+      investment_tab_total: number;
+      bookkeeping_transfer_out: number;
+      diff: number;
+    };
+  };
+  sync_checks: {
+    booked_monthly_count: number;
+    booked_monthly_total: number;
+    first_booked_month: string | null;
+    last_booked_month: string | null;
+    current_month_skipped: boolean;
+  };
 }
 
 export interface NavHistoryPoint { date: string; close: number; ma20: number | null; ma60: number | null }
 export interface HealthWarning {
   id?: string | null;
-  type: 'loss' | 'concentration';
+  type: 'loss' | 'portfolio_loss';
   severity: 'high' | 'medium' | 'low';
   message: string;
 }
 
 export interface HealthResult {
-  concentration: {
-    max_single_pct: number;
-    top3_pct: number;
-  };
-  allocation: Record<string, number>;
+  floating_pnl: number;
+  floating_pnl_pct: number;
+  total_market_value: number;
+  total_cost: number;
   warnings: HealthWarning[];
+}
+
+export interface PortfolioNavPoint { date: string; nav: number; total_value: number }
+export interface BenchmarkSeriesPoint { date: string; close: number }
+export interface BenchmarkInfo {
+  name: string;
+  symbol: string;
+  exchange: string;
+  source: string;
+  series: BenchmarkSeriesPoint[];
+  ann_return: number | null;
+  beta: number | null;
+  alpha: number | null;
+  excess_return: number | null;
+}
+export interface NavEvent {
+  date: string;
+  type: 'buy' | 'sell';
+  name: string;
+  quantity: number;
+  amount: number;
+}
+export interface PortfolioNavResponse {
+  series: PortfolioNavPoint[];
+  metrics: {
+    points: number;
+    ann_return: number | null;
+    ann_volatility: number | null;
+    sharpe: number | null;
+    max_drawdown: number | null;
+    sortino: number | null;
+    calmar: number | null;
+    downside_deviation: number | null;
+    max_drawdown_duration: number | null;
+    recovery_days: number | null;
+  };
+  funds: { id: string; name: string; symbol: string; source: string }[];
+  benchmark: BenchmarkInfo | null;
+  events: NavEvent[];
+}
+
+export interface PnLHistoryResponse {
+  series: { date: string; pnl: number }[];
+  granularity: string;
 }
 
 export interface NavHistoryResponse {
@@ -174,11 +354,20 @@ export interface NavHistoryResponse {
   cost_basis: number;
   current_price: number;
   max_drawdown: number;     // decimal, e.g. 0.235 = 23.5%
+  ann_volatility: number | null;
+  ann_return: number | null;
+  sortino: number | null;
+  calmar: number | null;
+  downside_deviation: number | null;
+  max_drawdown_duration: number | null;   // trading days
+  recovery_days: number | null;           // trading days; null = 尚未收复失地
+  benchmark: BenchmarkInfo | null;
   source: string;
   begin: string;
   end: string;
 }
 
+// ---- 策略（Strategy）----
 // ============================================================
 // Strategy types (Phase 3)
 // ============================================================
@@ -214,4 +403,190 @@ export interface ActiveStrategyResponse {
   name: string
   description: string
   rebalance_freq: string
+}
+
+// ---- Research Asset types ----
+export interface ResearchAssetIndicators {
+  points: number;
+  first_date: string | null;
+  last_date: string | null;
+  latest_close: number | null;
+  ret_1m: number | null;       // fraction, e.g. 0.0235
+  ret_1y: number | null;
+  ann_return: number | null;
+  ann_volatility: number | null;
+  sharpe: number | null;
+  max_drawdown: number | null; // fraction, e.g. -0.2130
+}
+
+export interface ResearchAsset {
+  id: string;
+  symbol: string;
+  exchange: string;
+  name: string;
+  asset_type: string;
+  category: string;
+  status: 'watchlist' | 'pooled';
+  mgmt_fee: number | null;
+  custody_fee: number | null;
+  purchase_fee: number | null;
+  redeem_fee_note: string;
+  min_purchase: number | null;
+  redeem_t_days: number | null;
+  liquidity_note: string;
+  data_quality: string;
+  is_money_market: boolean;
+  notes: string | null;
+  indicators: ResearchAssetIndicators;
+}
+
+export interface ResearchPricePoint {
+  date: string;
+  close: number;
+  nav: number | null;
+  acc_nav: number | null;
+}
+
+export interface AssetPriceStatus {
+  asset_id: string;
+  symbol: string;
+  name: string;
+  status: string;
+  rows: number;
+  last_date: string | null;
+  last_sync: string | null;
+  source: string | null;
+  lag_days: number | null;
+}
+
+export interface SyncResult {
+  asset_id: string;
+  rows: number;
+  source: string;
+  begin: string;
+  end: string;
+  error: string | null;
+}
+
+// ---- 因子（Factor）----
+
+export interface FactorConfig {
+  type: 'proxy' | 'spread';
+  symbol?: string;
+  exchange: string;
+  long?: FactorConfig;
+  short?: FactorConfig;
+}
+
+export interface FactorStat {
+  latest_value: number | null;
+  latest_level: number | null;
+  latest_date: string | null;
+  rows: number;
+}
+
+export interface FactorResponse {
+  id: string;
+  name: string;
+  category: string;
+  definition: string;
+  code: string | null;
+  data_source: string;
+  frequency: string;
+  proxy_symbol: string;
+  config: FactorConfig | null;
+  is_market: boolean;
+  active: boolean;
+  version: number;
+  stats: FactorStat;
+}
+
+export interface FactorDetail extends FactorResponse {
+  level_series: { date: string; value: number }[];
+}
+
+export interface FactorSyncResult {
+  factor_id: string;
+  name: string;
+  rows: number;
+  source: string;
+  begin: string;
+  end: string;
+  error: string | null;
+}
+
+export interface ExposureCell {
+  beta: number;
+  t_stat: number | null;
+  significant: boolean;
+}
+
+export interface AssetExposureRow {
+  asset_id: string;
+  asset_name: string;
+  symbol: string;
+  is_money_market: boolean;
+  r2: number | null;
+  method: string | null;
+  n_samples: number | null;
+  cells: Record<string, ExposureCell>;
+}
+
+export interface ExposureMatrix {
+  as_of: string | null;
+  factors: FactorResponse[];
+  assets: AssetExposureRow[];
+}
+
+export interface ExposureHistoryPoint {
+  as_of_date: string;
+  factor_id: string;
+  factor_name: string;
+  beta: number;
+  t_stat: number | null;
+  r2: number;
+  method: string;
+}
+
+export interface ContributionItem {
+  factor_id: string;
+  factor_name: string;
+  beta: number;
+  contribution: number | null;
+  risk_contribution: number | null;
+  sigma_ann: number | null;
+}
+
+export interface ContributionResult {
+  view: 'return' | 'risk';
+  asset_id: string;
+  asset_name: string;
+  start: string;
+  end: string;
+  as_of: string | null;
+  n_days: number | null;
+  total_return: number | null;
+  alpha: number | null;
+  sum_contributions: number | null;
+  identity_residual: number | null;
+  explained_vol: number | null;
+  items: ContributionItem[];
+}
+
+export interface AgentFactorCandidate {
+  name: string;
+  category: 'asset_class' | 'style' | 'macro' | 'custom';
+  definition: string;
+  config: FactorConfig;
+}
+
+export interface AgentPreviewResult {
+  ok: boolean;
+  sample_days: number;
+  first_date: string | null;
+  last_date: string | null;
+  latest_level: number | null;
+  latest_return: number | null;
+  source: string;
+  error: string | null;
 }

@@ -1,4 +1,11 @@
+from typing import Optional
+
 from pydantic import BaseModel
+
+
+class BankFormula(BaseModel):
+    income: list[str]
+    expense: list[str]
 
 
 class AccountCreate(BaseModel):
@@ -7,6 +14,7 @@ class AccountCreate(BaseModel):
     initial_balance: float = 0.0
     account_type: str = "cash"
     bank_statement_mode: str = "direct"
+    bank_formula: Optional[BankFormula] = None
     hidden: bool = False
     sort_order: int = 0
 
@@ -17,6 +25,7 @@ class AccountUpdate(BaseModel):
     initial_balance: float | None = None
     account_type: str | None = None
     bank_statement_mode: str | None = None
+    bank_formula: BankFormula | None = None
     hidden: bool | None = None
     sort_order: int | None = None
 
@@ -29,6 +38,7 @@ class AccountResponse(BaseModel):
     initial_balance: float
     account_type: str = "cash"
     bank_statement_mode: str = "direct"
+    bank_formula: BankFormula | None = None
     hidden: bool
     sort_order: int
     current_balance: float = 0.0
