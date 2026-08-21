@@ -16,10 +16,40 @@ async def _existing_columns(conn: AsyncConnection, table: str) -> set[str]:
     return {row[1] for row in rows.fetchall()}
 
 
+async def _table_exists(conn: AsyncConnection, table: str) -> bool:
+    rows = await conn.execute(
+        text("SELECT name FROM sqlite_master WHERE type='table' AND name=:t"),
+        {"t": table},
+    )
+    return rows.fetchone() is not None
+
+
 async def _add_column_if_missing(conn: AsyncConnection, table: str, column: str, ddl: str) -> None:
+    if not await _table_exists(conn, table):
+        return
     cols = await _existing_columns(conn, table)
     if column not in cols:
         await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))
+
+
+async def _table_exists(conn: AsyncConnection, table: str) -> bool:
+    rows = await conn.execute(
+        text("SELECT name FROM sqlite_master WHERE type='table' AND name=:table"),
+        {"table": table},
+    )
+    return rows.fetchone() is not None
+
+
+async def add_tablemigration(conn: AsyncConnection, table: str, ddl: str) -> None:
+    """Create a brand-new table if it does not already exist (idempotent).
+
+    New tables are normally handled by ``Base.metadata.create_all`` on startup;
+    this helper exists so mid-cycle tables can be created explicitly (e.g. in
+    deployments where the model module may not be imported yet). ``ddl`` is the
+    full ``CREATE TABLE ...`` statement.
+    """
+    if not await _table_exists(conn, table):
+        await conn.execute(text(ddl))
 
 
 async def run_lightweight_migrations(conn: AsyncConnection) -> None:
@@ -56,3 +86,26 @@ async def run_lightweight_migrations(conn: AsyncConnection) -> None:
 
     # investment_transactions: per-transaction fee (cost, counts into diluted cost basis)
     await _add_column_if_missing(conn, "investment_transactions", "fee", "FLOAT DEFAULT 0 NOT NULL")
+
+    # backtests (Phase 4): safety net for DBs created during partial rollout
+    await _add_column_if_missing(conn, "backtests", "results", "TEXT")
+    await _add_column_if_missing(conn, "backtests", "error", "TEXT")
+
+    # signals: Phase 5 signal table (strategy output snapshots)
+    await add_tablemigration(
+        conn, "signals",
+        """
+        CREATE TABLE IF NOT EXISTS signals (
+            id VARCHAR PRIMARY KEY,
+            strategy_id VARCHAR NOT NULL,
+            strategy_version INTEGER NOT NULL,
+            run_date VARCHAR NOT NULL,
+            as_of_date VARCHAR NOT NULL,
+            next_rebalance_date VARCHAR,
+            target_weights TEXT NOT NULL,
+            risk_status TEXT,
+            backtest_id VARCHAR,
+            created_at DATETIME
+        )
+        """,
+    )

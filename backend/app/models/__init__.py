@@ -14,5 +14,7 @@ from .investment_ai_report import InvestmentAiReport
 from .ai_preset import AiPreset
 from .reconciliation import ReconciliationRecord
 from .strategy import Strategy
+from .backtest import Backtest
 from .research_asset import ResearchAsset, ResearchAssetPrice
 from .factor import Factor, FactorValue, FactorExposure
+from .signal import Signal

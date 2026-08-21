@@ -590,3 +590,113 @@ export interface AgentPreviewResult {
   source: string;
   error: string | null;
 }
+
+// ---- 信号（Signal）----
+
+export interface SignalResponse {
+  id: string
+  strategy_id: string
+  strategy_version: number
+  run_date: string
+  as_of_date: string
+  next_rebalance_date: string | null
+  target_weights: Record<string, number>  // asset_id -> weight
+  risk_status: SignalRiskStatus | null
+  backtest_id: string | null
+  created_at: string
+}
+
+export interface SignalRiskStatus {
+  alerts: string[]
+  warnings: string[]
+}
+
+export interface SignalRunResult {
+  signal_id: string
+  status: 'ok' | 'error'
+  error?: string
+}
+
+// ---- 回测（Backtest）----
+export interface BacktestResponse {
+  id: string
+  strategy_id: string
+  strategy_version: number
+  params: Record<string, any>
+  universe: string[]
+  start_date: string
+  end_date: string
+  rebalance_freq: string
+  data_as_of: string
+  status: 'pending' | 'running' | 'done' | 'failed'
+  error?: string
+  created_at: string
+  updated_at: string
+  results?: BacktestResults
+}
+
+export interface BacktestResults {
+  nav_series: NavPoint[]
+  metrics: BacktestMetrics
+  weight_history: WeightSnapshot[]
+  rebalance_records: RebalanceRecord[]
+  factor_view: FactorView
+  risk_view: RiskView
+}
+
+export interface NavPoint {
+  date: string
+  nav: number
+  portfolio_value: number
+}
+
+export interface BacktestMetrics {
+  ann_return: number
+  ann_volatility: number
+  sharpe: number
+  max_drawdown: number
+  calmar: number
+  sortino: number
+  total_cost: number
+  turnover_annual: number
+}
+
+export interface WeightSnapshot {
+  date: string
+  weights: Record<string, number>
+}
+
+export interface RebalanceRecord {
+  date: string
+  trades: Trade[]
+}
+
+export interface Trade {
+  asset_id: string
+  side: 'buy' | 'sell'
+  amount: number
+  fee: number
+}
+
+export interface FactorView {
+  target_exposure: Record<string, number>
+  realized_exposure: Record<string, number>
+  contribution: Record<string, number>
+}
+
+export interface RiskView {
+  max_drawdown_series: { date: string; drawdown: number }[]
+  var_95: number
+  cvar_95: number
+  risk_contrib: Record<string, number>
+}
+
+export interface BacktestCreate {
+  strategy_id: string
+  strategy_version: number
+  params: Record<string, any>
+  universe: string[]
+  start_date: string
+  end_date: string
+  rebalance_freq: string
+}
