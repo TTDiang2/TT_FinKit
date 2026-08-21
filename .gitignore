@@ -40,6 +40,9 @@ backend/uvicorn_*.log
 .DS_Store
 Thumbs.db
 
+# Git worktrees
+.worktrees/
+
 # OpenCode / Agent 内部
 .omo/
 
@@ -57,6 +60,9 @@ build/
 # 运行时错误日志（uvicorn 等进程）
 *.err
 backend/uvicorn.*
+
+# 运行时缓存（基金净值序列磁盘缓存，勿入库）
+backend/cache/
 
 # 银行流水样例数据（含真实交易记录，绝不提交）
 *.xls
