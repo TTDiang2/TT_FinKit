@@ -19,6 +19,11 @@ const router = createRouter({
           path: 'investments', component: () => import('@/pages/investments/InvestmentsLayout.vue'),
           children: [
             { path: '', name: 'investments', component: () => import('@/pages/investments/OverviewTab.vue') },
+            {
+              path: 'strategies',
+              name: 'investments-strategies',
+              component: () => import('@/pages/investments/StrategyLibraryPage.vue'),
+            },
             { path: 'ai', name: 'investments-ai', component: () => import('@/pages/investments/AIAnalysisTab.vue') },
           ]
         },

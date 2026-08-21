@@ -178,3 +178,40 @@ export interface NavHistoryResponse {
   begin: string;
   end: string;
 }
+
+// ============================================================
+// Strategy types (Phase 3)
+// ============================================================
+export interface StrategyResponse {
+  id: string
+  name: string
+  description: string
+  version: number
+  params_schema: Record<string, any>
+  rebalance_freq: string
+  is_builtin: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface StrategyImportResult {
+  strategy_id: string
+  version: number
+  status: 'imported' | 'updated'
+  error?: string
+}
+
+export interface ActiveStrategySet {
+  strategy_id: string
+  version: number
+  params: Record<string, any>
+}
+
+export interface ActiveStrategyResponse {
+  strategy_id: string
+  version: number
+  params: Record<string, any>
+  name: string
+  description: string
+  rebalance_freq: string
+}

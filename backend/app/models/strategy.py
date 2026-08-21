@@ -1,0 +1,21 @@
+from sqlalchemy import Column, String, Text, Integer, Boolean, DateTime
+from app.database import Base
+import uuid, datetime
+
+class Strategy(Base):
+    __tablename__ = "strategies"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    name = Column(String, nullable=False, index=True)
+    description = Column(Text, default="")
+    # Python source code of the Strategy subclass
+    code = Column(Text, nullable=False)
+    # Version number within this strategy (auto-incremented on re-import)
+    version = Column(Integer, default=1)
+    # JSON string of params schema: {"param_name": {"type": "int", "default": 3}}
+    params_schema = Column(Text, default="{}")
+    rebalance_freq = Column(String, default="monthly")  # monthly / weekly
+    # Is this a built-in strategy (cannot be deleted)?
+    is_builtin = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
