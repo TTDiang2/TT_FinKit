@@ -9,6 +9,11 @@
           持仓与流水
         </button>
       </router-link>
+      <router-link to="/investments/monitor" custom v-slot="{ navigate, isActive }">
+        <button @click="navigate" :class="['px-4 py-2 text-sm rounded-md transition-colors', isActive ? 'bg-accent-primary text-white' : 'border border-border-default text-text-secondary hover:bg-bg-tertiary']">
+          监控
+        </button>
+      </router-link>
       <router-link to="/investments/strategies" custom v-slot="{ navigate, isActive }">
         <button
           @click="navigate"

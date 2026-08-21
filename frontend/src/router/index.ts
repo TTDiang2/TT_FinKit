@@ -28,6 +28,7 @@ const router = createRouter({
             { path: 'assets', name: 'investments-assets', component: () => import('@/pages/investments/AssetPoolPage.vue') },
             { path: 'factors', name: 'investments-factors', component: () => import('@/pages/investments/FactorPage.vue') },
             { path: 'signals', name: 'investments-signals', component: () => import('@/pages/investments/SignalPage.vue') },
+            { path: 'monitor', name: 'investments-monitor', component: () => import('@/pages/investments/MonitorPage.vue') },
             { path: 'ai', name: 'investments-ai', component: () => import('@/pages/investments/AIAnalysisTab.vue') },
           ],
         },

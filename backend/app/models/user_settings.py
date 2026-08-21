@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Boolean, DateTime, ForeignKey
+from sqlalchemy import Column, String, Boolean, DateTime, ForeignKey, Text
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from ..database import Base
@@ -22,5 +22,8 @@ class UserSettings(Base):
     # iFinD (同花顺 quantapi) credentials — powers live quotes & NAV history
     ifind_username = Column(String, default="")
     ifind_password = Column(String, default="")
+
+    # Monitor alert thresholds (Phase 6, §4.9): JSON {"weight_deviation_pp":5,"exposure_drift":0.3,"drawdown_alert_pct":10}
+    monitor_thresholds = Column(Text, nullable=True)
 
     user = relationship("User", back_populates="settings")

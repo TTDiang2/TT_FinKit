@@ -68,6 +68,9 @@ async def run_lightweight_migrations(conn: AsyncConnection) -> None:
     await _add_column_if_missing(conn, "user_settings", "ai_search_api_key", "VARCHAR DEFAULT ''")
     await _add_column_if_missing(conn, "user_settings", "ai_investment_preset_id", "VARCHAR")
 
+    # user_settings: Phase 6 monitor alert thresholds (JSON blob, §4.9)
+    await _add_column_if_missing(conn, "user_settings", "monitor_thresholds", "TEXT")
+
     # accounts: reconciliation mode (direct vs composite bank-statement mapping)
     await _add_column_if_missing(conn, "accounts", "bank_statement_mode", "VARCHAR DEFAULT 'direct' NOT NULL")
     # accounts: free-form reconciliation formula (JSON); backfill preset by legacy mode

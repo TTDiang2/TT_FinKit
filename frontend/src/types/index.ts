@@ -700,3 +700,74 @@ export interface BacktestCreate {
   end_date: string
   rebalance_freq: string
 }
+
+// ---- 监控（Monitor）----
+export interface MonitorOverview {
+  zone1_portfolio: Zone1Portfolio
+  zone2_risk: Zone2Risk
+  zone3_deviation: Zone3Deviation
+  alerts_summary: AlertsSummary
+  last_updated: string
+}
+
+export interface Zone1Portfolio {
+  items: PortfolioItem[]
+  total_actual_value: number
+  alerts: string[]  // asset symbols with deviation alerts
+}
+
+export interface PortfolioItem {
+  asset_id: string
+  symbol: string
+  name: string
+  target_weight: number    // fraction, e.g. 0.4
+  actual_weight: number    // fraction
+  deviation: number         // absolute difference
+  has_alert: boolean
+}
+
+export interface Zone2Risk {
+  current_nav: number
+  max_drawdown: number         // fraction, e.g. -0.12
+  var_95: number               // positive loss fraction
+  cvar_95: number             // positive loss fraction
+  factor_exposures: FactorExposureRow[]
+  drawdown_alert: boolean
+}
+
+export interface FactorExposureRow {
+  factor_id: string
+  factor_name: string
+  weighted_beta: number
+  risk_contribution: number   // fraction, should sum to ~1.0
+}
+
+export interface Zone3Deviation {
+  factor_drifts: FactorDriftItem[]
+  last_signal_date: string | null
+  next_rebalance_date: string | null
+  days_since_signal: number | null
+  continuity_status: 'ok' | 'stale' | 'no_signal'
+}
+
+export interface FactorDriftItem {
+  factor_id: string
+  factor_name: string
+  current_beta: number
+  prev_beta: number
+  drift: number          // absolute difference
+  has_alert: boolean     // drift >= threshold
+}
+
+export interface AlertsSummary {
+  total_alerts: number
+  portfolio_alerts: number
+  risk_alerts: number
+  deviation_alerts: number
+}
+
+export interface MonitorSettings {
+  weight_deviation_pp: number
+  exposure_drift: number
+  drawdown_alert_pct: number
+}
