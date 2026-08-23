@@ -90,7 +90,14 @@ PRESET_FACTORS: list[dict] = [
 
 
 async def seed_preset_factors(db: AsyncSession) -> int:
-    """Insert preset factors that do not exist yet (idempotent by name)."""
+    """Insert preset factors that do not exist yet (idempotent by name).
+
+    Seeds BOTH the legacy asset-class factors (PRESET_FACTORS) AND the V2
+    registry (60 factors across style/industry/country/macro/statistical/alpha)
+    via ``factor_registry.ensure_factors``.
+    """
+    from .factor_registry import ensure_factors
+
     added = 0
     for spec in PRESET_FACTORS:
         exists = (await db.execute(select(Factor).where(Factor.name == spec["name"]))).scalar_one_or_none()
@@ -106,8 +113,11 @@ async def seed_preset_factors(db: AsyncSession) -> int:
             is_market=spec["is_market"],
         ))
         added += 1
-    if added:
-        await db.commit()
+
+    # V2 registry: 60 factors across 6 categories (idempotent by key)
+    await ensure_factors(db)
+
+    await db.commit()
     return added
 
 

@@ -1,13 +1,16 @@
 from typing import List, Optional
 
+import asyncio
 import json
+import re
+from calendar import monthrange
 from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..database import get_db
+from ..database import get_db, async_session_maker
 from ..models.factor import Factor, FactorValue, FactorExposure
 from ..models.research_asset import ResearchAsset
 from ..schemas.factor import (
@@ -38,8 +41,25 @@ from ..services.factor_store import (
     sync_factor_values,
 )
 from ..services.factor_engine import compute_contribution, recompute_exposures
+from ..services import factor_sync as fs_sync
 
 router = APIRouter(prefix="/api/research/factors", tags=["research-factors"])
+
+_MONTH_RE = re.compile(r"^\d{4}-\d{2}$")
+
+
+def _expand_month_bound(s: str) -> tuple[str, str]:
+    """'YYYY-MM' -> ('YYYY-MM-01', 'YYYY-MM-last'); full dates pass through.
+
+    Frontend month pickers send YYYY-MM; exposures are stored at the LAST
+    trading day of a month (e.g. 2026-08-20), so an exact-equality or
+    first-of-month comparison would never match.  Month semantics: any as_of
+    within that calendar month.
+    """
+    if _MONTH_RE.match(s or ""):
+        y, m = int(s[:4]), int(s[5:7])
+        return f"{s}-01", f"{s}-{monthrange(y, m)[1]:02d}"
+    return s, s
 
 
 async def _respond(db: AsyncSession, factor: Factor) -> FactorResponse:
@@ -53,6 +73,7 @@ async def _respond(db: AsyncSession, factor: Factor) -> FactorResponse:
     return FactorResponse(
         id=factor.id,
         name=factor.name,
+        key=factor.key or "",
         category=factor.category,
         definition=factor.definition,
         code=factor.code,
@@ -63,6 +84,7 @@ async def _respond(db: AsyncSession, factor: Factor) -> FactorResponse:
         is_market=bool(factor.is_market),
         active=bool(factor.active),
         version=factor.version or 1,
+        data_status=factor.data_status or "ok",
         stats=FactorStat(
             latest_value=latest_return,
             latest_level=latest_level,
@@ -143,7 +165,7 @@ async def refresh_all(
 
 @router.get("/exposure-matrix", response_model=ExposureMatrix)
 async def exposure_matrix(
-    as_of: Optional[str] = Query(None, description="YYYY-MM-DD month-end; default latest"),
+    as_of: Optional[str] = Query(None, description="YYYY-MM（该月任一月末）或 YYYY-MM-DD；默认最新"),
     user_id: str = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ):
@@ -160,7 +182,13 @@ async def exposure_matrix(
         return ExposureMatrix()
 
     q = select(FactorExposure).where(FactorExposure.asset_id.in_([a.id for a in assets]))
-    if as_of:
+    if as_of and _MONTH_RE.match(as_of):
+        # month semantics: any month-end as_of inside that calendar month;
+        # resolve to the LATEST one present so the matrix shows one snapshot
+        month_first, month_last = _expand_month_bound(as_of)
+        q = q.where(FactorExposure.as_of_date >= month_first,
+                    FactorExposure.as_of_date <= month_last)
+    elif as_of:
         q = q.where(FactorExposure.as_of_date == as_of)
     else:
         latest = (await db.execute(
@@ -170,6 +198,9 @@ async def exposure_matrix(
             return ExposureMatrix()
         q = q.where(FactorExposure.as_of_date == latest)
     rows = (await db.execute(q)).scalars().all()
+    if as_of and _MONTH_RE.match(as_of) and rows:
+        used = max(r.as_of_date for r in rows)
+        rows = [r for r in rows if r.as_of_date == used]
 
     by_asset: dict[str, AssetExposureRow] = {}
     for a in assets:
@@ -231,7 +262,40 @@ async def recompute_exposures_endpoint(
     user_id: str = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ):
-    return await recompute_exposures(db, user_id, full=full)
+    result = await recompute_exposures(db, user_id, full=full)
+    # chain factor evaluation (IC/ICIR) — pure numpy, fast after exposures exist
+    from ..services.factor_evaluation import evaluate_all_factors
+    try:
+        eval_summary = await evaluate_all_factors(db, user_id)
+        result["evaluation"] = eval_summary
+    except Exception as e:
+        result["evaluation"] = {"evaluated": [], "skipped": [], "error": f"{type(e).__name__}: {e}"}
+    return result
+
+
+@router.post("/evaluate-all")
+async def evaluate_all_factors_endpoint(
+    user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    from ..services.factor_evaluation import evaluate_all_factors
+    return await evaluate_all_factors(db, user_id)
+
+
+@router.get("/evaluations")
+async def list_evaluations(
+    user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    from ..services.factor_evaluation import evaluation_to_dict, DEFAULT_THRESHOLDS
+    from ..models.factor_evaluation import FactorEvaluation
+    rows = (await db.execute(
+        select(FactorEvaluation).where(FactorEvaluation.user_id == user_id)
+    )).scalars().all()
+    return {
+        "thresholds": DEFAULT_THRESHOLDS,
+        "evaluations": [evaluation_to_dict(r) for r in rows],
+    }
 
 
 @router.get("/contribution", response_model=ContributionResult)
@@ -242,8 +306,13 @@ async def contribution(
     view: str = Query("return", pattern="^(return|risk)$"),
     db: AsyncSession = Depends(get_db),
 ):
+    # 'YYYY-MM' month semantics: start -> month first day, end -> month LAST day
+    # (exposures live at month-end trading days; a first-of-month end would find
+    # no exposure rows on or before it for the current month)
+    start_expanded, _ = _expand_month_bound(start)
+    _, end_expanded = _expand_month_bound(end)
     try:
-        return await compute_contribution(db, asset_id, start, end, view=view)
+        return await compute_contribution(db, asset_id, start_expanded, end_expanded, view=view)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -381,6 +450,58 @@ async def agent_confirm(
     ifind_user, ifind_pass = await ifind_client.get_credentials(db, user_id)
     await sync_factor_values(db, factor, ifind_user, ifind_pass, full=True)
     return await _respond(db, factor)
+
+
+
+# ---------------- factor sync engine (P1.2) ----------------
+
+_sync_state: dict = {"running": False, "report": None}
+
+
+def _serialize_report(report):
+    if report is None:
+        return None
+    return {
+        "per_factor": {
+            k: {"rows": v.get("rows", 0), "first_date": v.get("first_date"),
+                "error": v.get("error")}
+            for k, v in (report.per_factor or {}).items()
+        },
+        "started_at": report.started_at.isoformat() if report.started_at else None,
+        "finished_at": report.finished_at.isoformat() if report.finished_at else None,
+        "pca": report.pca,
+    }
+
+
+async def _factor_sync_task(user_id: str) -> None:
+    """Background factor sync - own session (request one is closed)."""
+    try:
+        report = await fs_sync.sync_all_factors(async_session_maker, user_id)
+        _sync_state["report"] = report
+        print(f"[factor_sync] done: {len(report.per_factor)} factors", flush=True)
+    except Exception as e:
+        print(f"[factor_sync] FAILED: {type(e).__name__}: {e}", flush=True)
+    finally:
+        _sync_state["running"] = False
+
+
+@router.post("/sync-all")
+async def sync_all(
+    user_id: str = Depends(get_current_user_id),
+):
+    """Kick off a background factor sync; returns immediately."""
+    if _sync_state["running"]:
+        return {"started": True}
+    _sync_state["running"] = True
+    _sync_state["report"] = None
+    asyncio.create_task(_factor_sync_task(user_id))
+    return {"started": True}
+
+
+@router.get("/sync-status")
+async def sync_status():
+    return {"running": _sync_state["running"],
+            "last_report": _serialize_report(_sync_state["report"])}
 
 
 # ---------------- per-factor routes (dynamic) ----------------

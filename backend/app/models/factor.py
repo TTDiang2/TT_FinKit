@@ -19,6 +19,7 @@ class Factor(Base):
 
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     name = Column(String, nullable=False)                  # e.g. 权益(沪深300)
+    key = Column(String, default="", nullable=False)       # stable identifier for strategies (e.g. "gold"); never changes across renames
     category = Column(String, nullable=False)              # asset_class/style/macro/custom
     definition = Column(Text, nullable=False)              # natural-language definition
     code = Column(Text, nullable=True)                     # reserved for Agent pipeline code
@@ -29,6 +30,7 @@ class Factor(Base):
     is_market = Column(Boolean, default=False)
     active = Column(Boolean, default=True)                 # deactivated factors keep history
     version = Column(Integer, default=1)                   # bumped on definition change
+    data_status = Column(String, default="ok")             # 'ok' = syncable, 'stub' = no free data source yet
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

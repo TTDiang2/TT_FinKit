@@ -1,26 +1,69 @@
 <template>
   <div>
-    <div class="flex items-center justify-between mb-4">
+    <div class="flex items-end justify-between mb-4 border-b border-border-default">
       <div class="flex gap-2">
         <button @click="activeTab = 'library'" :class="tabCls('library')">因子库</button>
-        <button @click="activeTab = 'matrix'" :class="tabCls('matrix')">暴露矩阵</button>
-        <button @click="activeTab = 'contribution'" :class="tabCls('contribution')">贡献分析</button>
+        <button @click="activeTab = 'analysis'" :class="tabCls('analysis')">因子分析</button>
       </div>
-      <div class="flex gap-2">
-        <button v-if="activeTab === 'library'" @click="refreshAll" :disabled="refreshing" class="btn-secondary">
-          <RefreshCw :size="14" :class="refreshing ? 'animate-spin' : ''" /> 刷新全部
+      <div class="flex gap-2 pb-2">
+        <button v-if="activeTab === 'library'" @click="syncAll" :disabled="syncingAll" class="btn-secondary">
+          <RefreshCw :size="14" :class="syncingAll ? 'animate-spin' : ''" /> {{ syncingAll ? '同步中…' : '同步因子数据' }}
         </button>
         <button v-if="activeTab === 'library'" @click="openAgentModal" class="btn-primary">
-          Agent 构建因子
+          <Sparkles :size="14" /> Agent 构建因子
         </button>
-        <button v-if="activeTab === 'matrix'" @click="recomputeExposures" :disabled="recomputing" class="btn-secondary">
-          <RefreshCw :size="14" :class="recomputing ? 'animate-spin' : ''" /> 重算暴露
+        <button v-if="activeTab === 'analysis'" @click="recomputeExposures" :disabled="recomputing" class="btn-secondary">
+          <RefreshCw :size="14" :class="recomputing ? 'animate-spin' : ''" /> {{ recomputing ? '重算中…' : '重算暴露' }}
         </button>
       </div>
     </div>
 
     <!-- 因子库 tab -->
-    <div v-if="activeTab === 'library'" class="bg-white rounded-lg shadow-sm overflow-hidden">
+    <div v-if="activeTab === 'library'">
+      <!-- Category filter -->
+      <div class="flex items-center gap-2 mb-3">
+        <span class="text-sm text-text-secondary">类别</span>
+        <select v-model="categoryFilter" class="px-2 py-1 text-xs border border-border-default rounded-md">
+          <option value="">全部</option>
+          <option v-for="c in categories" :key="c" :value="c">{{ categoryLabel(c) }}</option>
+        </select>
+        <span class="text-xs text-text-muted ml-auto">{{ filteredFactors.length }} 个因子</span>
+      </div>
+
+      <!-- Factor evaluation summary (IC/ICIR) -->
+      <div v-if="evaluations.length" class="bg-white rounded-lg shadow-sm overflow-hidden mb-4">
+        <div class="px-3 py-2 bg-bg-tertiary text-sm font-medium">因子评估（IC/ICIR/胜率/多空夏普）</div>
+        <table class="w-full text-xs">
+          <thead class="bg-bg-secondary text-left">
+            <tr>
+              <th class="px-2 py-1.5 font-medium">因子</th>
+              <th class="px-2 py-1.5 font-medium text-right">IC 均值</th>
+              <th class="px-2 py-1.5 font-medium text-right">ICIR</th>
+              <th class="px-2 py-1.5 font-medium text-right">胜率</th>
+              <th class="px-2 py-1.5 font-medium text-right">多空年化</th>
+              <th class="px-2 py-1.5 font-medium text-right">多空夏普</th>
+              <th class="px-2 py-1.5 font-medium text-center">判定</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="ev in evaluations" :key="ev.factor_key" class="border-t border-border-default">
+              <td class="px-2 py-1.5 font-medium">{{ ev.factor_name }}</td>
+              <td class="px-2 py-1.5 text-right" :class="icColor(ev.ic_mean)">{{ ev.ic_mean.toFixed(4) }}</td>
+              <td class="px-2 py-1.5 text-right" :class="icirColor(ev.icir)">{{ ev.icir.toFixed(3) }}</td>
+              <td class="px-2 py-1.5 text-right">{{ (ev.win_rate * 100).toFixed(0) }}%</td>
+              <td class="px-2 py-1.5 text-right" :class="colorClass(ev.ls_ann_return)">{{ pct(ev.ls_ann_return) }}</td>
+              <td class="px-2 py-1.5 text-right">{{ ev.ls_sharpe?.toFixed(2) ?? '—' }}</td>
+              <td class="px-2 py-1.5 text-center">
+                <span v-if="ev.passed" class="px-1 py-0.5 rounded bg-income-bg text-income-color">通过</span>
+                <span v-else class="px-1 py-0.5 rounded bg-bg-tertiary text-text-muted">未达</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Factor list -->
+      <div class="bg-white rounded-lg shadow-sm overflow-hidden">
       <table class="w-full text-sm">
         <thead class="bg-bg-tertiary text-left">
           <tr>
@@ -35,7 +78,7 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="f in factors" :key="f.id" class="border-t border-border-default">
+          <tr v-for="f in filteredFactors" :key="f.id" class="border-t border-border-default">
             <td class="px-3 py-2">
               <div class="font-medium text-text-primary">{{ f.name }}</div>
               <div class="text-xs text-text-muted">{{ f.definition?.slice(0, 60) }}</div>
@@ -62,15 +105,18 @@
               <button @click="toggleActive(f)" class="px-1.5 py-0.5 text-xs text-text-muted hover:underline">{{ f.active ? '停用' : '启用' }}</button>
             </td>
           </tr>
-          <tr v-if="!loading && !factors.length">
-            <td colspan="8" class="px-4 py-8 text-center text-text-muted">加载中…</td>
+          <tr v-if="!loading && !filteredFactors.length">
+            <td colspan="8" class="px-4 py-8 text-center text-text-muted">暂无因子</td>
           </tr>
         </tbody>
       </table>
     </div>
+    </div>
 
-    <!-- 暴露矩阵 tab -->
-    <div v-if="activeTab === 'matrix'">
+    <!-- 因子分析 tab (merged 暴露矩阵 + 贡献分析) -->
+    <div v-if="activeTab === 'analysis'">
+      <!-- 暴露矩阵 section -->
+      <h3 class="text-sm font-medium mb-2">暴露矩阵</h3>
       <div class="flex gap-3 mb-3 items-center">
         <div class="text-sm text-text-secondary">月份：</div>
         <input v-model="matrixAsOf" type="month" class="px-3 py-1.5 text-sm border border-border-default rounded-md" />
@@ -124,26 +170,33 @@
           </tbody>
         </table>
       </div>
-    </div>
 
-    <!-- 贡献分析 tab -->
-    <div v-if="activeTab === 'contribution'">
+      <!-- 贡献分析 section -->
+      <hr class="my-6 border-border-default" />
+      <h3 class="text-sm font-medium mb-2">贡献分析</h3>
       <div class="flex gap-3 mb-3 items-center flex-wrap">
         <div class="text-sm text-text-secondary">标的</div>
-        <select v-model="contribAsset" class="px-3 py-1.5 text-sm border border-border-default rounded-md min-w-48">
+        <select v-model="contribAsset" class="px-3 py-1.5 text-sm border border-border-default rounded-md min-w-48 focus:outline-none focus:ring-1 focus:ring-accent-primary">
           <option value="">— 选择标的 —</option>
           <option v-for="a in pooledAssets" :key="a.value" :value="a.value">{{ a.label }}</option>
         </select>
         <div class="text-sm text-text-secondary">区间</div>
-        <input v-model="contribStart" type="month" class="px-3 py-1.5 text-sm border border-border-default rounded-md" />
+        <input v-model="contribStart" type="month" class="px-3 py-1.5 text-sm border border-border-default rounded-md focus:outline-none focus:ring-1 focus:ring-accent-primary" />
         <div class="text-text-muted">~</div>
-        <input v-model="contribEnd" type="month" class="px-3 py-1.5 text-sm border border-border-default rounded-md" />
+        <input v-model="contribEnd" type="month" class="px-3 py-1.5 text-sm border border-border-default rounded-md focus:outline-none focus:ring-1 focus:ring-accent-primary" />
         <div class="text-sm text-text-secondary">视图</div>
-        <select v-model="contribView" class="px-3 py-1.5 text-sm border border-border-default rounded-md">
+        <select v-model="contribView" class="px-3 py-1.5 text-sm border border-border-default rounded-md focus:outline-none focus:ring-1 focus:ring-accent-primary">
           <option value="return">收益归因</option>
           <option value="risk">风险分解</option>
         </select>
-        <button @click="loadContribution" :disabled="!contribAsset || !contribStart || !contribEnd" class="btn-secondary">分析</button>
+        <button @click="loadContribution" :disabled="!contribAsset || !contribStart || !contribEnd || contribLoading" class="btn-primary">
+          <RefreshCw :size="14" :class="contribLoading ? 'animate-spin' : ''" /> {{ contribLoading ? '分析中…' : '分析' }}
+        </button>
+      </div>
+
+      <div v-if="contribError" class="mb-3 px-4 py-3 bg-expense-bg border border-expense-color rounded-md text-sm text-expense-color">
+        {{ contribError }}
+        <span class="text-xs text-text-muted">（若提示缺少暴露数据，请先到「暴露矩阵」页点击「重算暴露」）</span>
       </div>
 
       <div v-if="contribLoading" class="text-sm text-text-muted py-4 text-center">加载中…</div>
@@ -243,14 +296,12 @@
       </div>
       <div v-else class="text-sm text-text-muted py-4 text-center">选择标的和区间，点击"分析"</div>
     </div>
-
-    <!-- Agent 构建因子弹窗 -->
     <BaseModal v-if="agentModal" :title="'Agent 构建因子'" @close="agentModal = false" width="max-w-lg">
       <div v-if="!agentResult && !agentError" class="space-y-4">
         <p class="text-sm text-text-secondary">用自然语言描述你想要的因子，例如"帮我加一个中证800的超额收益因子"或"加一个价值风格的价差因子"</p>
-        <textarea v-model="agentPrompt" rows="4" class="w-full px-3 py-2 text-sm border border-border-default rounded-md" placeholder="描述你想要的因子…"></textarea>
+        <textarea v-model="agentPrompt" rows="4" class="w-full px-3 py-2 text-sm border border-border-default rounded-md focus:outline-none focus:ring-1 focus:ring-accent-primary" placeholder="描述你想要的因子…"></textarea>
         <button @click="agentGenerate" :disabled="agentGenerating || !agentPrompt.trim()" class="btn-primary w-full disabled:opacity-50">
-          {{ agentGenerating ? '生成中…' : '生成因子定义' }}
+          <Sparkles :size="14" /> {{ agentGenerating ? '生成中…' : '生成因子定义' }}
         </button>
       </div>
       <div v-else-if="agentResult" class="space-y-4">
@@ -289,18 +340,20 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useApi } from '@/composables/useApi'
-import { RefreshCw } from 'lucide-vue-next'
+import { RefreshCw, Sparkles } from 'lucide-vue-next'
 import BaseModal from '@/components/common/BaseModal.vue'
 import type { FactorResponse, ExposureMatrix, ContributionResult, AgentFactorCandidate, AgentPreviewResult } from '@/types'
 
 const api = useApi()
-const activeTab = ref<'library' | 'matrix' | 'contribution'>('library')
+const activeTab = ref<string>('library')
 
 // ---- state ----
 const factors = ref<FactorResponse[]>([])
 const syncing = ref<Set<string>>(new Set())
 const loading = ref(false)
-const refreshing = ref(false)
+const syncingAll = ref(false)
+const categoryFilter = ref('')
+const evaluations = ref<any[]>([])
 const matrix = ref<ExposureMatrix>({ as_of: null, factors: [], assets: [] })
 const matrixLoading = ref(false)
 const matrixAsOf = ref('')
@@ -312,6 +365,7 @@ const contribEnd = ref('')
 const contribView = ref<'return' | 'risk'>('return')
 const contribResult = ref<ContributionResult | null>(null)
 const contribLoading = ref(false)
+const contribError = ref('')
 const agentModal = ref(false)
 const agentPrompt = ref('')
 const agentGenerating = ref(false)
@@ -323,8 +377,8 @@ const agentError = ref('')
 
 // ---- helpers ----
 function tabCls(tab: string) {
-  return ['px-4 py-2 text-sm rounded-md transition-colors',
-    activeTab.value === tab ? 'bg-accent-primary text-white' : 'border border-border-default text-text-secondary hover:bg-bg-tertiary']
+  return ['px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px',
+    activeTab.value === tab ? 'border-accent-primary text-accent-primary' : 'border-transparent text-text-secondary hover:text-text-primary']
 }
 function categoryCls(cat: string) {
   const m: Record<string, string> = {
@@ -358,25 +412,39 @@ function fmt4(n: number): string {
   return (n ?? 0).toLocaleString('zh-CN', { minimumFractionDigits: 4, maximumFractionDigits: 4 })
 }
 
+const categories = computed(() => [...new Set(factors.value.map(f => f.category).filter(Boolean))] as string[])
+const filteredFactors = computed(() =>
+  categoryFilter.value ? factors.value.filter(f => f.category === categoryFilter.value) : factors.value)
+
+function categoryLabel(c: string): string {
+  const m: Record<string, string> = { style: '风格', industry: '行业', country: '国家/地区', macro: '宏观', statistical: '统计', alpha: 'Alpha信号', asset_class: '资产类', custom: '自定义' }
+  return m[c] || c
+}
+function icColor(v: number) { return Math.abs(v) > 0.05 ? 'text-income-color' : 'text-text-muted' }
+function icirColor(v: number) { return v > 0.5 ? 'text-income-color' : v > 0.3 ? 'text-warning' : 'text-text-muted' }
+
 // ---- data loaders ----
 async function loadFactors() {
   loading.value = true
   try {
     const data = (await api.get<FactorResponse[]>('/research/factors')).data
     factors.value = data
-  } finally {
-    loading.value = false
-  }
+  } finally { loading.value = false }
 }
 
-async function refreshAll() {
-  refreshing.value = true
+async function loadEvaluations() {
   try {
-    await api.post('/research/factors/refresh-all')
-    await loadFactors()
-  } finally {
-    refreshing.value = false
-  }
+    const res = await api.get<{ evaluations: any[] }>('/research/factors/evaluations')
+    evaluations.value = res.data.evaluations || []
+  } catch { evaluations.value = [] }
+}
+
+async function syncAll() {
+  syncingAll.value = true
+  try {
+    await api.post('/research/factors/sync-all')
+    await Promise.all([loadFactors(), loadEvaluations()])
+  } finally { syncingAll.value = false }
 }
 
 async function refreshFactor(f: FactorResponse) {
@@ -399,7 +467,7 @@ async function loadMatrix() {
   try {
     const params: Record<string, string> = {}
     if (matrixAsOf.value) params.as_of = matrixAsOf.value + '-01'
-    matrix.value = (await api.get<ExposureMatrix>('/research/factors/exposure-matrix', params)).data
+    matrix.value = (await api.get<ExposureMatrix>('/research/factors/exposure-matrix', { params })).data
     if (!matrixAsOf.value && matrix.value.as_of) {
       matrixAsOf.value = matrix.value.as_of!.slice(0, 7)
     }
@@ -411,7 +479,8 @@ async function loadMatrix() {
 async function recomputeExposures() {
   recomputing.value = true
   try {
-    await api.post('/research/factors/recompute-exposures')
+    // full=true 深度回填所有历史月份（否则只算最新月，贡献分析的历史区间会无数据）
+    await api.post('/research/factors/recompute-exposures', null, { params: { full: true } })
     await loadMatrix()
   } finally {
     recomputing.value = false
@@ -422,6 +491,7 @@ async function loadContribution() {
   if (!contribAsset.value || !contribStart.value || !contribEnd.value) return
   contribLoading.value = true
   contribResult.value = null
+  contribError.value = ''
   try {
     contribResult.value = (await api.get('/research/factors/contribution', {
       params: {
@@ -431,6 +501,8 @@ async function loadContribution() {
         view: contribView.value,
       }
     })).data as ContributionResult
+  } catch (e: any) {
+    contribError.value = e?.response?.data?.detail || e?.message || '贡献分析请求失败'
   } finally {
     contribLoading.value = false
   }
@@ -496,9 +568,16 @@ function openAgentModal() {
 }
 
 onMounted(async () => {
-  await loadFactors()
-  await loadPooledAssets()
-  // pre-load matrix
+  await Promise.all([loadFactors(), loadPooledAssets(), loadEvaluations()])
   await loadMatrix()
+  // Default contribution range: last 3 full months ending at the CURRENT month
+  // (exposures are recomputed at the latest month-end; a first-of-month end for
+  // a past month would find no exposure rows on or before it).
+  const now = new Date()
+  const fmtM = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+  const endD = new Date(now.getFullYear(), now.getMonth(), 1)
+  const startD = new Date(now.getFullYear(), now.getMonth() - 2, 1)
+  contribEnd.value = fmtM(endD)
+  contribStart.value = fmtM(startD)
 })
 </script>

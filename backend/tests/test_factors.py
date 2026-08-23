@@ -128,7 +128,7 @@ class TestFactorStore:
                 n2 = await seed_preset_factors(db)
                 assert n1 == 7 and n2 == 0
                 total = len((await db.execute(select(Factor))).scalars().all())
-                assert total == 7
+                assert total >= 60  # 7 legacy asset-class + 60 registry factors
             finally:
                 await db.close()
                 await engine.dispose()
@@ -228,9 +228,11 @@ class TestRouter:
             db, engine = await _make_db()
             try:
                 listed = await fr.list_factors(category=None, db=db)
-                assert len(listed) == 7
+                assert len(listed) >= 60
                 names = [f.name for f in listed]
                 assert "权益(沪深300)" in names and "规模(小盘−沪深300)" in names
+                keys = [f.key for f in listed]
+                assert "smb" in keys and "momentum" in keys  # registry style factors seeded
                 market = [f for f in listed if f.name == "权益(沪深300)"][0]
                 assert market.is_market is True
             finally:

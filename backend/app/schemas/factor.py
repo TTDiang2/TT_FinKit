@@ -44,6 +44,7 @@ class FactorStat(BaseModel):
 class FactorResponse(BaseModel):
     id: str
     name: str
+    key: str = ""
     category: str
     definition: str
     code: Optional[str] = None
@@ -54,6 +55,7 @@ class FactorResponse(BaseModel):
     is_market: bool = False
     active: bool = True
     version: int = 1
+    data_status: str = "ok"
     stats: FactorStat = FactorStat()
 
 

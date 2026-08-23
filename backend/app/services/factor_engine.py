@@ -150,7 +150,7 @@ async def recompute_exposures(
     )).scalars().all()
     factors = (await db.execute(select(Factor).where(Factor.active.is_(True)))).scalars().all()
     if not assets or not factors:
-        return {"assets": 0, "factors": len(factors), "months": 0, "regressions": 0}
+        return {"assets": 0, "factors": len(factors), "months": 0, "regressions": 0, "skipped": []}
 
     factor_ids = [f.id for f in factors]
     fv_rows = (await db.execute(
@@ -165,6 +165,7 @@ async def recompute_exposures(
     market_ids = [f.id for f in factors if f.is_market]
     written = 0
     months_done = set()
+    skipped: list[dict] = []
 
     for asset in assets:
         price_rows = (await db.execute(
@@ -173,6 +174,7 @@ async def recompute_exposures(
             .order_by(ResearchAssetPrice.date)
         )).all()
         if len(price_rows) < 2:
+            skipped.append({"symbol": asset.symbol, "name": asset.name, "reason": "无价格数据（先到标的页同步历史净值）"})
             continue
         closes = [(d, float(c)) for d, c in price_rows]
         asset_returns: list[tuple[str, float]] = []
@@ -185,11 +187,13 @@ async def recompute_exposures(
 
         use_factors = {fid: factor_series[fid] for fid in (market_ids if (asset.is_money_market and market_ids) else factor_ids) if factor_series[fid]}
         if not use_factors:
+            skipped.append({"symbol": asset.symbol, "name": asset.name, "reason": "因子无收益数据（先同步因子库）"})
             continue
 
         factor_maps = {fid: dict(s) for fid, s in use_factors.items()}
         common_dates = sorted(set(asset_map) & set().union(*(set(m) for m in factor_maps.values())))
         if not common_dates:
+            skipped.append({"symbol": asset.symbol, "name": asset.name, "reason": "与因子无共同交易日"})
             continue
         # month-end as_of candidates whose trailing window can still meet the sample floor
         as_of_candidates = []
@@ -198,6 +202,7 @@ async def recompute_exposures(
             if idx + 1 >= int(window_days * MIN_SAMPLE_RATIO):
                 as_of_candidates.append((me, idx + 1))
         if not as_of_candidates:
+            skipped.append({"symbol": asset.symbol, "name": asset.name, "reason": f"共同交易日不足{int(window_days * MIN_SAMPLE_RATIO)}（历史太短）"})
             continue
         if not full:
             as_of_candidates = as_of_candidates[-1:]
@@ -237,7 +242,8 @@ async def recompute_exposures(
                     ))
                 written += 1
     await db.commit()
-    return {"assets": len(assets), "factors": len(factors), "months": len(months_done), "regressions": len(months_done), "rows_written": written}
+    return {"assets": len(assets), "factors": len(factors), "months": len(months_done),
+            "regressions": len(months_done), "rows_written": written, "skipped": skipped}
 
 
 async def compute_contribution(
@@ -265,7 +271,11 @@ async def compute_contribution(
         .order_by(FactorExposure.as_of_date.desc())
     )).all()
     if not exp_rows:
-        raise ValueError("no exposure rows on or before end date")
+        raise ValueError(
+            f"标的「{asset.name}({asset.symbol})」在 {end} 之前没有因子暴露数据。"
+            f"请先在「因子分析」页点击「重算暴露」（会深度回填历史月份），"
+            f"并确认该标的已同步历史净值。"
+        )
     latest_as_of = exp_rows[0][0].as_of_date
     beta_by_factor: dict[str, float] = {}
     factor_names: dict[str, str] = {}
