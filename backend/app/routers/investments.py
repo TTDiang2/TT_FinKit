@@ -262,6 +262,7 @@ async def create_investment(
                 match.current_price = payload.get("current_price")
             await db.commit()
             await db.refresh(match)
+            _invalidate_portfolio_nav_cache(user_id)
             resp = _to_response(match)
             resp.merged_into = match.id
             resp.merged_message = (
@@ -294,6 +295,7 @@ async def create_investment(
         )
         db.add(seed)
     await db.commit()
+    _invalidate_portfolio_nav_cache(user_id)
     await db.refresh(inv)
     return _to_response(inv)
 
@@ -887,25 +889,35 @@ async def _build_portfolio_series(
 
     fund_qty: dict[str, dict[str, float]] = {}
     for inv in invs:
-        evs = sorted(
-            [t for t in txs if t.investment_id == inv.id and t.event_type in ("buy", "sell")],
-            key=lambda t: t.event_date,
-        )
-        if inv.id in mmf_ids:
-            from ..services import money_market_fund
+      evs = sorted(
+        [t for t in txs if t.investment_id == inv.id and t.event_type in ("buy", "sell")],
+        key=lambda t: t.event_date,
+      )
+      if inv.id in mmf_ids:
+        from ..services import money_market_fund
 
-            fund_qty[inv.id] = await money_market_fund.mmf_shares_by_date(inv.symbol, dates, evs)
-            continue
-        qty_by_date: dict[str, float] = {}
-        shares = 0.0
-        ei = 0
-        for d in dates:
-            while ei < len(evs) and evs[ei].event_date[:10] <= d:
-                shares += evs[ei].quantity or 0
-                ei += 1
-            if shares > 0:
-                qty_by_date[d] = shares
-        fund_qty[inv.id] = qty_by_date
+        fund_qty[inv.id] = await money_market_fund.mmf_shares_by_date(inv.symbol, dates, evs)
+        continue
+      qty_by_date: dict[str, float] = {}
+      shares = 0.0
+      ei = 0
+      for d in dates:
+        while ei < len(evs) and evs[ei].event_date[:10] <= d:
+          shares += evs[ei].quantity or 0
+          ei += 1
+        if shares > 0:
+          qty_by_date[d] = shares
+      # Fallback: when no buy/sell transaction exists for this investment but the legacy
+      # snapshot fields (quantity > 0) indicate a holding, seed fund_qty from those fields.
+      # This keeps portfolio-nav consistent with overview's total_assets (which uses
+      # Investment.quantity × Investment.current_price). The cash leg is NOT deducted here
+      # because compute_portfolio_overview treats these phantom holdings as already-funded
+      # by the implicit principal (via idle_cash = principal - holdings_cost).
+      if (not qty_by_date and dates and inv.quantity and inv.quantity > 0
+              and inv.current_price and inv.current_price > 0):
+        first_d = dates[0]
+        qty_by_date[first_d] = inv.quantity
+      fund_qty[inv.id] = qty_by_date
 
     flow_res = await db.execute(
         select(InvestmentCashFlow).where(InvestmentCashFlow.user_id == user_id)
@@ -1401,6 +1413,7 @@ async def create_cash_flow(
     flow = InvestmentCashFlow(user_id=user_id, **req.model_dump())
     db.add(flow)
     await db.commit()
+    _invalidate_portfolio_nav_cache(user_id)
     await db.refresh(flow)
     return _flow_to_response(flow)
 
@@ -1424,6 +1437,7 @@ async def update_cash_flow(
         setattr(flow, k, v)
     await db.commit()
     await db.refresh(flow)
+    _invalidate_portfolio_nav_cache(user_id)
     return _flow_to_response(flow)
 
 
@@ -1443,6 +1457,7 @@ async def delete_cash_flow(
         raise HTTPException(404, "Cash flow not found")
     await db.delete(flow)
     await db.commit()
+    _invalidate_portfolio_nav_cache(user_id)
     return {"message": "Cash flow deleted"}
 
 
@@ -1464,12 +1479,49 @@ async def update_investment(
     db: AsyncSession = Depends(get_db),
 ):
     inv = await _load_investment(db, investment_id, user_id)
-    for key, value in req.model_dump(exclude_unset=True).items():
+    update_payload = req.model_dump(exclude_unset=True)
+    old_quantity = inv.quantity or 0.0
+    for key, value in update_payload.items():
         setattr(inv, key, value)
     if inv.investment_type == "fund" and not inv.exchange:
         inv.exchange = "FUND_CN"
+
+    # If quantity changed via the legacy snapshot field but the change isn't reflected
+    # in the ledger, synthesize a buy transaction so portfolio-nav stays consistent.
+    # This prevents NAV jumps caused by editing quantity directly.
+    new_quantity = inv.quantity or 0.0
+    if "quantity" in update_payload and abs(new_quantity - old_quantity) > 1e-9:
+        res = await db.execute(
+            select(InvestmentTransaction)
+            .where(InvestmentTransaction.investment_id == inv.id)
+            .order_by(InvestmentTransaction.event_date.asc())
+        )
+        existing_txs = list(res.scalars().all())
+        tx_qty_sum = sum(
+            t.quantity for t in existing_txs
+            if t.event_type not in ("dividend", "fee")
+        )
+        diff = new_quantity - tx_qty_sum
+        if abs(diff) > 1e-9:
+            unit_price = inv.purchase_price or inv.current_price or 0.0
+            tx_type = "buy" if diff > 0 else "sell"
+            db.add(InvestmentTransaction(
+                investment_id=inv.id,
+                user_id=user_id,
+                event_type=tx_type,
+                event_date=inv.purchase_date or datetime.utcnow().strftime("%Y-%m-%d"),
+                quantity=diff,
+                unit_price=unit_price,
+                amount=diff * unit_price,
+                fee=0.0,
+                notes=f"Legacy field adjust: {old_quantity} → {new_quantity}",
+            ))
+            await db.flush()
+            await _recompute_legacy_fields(db, inv)
+
     await db.commit()
     await db.refresh(inv)
+    _invalidate_portfolio_nav_cache(user_id)
     return _to_response(inv)
 
 
@@ -1482,6 +1534,7 @@ async def delete_investment(
     inv = await _load_investment(db, investment_id, user_id)
     await db.delete(inv)
     await db.commit()
+    _invalidate_portfolio_nav_cache(user_id)
     return {"message": "Investment deleted"}
 
 
@@ -1541,6 +1594,7 @@ async def create_transaction(
     await _recompute_legacy_fields(db, inv)
     await db.commit()
     await db.refresh(tx)
+    _invalidate_portfolio_nav_cache(user_id)
     return _tx_to_response(tx)
 
 
@@ -1584,6 +1638,7 @@ async def update_transaction(
     await _recompute_legacy_fields(db, inv)
     await db.commit()
     await db.refresh(tx)
+    _invalidate_portfolio_nav_cache(user_id)
     return _tx_to_response(tx)
 
 
@@ -1607,6 +1662,7 @@ async def delete_transaction(
     await db.delete(tx)
     await _recompute_legacy_fields(db, inv)
     await db.commit()
+    _invalidate_portfolio_nav_cache(user_id)
     return {"message": "Transaction deleted"}
 
 
@@ -1925,6 +1981,7 @@ async def migrate_entry(
         if committed > 0:
             await _recompute_legacy_fields(db, inv)
         await db.commit()
+        _invalidate_portfolio_nav_cache(user_id)
         return MigrationResponse(results=results, preview=False, committed=committed)
 
     # ---- preview 模式：拉净值 + 反推份额 ----

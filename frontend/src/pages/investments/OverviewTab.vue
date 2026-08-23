@@ -163,25 +163,58 @@
             <th class="px-3 py-2 font-medium text-right">年化波动</th>
             <th class="px-3 py-2 font-medium text-right">夏普</th>
             <th class="px-3 py-2 font-medium text-right">持有天数</th>
+            <th class="px-3 py-2 font-medium text-center">操作</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="p in store.closedPositions.positions" :key="p.id" class="border-t border-border-default text-text-muted">
-            <td class="px-3 py-2">
-              <div class="font-medium text-text-primary">{{ p.name }}</div>
-              <div class="text-xs">{{ p.purchase_date }} → {{ p.sell_date }}<span v-if="p.symbol"> · {{ p.exchange }} {{ p.symbol }}</span></div>
-            </td>
-            <td class="px-3 py-2 text-right">{{ sym }}{{ fmt(p.buy_amount) }}</td>
-            <td class="px-3 py-2 text-right">{{ sym }}{{ fmt(p.proceeds) }}</td>
-            <td class="px-3 py-2 text-right">{{ sym }}{{ fmt(p.total_fee) }}</td>
-            <td class="px-3 py-2 text-right">{{ sym }}{{ fmt(p.cost) }}</td>
-            <td class="px-3 py-2 text-right" :class="colorClass(p.realized_pnl)">{{ signed(p.realized_pnl) }}</td>
-            <td class="px-3 py-2 text-right" :class="colorClassNullable(p.return_rate)">{{ p.return_rate != null ? (p.return_rate * 100).toFixed(2) + '%' : '—' }}</td>
-            <td class="px-3 py-2 text-right" :class="colorClassNullable(p.ann_return)">{{ p.ann_return != null ? (p.ann_return * 100).toFixed(2) + '%' : '—' }}</td>
-            <td class="px-3 py-2 text-right" :title="`持有期净值序列年化波动率`">{{ p.ann_volatility != null ? (p.ann_volatility * 100).toFixed(2) + '%' : '—' }}</td>
-            <td class="px-3 py-2 text-right" :title="`持有期夏普（无风险利率 2%）`">{{ p.sharpe_ratio != null ? p.sharpe_ratio.toFixed(2) : '—' }}</td>
-            <td class="px-3 py-2 text-right">{{ p.days_held }}</td>
-          </tr>
+          <template v-for="p in store.closedPositions.positions" :key="p.id">
+            <tr class="border-t border-border-default text-text-muted hover:bg-bg-secondary cursor-pointer" :title="expandedIds.has(p.id) ? '点击收起流水' : '点击展开流水'" @click="toggleExpand(p.id)">
+              <td class="px-3 py-2" @click.stop>
+                <div class="font-medium text-text-primary">{{ p.name }}</div>
+                <div class="text-xs">{{ p.purchase_date }} → {{ p.sell_date }}<span v-if="p.symbol"> · {{ p.exchange }} {{ p.symbol }}</span></div>
+              </td>
+              <td class="px-3 py-2 text-right">{{ sym }}{{ fmt(p.buy_amount) }}</td>
+              <td class="px-3 py-2 text-right">{{ sym }}{{ fmt(p.proceeds) }}</td>
+              <td class="px-3 py-2 text-right">{{ sym }}{{ fmt(p.total_fee) }}</td>
+              <td class="px-3 py-2 text-right">{{ sym }}{{ fmt(p.cost) }}</td>
+              <td class="px-3 py-2 text-right" :class="colorClass(p.realized_pnl)">{{ signed(p.realized_pnl) }}</td>
+              <td class="px-3 py-2 text-right" :class="colorClassNullable(p.return_rate)">{{ p.return_rate != null ? (p.return_rate * 100).toFixed(2) + '%' : '—' }}</td>
+              <td class="px-3 py-2 text-right" :class="colorClassNullable(p.ann_return)">{{ p.ann_return != null ? (p.ann_return * 100).toFixed(2) + '%' : '—' }}</td>
+              <td class="px-3 py-2 text-right" :title="`持有期净值序列年化波动率`">{{ p.ann_volatility != null ? (p.ann_volatility * 100).toFixed(2) + '%' : '—' }}</td>
+              <td class="px-3 py-2 text-right" :title="`持有期夏普（无风险利率 2%）`">{{ p.sharpe_ratio != null ? p.sharpe_ratio.toFixed(2) : '—' }}</td>
+              <td class="px-3 py-2 text-right">{{ p.days_held }}</td>
+              <td class="px-3 py-2 text-center whitespace-nowrap" @click.stop>
+                <div class="flex items-center justify-center gap-2">
+                  <button v-if="soldInvById[p.id]" @click="openDetail(soldInvById[p.id]!)" title="净值曲线、指标与买卖点" class="text-text-secondary hover:text-accent-primary"><LineChart :size="14" /></button>
+                  <button @click="toggleExpand(p.id)" :title="expandedIds.has(p.id) ? '收起流水' : '展开流水'" class="text-text-secondary hover:text-accent-primary"><ListPlus :size="14" /></button>
+                  <button v-if="soldInvById[p.id]" @click="openProductModal(soldInvById[p.id]!)" title="编辑" class="text-text-secondary hover:text-accent-primary"><Edit2 :size="14" /></button>
+                </div>
+              </td>
+            </tr>
+            <tr v-if="expandedIds.has(p.id)" class="bg-bg-secondary">
+              <td colspan="12" class="px-4 py-3">
+                <div class="flex items-center justify-between mb-2">
+                  <div class="text-xs font-medium text-text-secondary">平仓产品流水（{{ txMap[p.id]?.length || 0 }} 条）</div>
+                  <div class="text-xs text-text-muted">已平仓产品的流水仅供查看，编辑请使用右侧「编辑」按钮</div>
+                </div>
+                <table class="w-full text-xs">
+                  <thead><tr class="text-text-muted"><th class="px-2 py-1 text-left">日期</th><th class="px-2 py-1 text-left">类型</th><th class="px-2 py-1 text-right">数量</th><th class="px-2 py-1 text-right">单价</th><th class="px-2 py-1 text-right">金额</th><th class="px-2 py-1 text-right">费用</th><th class="px-2 py-1 text-left">备注</th></tr></thead>
+                  <tbody>
+                    <tr v-for="tx in txMap[p.id] || []" :key="tx.id" class="border-t border-border-default">
+                      <td class="px-2 py-1">{{ tx.event_date }}</td>
+                      <td class="px-2 py-1">{{ TX_LABELS[tx.event_type] }}</td>
+                      <td class="px-2 py-1 text-right">{{ tx.quantity || '—' }}</td>
+                      <td class="px-2 py-1 text-right">{{ sym }}{{ fmt(tx.unit_price) }}</td>
+                      <td class="px-2 py-1 text-right">{{ signed(tx.amount) }}</td>
+                      <td class="px-2 py-1 text-right">{{ tx.fee ? sym + fmt(tx.fee) : '—' }}</td>
+                      <td class="px-2 py-1 text-text-muted">{{ tx.notes }}</td>
+                    </tr>
+                    <tr v-if="!txMap[p.id]?.length"><td colspan="7" class="px-2 py-2 text-text-muted text-center">暂无流水记录</td></tr>
+                  </tbody>
+                </table>
+              </td>
+            </tr>
+          </template>
           <tr class="border-t-2 border-border-default bg-bg-secondary font-medium">
             <td class="px-3 py-2">合计</td>
             <td class="px-3 py-2 text-right" colspan="3"></td>
@@ -192,6 +225,7 @@
             <td class="px-3 py-2 text-right text-text-muted">—</td>
             <td class="px-3 py-2 text-right text-text-muted">—</td>
             <td class="px-3 py-2 text-right">{{ totalDaysHeld }}</td>
+            <td class="px-3 py-2"></td>
           </tr>
 </tbody>
       </table>
@@ -525,6 +559,12 @@ const txMap = ref<Record<string, InvestmentTransaction[]>>({})
 
 const activeInvestments = computed(() => store.investments.filter(i => !i.sell_date))
 const soldInvestments = computed(() => store.investments.filter(i => !!i.sell_date))
+// Map investment_id → Investment for closed-position rows (detail/edit actions)
+const soldInvById = computed<Record<string, Investment>>(() => {
+  const m: Record<string, Investment> = {}
+  for (const i of soldInvestments.value) m[i.id] = i
+  return m
+})
 
 const totalDaysHeld = computed(() => {
   const positions = store.closedPositions?.positions ?? []
@@ -845,6 +885,8 @@ function onRowClick(inv: Investment) { toggleExpand(inv.id) }
 onMounted(async () => {
   await store.fetchInvestments()
   await Promise.all([loadAggregates(), store.fetchCashFlows()])
+  // Auto-refresh prices on tab enter so displayed values are never stale
+  refreshAllPrices()
 })
 </script>
 

@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from .database import engine, Base
-from .routers import auth, accounts, categories, tags, transactions, statistics, reports, settings, assets, investments, ai_presets, ai_export, ai_investment, reconciliation, research_assets, factors, strategies, backtests, signals, monitor
+from .routers import auth, accounts, categories, tags, transactions, statistics, reports, settings, assets, investments, ai_presets, ai_export, ai_investment, reconciliation, research_asset_ai, research_assets, research_statistics, factors, strategies, backtests, signals, monitor
 
 # Built frontend (frontend/dist) — served by the backend so the whole app
 # runs on a single port (http://127.0.0.1:8000). Used by the desktop build.
@@ -34,7 +34,9 @@ app.include_router(ai_presets.router)
 app.include_router(ai_export.router)
 app.include_router(ai_investment.router)
 app.include_router(reconciliation.router)
+app.include_router(research_asset_ai.router)   # BEFORE research_assets so /ai-reports/{id} isn't shadowed
 app.include_router(research_assets.router)
+app.include_router(research_statistics.router)  # /api/research/stats/snapshot
 app.include_router(factors.router)
 app.include_router(strategies.router)
 app.include_router(backtests.router)

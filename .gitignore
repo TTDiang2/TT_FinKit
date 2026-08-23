@@ -70,3 +70,7 @@ backend/cache/
 bank_data_convertor/
 docs/example_cashflow/
 
+
+# debug artifacts
+backend/portfolio_nav_365d.csv
+backend/export_nav_csv.py

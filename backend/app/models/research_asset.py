@@ -27,7 +27,9 @@ class ResearchAsset(Base):
     mgmt_fee = Column(Float, nullable=True)              # percent per year
     custody_fee = Column(Float, nullable=True)           # percent per year
     purchase_fee = Column(Float, nullable=True)          # percent per purchase
+    sales_service_fee = Column(Float, nullable=True)     # percent per year (C-class shares)
     redeem_fee_note = Column(String, default="")           # e.g. <7 days 1.5%, >30 days 0
+    redeem_rules = Column(Text, default="[]")              # structured JSON: [{"days":7,"fee_rate":1.5},{"days":null,"fee_rate":0}]
     min_purchase = Column(Float, nullable=True)           # yuan
     redeem_t_days = Column(Integer, nullable=True)        # redemption arrival trading days
     liquidity_note = Column(String, default="")

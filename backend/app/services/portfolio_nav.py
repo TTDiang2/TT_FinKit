@@ -49,29 +49,58 @@ def build_portfolio_nav(
     cash_by_date: dict[str, float],
     deposit_by_date: dict[str, float],
     withdrawal_by_date: dict[str, float],
+    internal_flow_by_date: dict[str, float] | None = None,
 ) -> dict:
     """Args:
     dates:            sorted ascending trading-calendar dates (union of fund NAVs)
     fund_navs:        {fund_id: {date: nav}} — will be forward-filled internally
     fund_qty:         {fund_id: {date: cumulative shares held at that date}}
     cash_by_date:     {date: cumulative idle cash at that date}
-    deposit_by_date / withdrawal_by_date: {date: flow amount on that exact date}
+    deposit_by_date / withdrawal_by_date: {date: external flow amount on that date}
+    internal_flow_by_date: optional {date: delta in total_value caused purely by
+        buy/sell events on that date (market-move excluded)}. If provided, these
+        are booked as additional unit subscriptions/redemptions at prev_nav so
+        internal rebalancing does not move NAV.
 
     Returns {series: [{date, nav, total_value}], metrics: {...}}.
     """
+    internal_flow_by_date = internal_flow_by_date or {}
     filled = {fid: forward_fill(dates, nav) for fid, nav in fund_navs.items()}
+
+    # First known NAV per fund. When a fund has holdings (qty > 0) on a date
+    # where its NAV series has no data point yet (e.g. weekend for OTC funds
+    # while a money-market fund keeps the calendar alive), fall back to this
+    # first known NAV instead of silently dropping the holding. Without this,
+    # holdings "appear" on the first trading day after the gap, causing a
+    # fake NAV jump (e.g. 2025-08-24 → 2025-08-25 +5080 in production data).
+    first_nav_by_fund: dict[str, float] = {}
+    for fid, nav_map in fund_navs.items():
+        for d in dates:
+            if d in nav_map and nav_map[d]:
+                first_nav_by_fund[fid] = nav_map[d]
+                break
 
     units = 0.0
     prev_nav = 1.0
     series: list[dict] = []
     for d in dates:
-        flow = deposit_by_date.get(d, 0.0) - withdrawal_by_date.get(d, 0.0)
-        if flow and units > 0:
-            units += flow / prev_nav
+        external_flow = deposit_by_date.get(d, 0.0) - withdrawal_by_date.get(d, 0.0)
+        internal_flow = internal_flow_by_date.get(d, 0.0)
+        # Total flow treated as unit subscription/redemption at prev_nav.
+        # This includes internal rebalancing (buy/sell) so NAV stays continuous.
+        total_flow = external_flow + internal_flow
+        if total_flow and units > 0:
+            units += total_flow / prev_nav
         value = cash_by_date.get(d, 0.0)
         for fid, navs in filled.items():
             qty = fund_qty.get(fid, {}).get(d)
+            if not qty:
+                continue
             nav = navs.get(d)
+            if nav is None:
+                # NAV gap before the fund's series starts (e.g. weekend) —
+                # value the holding at the fund's first known NAV.
+                nav = first_nav_by_fund.get(fid)
             if qty and nav:
                 value += qty * nav
         if value <= 0:

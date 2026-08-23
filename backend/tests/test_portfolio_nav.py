@@ -131,3 +131,44 @@ def test_withdrawal_redeems_units():
     for prev, cur in zip(series, series[1:]):
         ratio = cur["nav"] / prev["nav"]
         assert 0.997 <= ratio <= 1.003, f"NAV jumped at withdrawal: {prev['date']}->{cur['date']} {ratio}"
+
+
+def test_weekend_nav_gap_must_not_jump():
+    """Regression for the 2025-08-24 → 2025-08-25 production jump.
+
+    A money-market fund publishes NAV on weekends (always 1.0), which keeps the
+    calendar alive on Sat/Sun. A regular OTC fund held since BEFORE the window
+    has no weekend NAV data point. Previously the holding was silently dropped
+    on weekend dates (`if qty and nav` skipped it), then "appeared" on Monday,
+    producing a ~+5000 NAV jump. Holdings must be valued at the fund's first
+    known NAV on dates before its series starts.
+    """
+    dates = _dates(7)  # Mon..Sun
+    # Fund A: money-market, NAV every day = 1.0
+    # Fund B: OTC fund, NAV only on trading days (Mon..Fri), no Sat/Sun
+    navs_b = {d: 2.0 for i, d in enumerate(dates) if i < 5}  # missing Sat(index5)/Sun(6)
+    fund_navs = {"A": {d: 1.0 for d in dates}, "B": navs_b}
+    qty_by_date = {"A": {d: 1000.0 for d in dates}, "B": {d: 1000.0 for d in dates}}
+    cash_by_date = {d: 0.0 for d in dates}
+    res = build_portfolio_nav(dates, fund_navs, qty_by_date, cash_by_date, {}, {})
+    series = res["series"]
+    assert len(series) == len(dates)
+    for prev, cur in zip(series, series[1:]):
+        ratio = cur["nav"] / prev["nav"]
+        assert 0.997 <= ratio <= 1.003, f"NAV jumped over weekend: {prev['date']}->{cur['date']} {ratio}"
+
+
+def test_fund_nav_starts_after_holding_appears():
+    """Fund B's NAV series starts mid-window; holdings exist from day 0.
+    The first dates must value B at its first known NAV, not drop it."""
+    dates = _dates(6)
+    fund_navs = {"A": {d: 1.0 for d in dates}, "B": {dates[2]: 3.0, dates[3]: 3.0, dates[4]: 3.0, dates[5]: 3.0}}
+    qty_by_date = {"A": {d: 1000.0 for d in dates}, "B": {d: 2000.0 for d in dates}}
+    cash_by_date = {d: 0.0 for d in dates}
+    res = build_portfolio_nav(dates, fund_navs, qty_by_date, cash_by_date, {}, {})
+    series = res["series"]
+    # value[0] should already include B: 1000*1 + 2000*3 = 7000
+    assert abs(series[0]["total_value"] - 7000.0) < 0.01, f"expected 7000, got {series[0]}"
+    for prev, cur in zip(series, series[1:]):
+        ratio = cur["nav"] / prev["nav"]
+        assert 0.997 <= ratio <= 1.003, f"NAV jumped when B series starts: {prev['date']}->{cur['date']} {ratio}"

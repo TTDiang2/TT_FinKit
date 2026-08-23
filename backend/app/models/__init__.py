@@ -16,5 +16,8 @@ from .reconciliation import ReconciliationRecord
 from .strategy import Strategy
 from .backtest import Backtest
 from .research_asset import ResearchAsset, ResearchAssetPrice
+from .research_asset_ai_report import ResearchAssetAiReport
+from .research_asset_holding import ResearchAssetHolding
 from .factor import Factor, FactorValue, FactorExposure
+from .factor_evaluation import FactorIcPoint, FactorEvaluation
 from .signal import Signal

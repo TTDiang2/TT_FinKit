@@ -3,38 +3,15 @@
     <div class="flex items-center justify-between mb-4">
       <h1 class="text-xl font-bold">投资</h1>
     </div>
-    <div class="flex gap-2 mb-4">
-      <router-link to="/investments" custom v-slot="{ navigate, isActive }">
-        <button @click="navigate" :class="['px-4 py-2 text-sm rounded-md transition-colors', isActive ? 'bg-accent-primary text-white' : 'border border-border-default text-text-secondary hover:bg-bg-tertiary']">
+    <div class="flex gap-2 mb-4 flex-wrap">
+      <router-link to="/investments" custom v-slot="{ navigate, isExactActive }">
+        <button @click="navigate" :class="['px-4 py-2 text-sm rounded-md transition-colors', isExactActive ? 'bg-accent-primary text-white' : 'border border-border-default text-text-secondary hover:bg-bg-tertiary']">
           持仓与流水
-        </button>
-      </router-link>
-      <router-link to="/investments/monitor" custom v-slot="{ navigate, isActive }">
-        <button @click="navigate" :class="['px-4 py-2 text-sm rounded-md transition-colors', isActive ? 'bg-accent-primary text-white' : 'border border-border-default text-text-secondary hover:bg-bg-tertiary']">
-          监控
-        </button>
-      </router-link>
-      <router-link to="/investments/strategies" custom v-slot="{ navigate, isActive }">
-        <button
-          @click="navigate"
-          :class="[
-            'px-4 py-2 text-sm rounded-md transition-colors',
-            isActive
-              ? 'bg-accent-primary text-white'
-              : 'border border-border-default text-text-secondary hover:bg-bg-tertiary',
-          ]"
-        >
-          策略库
-        </button>
-      </router-link>
-      <router-link to="/investments/backtests" custom v-slot="{ navigate, isActive }">
-        <button @click="navigate" :class="['px-4 py-2 text-sm rounded-md transition-colors', isActive ? 'bg-accent-primary text-white' : 'border border-border-default text-text-secondary hover:bg-bg-tertiary']">
-          回测
         </button>
       </router-link>
       <router-link to="/investments/assets" custom v-slot="{ navigate, isActive }">
         <button @click="navigate" :class="['px-4 py-2 text-sm rounded-md transition-colors', isActive ? 'bg-accent-primary text-white' : 'border border-border-default text-text-secondary hover:bg-bg-tertiary']">
-          标的池
+          标的
         </button>
       </router-link>
       <router-link to="/investments/factors" custom v-slot="{ navigate, isActive }">
@@ -42,9 +19,14 @@
           因子
         </button>
       </router-link>
-      <router-link to="/investments/signals" custom v-slot="{ navigate, isActive }">
+      <router-link to="/investments/strategies" custom v-slot="{ navigate, isActive }">
         <button @click="navigate" :class="['px-4 py-2 text-sm rounded-md transition-colors', isActive ? 'bg-accent-primary text-white' : 'border border-border-default text-text-secondary hover:bg-bg-tertiary']">
-          信号
+          策略
+        </button>
+      </router-link>
+      <router-link to="/investments/monitor" custom v-slot="{ navigate, isActive }">
+        <button @click="navigate" :class="['px-4 py-2 text-sm rounded-md transition-colors', isActive ? 'bg-accent-primary text-white' : 'border border-border-default text-text-secondary hover:bg-bg-tertiary']">
+          监控
         </button>
       </router-link>
       <router-link to="/investments/ai" custom v-slot="{ navigate, isActive }">

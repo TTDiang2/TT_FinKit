@@ -233,16 +233,20 @@ const incomeCategoryTrend = ref<{ month: string; category_name: string; category
 const expenseVolatility = ref<{ month: string; total_expense: number; std_dev: number; cv: number }[]>([])
 const expenseCategoryTrend = ref<{ month: string; category_name: string; category_color: string; total: number }[]>([])
 
+// Overview totals from backend (authoritative) — used for coreStats to avoid recompute mismatches
+const overviewStats = ref({ total_income_month: 0, total_expense_month: 0, net_balance: 0, savings_rate: 0 })
+
 function fmt(n: number): string { return n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }
 
 const coreStats = computed(() => {
-  const totalIncome = incomeCatsRaw.value.reduce((s, c) => s + c.total, 0)
-  const totalExpense = expenseCatsRaw.value.reduce((s, c) => s + c.total, 0)
-  const totalBalance = totalIncome - totalExpense
+  // Use overview endpoint totals (authoritative) — not sum of by-category rows (misses uncategorized txns)
+  const totalIncome = overviewStats.value.total_income_month
+  const totalExpense = overviewStats.value.total_expense_month
+  const totalBalance = overviewStats.value.net_balance
+  const savingsRate = overviewStats.value.savings_rate
   const monthCount = Math.max(trends.value.length, 1)
   const avgMonthlyIncome = totalIncome / monthCount
   const avgMonthlyExpense = totalExpense / monthCount
-  const savingsRate = totalIncome > 0 ? ((totalIncome - totalExpense) / totalIncome) * 100 : 0
   return { totalIncome, totalExpense, totalBalance, avgMonthlyIncome, avgMonthlyExpense, savingsRate }
 })
 
@@ -467,8 +471,10 @@ function getQuickRangeParams(q: string): { startDate: string; endDate: string } 
 function setQuickRange(q: string) { range.value = q; const params = getQuickRangeParams(q); startDate.value = params.startDate; endDate.value = params.endDate; loadData() }
 
 async function loadData() {
+  // Derive year/month from startDate for /statistics/overview (authoritative totals)
+  const [y, m] = startDate.value.split('-').map(Number)
   try {
-    const [ec, ic, ds, wp, tr, cum, sar, nrr, ert, nwg, ict, ev, ect] = await Promise.all([
+    const [ec, ic, ds, wp, tr, cum, sar, nrr, ert, nwg, ict, ev, ect, ov] = await Promise.all([
       api.get('/statistics/by-category', { params: { type_filter: 'expense', start_date: startDate.value, end_date: endDate.value } }),
       api.get('/statistics/by-category', { params: { type_filter: 'income', start_date: startDate.value, end_date: endDate.value } }),
       api.get('/statistics/daily-spending', { params: { start_date: startDate.value, end_date: endDate.value } }),
@@ -482,6 +488,7 @@ async function loadData() {
       api.get('/statistics/category-trend', { params: { type_filter: 'income', months: 12 } }),
       api.get('/statistics/expense-volatility', { params: { months: 12 } }),
       api.get('/statistics/category-trend', { params: { type_filter: 'expense', months: 12 } }),
+      api.get('/statistics/overview', { params: { year: y, month: m } }),
     ])
     expenseCatsRaw.value = ec.data; incomeCatsRaw.value = ic.data; dailySpending.value = ds.data
     weekdayPattern.value = wp.data; trends.value = tr.data
@@ -493,6 +500,7 @@ async function loadData() {
     incomeCategoryTrend.value = ict.data
     expenseVolatility.value = ev.data
     expenseCategoryTrend.value = ect.data
+    overviewStats.value = { total_income_month: ov.data.total_income_month, total_expense_month: ov.data.total_expense_month, net_balance: ov.data.net_balance, savings_rate: ov.data.savings_rate }
   } catch (e) { console.error(e) }
 }
 

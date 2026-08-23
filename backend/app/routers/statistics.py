@@ -127,8 +127,39 @@ async def get_overview(
     asset_cur_map = {r[0]: float(r[1]) for r in asset_cur_result.all()}
     # 注意：不含 asset_type="investment"（手动投资资产与投资 tab 重复，见 AUDIT B1/D3）
     fixed_plus_other = asset_cur_map.get("fixed_asset", 0) + asset_cur_map.get("other_asset", 0)
+    liabilities = asset_cur_map.get("liability", 0)
 
-    total_assets = total_assets + inv_unrealized + fixed_plus_other
+    # 总资产 = 各账户余额（含转账处理）+ 持仓当前市值 + 固定资产/其他资产 - 负债
+    # 使用 get_account_balance 同款公式（initial + income - expense + transfer_in - transfer_out）
+    account_balances_sum = 0.0
+    for acc in accounts:
+        inc_res = await db.execute(
+            select(func.coalesce(func.sum(Transaction.amount), 0)).where(
+                Transaction.account_id == acc.id, Transaction.type == "income"
+            )
+        )
+        exp_res = await db.execute(
+            select(func.coalesce(func.sum(Transaction.amount), 0)).where(
+                Transaction.account_id == acc.id, Transaction.type == "expense"
+            )
+        )
+        tout_res = await db.execute(
+            select(func.coalesce(func.sum(Transaction.amount), 0)).where(
+                Transaction.account_id == acc.id, Transaction.type == "transfer"
+            )
+        )
+        tin_res = await db.execute(
+            select(func.coalesce(func.sum(Transaction.amount), 0)).where(
+                Transaction.dest_account_id == acc.id, Transaction.type == "transfer"
+            )
+        )
+        acc_income = float(inc_res.scalar() or 0)
+        acc_expense = float(exp_res.scalar() or 0)
+        acc_transfer_out = float(tout_res.scalar() or 0)
+        acc_transfer_in = float(tin_res.scalar() or 0)
+        account_balances_sum += acc.initial_balance + acc_income - acc_expense + acc_transfer_in - acc_transfer_out
+
+    total_assets = account_balances_sum + total_current + fixed_plus_other - liabilities
 
     vs_income = ((total_income - total_income_last) / total_income_last * 100) if total_income_last else 0
     vs_expense = ((total_expense - total_expense_last) / total_expense_last * 100) if total_expense_last else 0
@@ -221,24 +252,15 @@ async def get_overview(
     net_worth_growth = ((cur_net_worth - prev_net_worth) / prev_net_worth * 100) if prev_net_worth != 0 else 0
 
     # investments 已在上面 total_assets 计算处加载（investments/total_invested/total_current）
+    # 改用 XIRR 年化收益率（与投资 tab 同款公式）
+    from ..services.investment_stats import compute_portfolio_overview
+    portfolio_overview = await compute_portfolio_overview(db, user_id)
+    xirr_annualized = portfolio_overview.xirr_annualized if portfolio_overview.xirr_annualized is not None else 0.0
+    annualized_return = round(xirr_annualized * 100, 2)
+    # 投资收益率（simple return）
     inv_return = ((total_current - total_invested) / total_invested * 100) if total_invested > 0 else 0
-    investment_ratio = (total_current / total_assets * 100) if total_assets > 0 else 0
-
-    earliest_inv = None
-    if investments:
-        dates = [inv.purchase_date for inv in investments if inv.purchase_date]
-        if dates:
-            earliest_inv = min(dates)
-    annualized_return = 0.0
-    if earliest_inv and total_invested > 0:
-        try:
-            earliest_dt = datetime.strptime(earliest_inv, "%Y-%m-%d")
-            days_held = max((datetime.now() - earliest_dt).days, 1)
-            years_held = days_held / 365.0
-            total_return_ratio = (total_current - total_invested) / total_invested
-            annualized_return = ((1 + total_return_ratio) ** (1 / years_held) - 1) * 100 if years_held > 0 else 0
-        except (ValueError, ZeroDivisionError):
-            annualized_return = 0.0
+    # 投资比率：使用组合当前市值 / 总资产
+    investment_ratio = (portfolio_overview.current_market_value / total_assets * 100) if total_assets > 0 else 0
 
     return OverviewResponse(
         total_assets=total_assets,

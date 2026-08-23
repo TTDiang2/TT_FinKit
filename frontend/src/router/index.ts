@@ -23,11 +23,13 @@ const router = createRouter({
               name: 'investments-strategies',
               component: () => import('@/pages/investments/StrategyLibraryPage.vue'),
             },
-            { path: 'backtests', name: 'investments-backtests', component: () => import('@/pages/investments/BacktestListPage.vue') },
+            // /investments/backtests -> /investments/strategies?sub=backtest (回测 is a sub-tab of 策略)
+            { path: 'backtests', redirect: (to) => ({ path: '/investments/strategies', query: { sub: 'backtest' } }) },
             { path: 'backtests/:id', name: 'investments-backtests-detail', component: () => import('@/pages/investments/BacktestDetailPage.vue') },
             { path: 'assets', name: 'investments-assets', component: () => import('@/pages/investments/AssetPoolPage.vue') },
             { path: 'factors', name: 'investments-factors', component: () => import('@/pages/investments/FactorPage.vue') },
-            { path: 'signals', name: 'investments-signals', component: () => import('@/pages/investments/SignalPage.vue') },
+            // /investments/signals -> /investments/monitor?sub=signal (信号 is a sub-tab of 监控)
+            { path: 'signals', redirect: (to) => ({ path: '/investments/monitor', query: { sub: 'signal' } }) },
             { path: 'monitor', name: 'investments-monitor', component: () => import('@/pages/investments/MonitorPage.vue') },
             { path: 'ai', name: 'investments-ai', component: () => import('@/pages/investments/AIAnalysisTab.vue') },
           ],

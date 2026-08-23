@@ -2,6 +2,21 @@
 @tailwind components;
 @tailwind utilities;
 
+@layer components {
+  /* Primary action: solid black, white text, hover darkens */
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-1.5 px-4 py-2 bg-accent-primary text-white text-sm font-medium rounded-md hover:bg-accent-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors;
+  }
+  /* Secondary action: outline, gray text, hover gray bg */
+  .btn-secondary {
+    @apply inline-flex items-center justify-center gap-1.5 px-3 py-2 border border-border-default rounded-md text-sm text-text-secondary hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-50 disabled:cursor-not-allowed transition-colors;
+  }
+  /* Danger action */
+  .btn-danger {
+    @apply inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-expense-color text-white text-sm rounded-md hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors;
+  }
+}
+
 :root {
   --bg-primary: #FFFFFF; --bg-secondary: #FAFAFA; --bg-tertiary: #F5F5F5; --bg-sidebar: #F8F8F8;
   --border-default: #E8E8E8; --border-hover: #D4D4D4;

@@ -1,5 +1,34 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from typing import Optional, List, Literal
+
+
+class RedeemRule(BaseModel):
+    """Structured redemption fee tier: holding days < ``days`` → ``fee_rate`` %.
+
+    ``days`` = null is the catch-all fallback tier (must be last).
+    """
+    days: Optional[int] = None
+    fee_rate: float = 0.0
+
+
+def validate_redeem_rules(rules: List[RedeemRule]) -> List[RedeemRule]:
+    """Validate: fee_rate >= 0, days ascending, exactly one null-days fallback at the end."""
+    if not rules:
+        return []
+    prev_days = -1
+    seen_fallback = False
+    for r in rules:
+        if r.fee_rate < 0:
+            raise ValueError("赎回费率不能为负数")
+        if r.days is None:
+            seen_fallback = True
+        else:
+            if seen_fallback:
+                raise ValueError("兜底档（天数为空）必须是最后一档")
+            if r.days <= prev_days:
+                raise ValueError("赎回费档位天数必须递增")
+            prev_days = r.days
+    return rules
 
 
 class ResearchAssetCreate(BaseModel):
@@ -19,13 +48,20 @@ class ResearchAssetPool(BaseModel):
     mgmt_fee: Optional[float] = None
     custody_fee: Optional[float] = None
     purchase_fee: Optional[float] = None
-    redeem_fee_note: str = ""
+    sales_service_fee: Optional[float] = None     # %/year (C-class shares)
+    redeem_rules: List[RedeemRule] = []
+    redeem_fee_note: str = ""                     # display text; auto-generated if empty
     min_purchase: Optional[float] = None
     redeem_t_days: Optional[int] = None
     liquidity_note: str = ""
     data_quality: str = ""
     is_money_market: Optional[bool] = None
     notes: Optional[str] = None
+
+    @field_validator("redeem_rules")
+    @classmethod
+    def _check_rules(cls, v):
+        return validate_redeem_rules(v)
 
 
 class ResearchAssetUpdate(BaseModel):
@@ -36,6 +72,8 @@ class ResearchAssetUpdate(BaseModel):
     mgmt_fee: Optional[float] = None
     custody_fee: Optional[float] = None
     purchase_fee: Optional[float] = None
+    sales_service_fee: Optional[float] = None
+    redeem_rules: Optional[List[RedeemRule]] = None
     redeem_fee_note: Optional[str] = None
     min_purchase: Optional[float] = None
     redeem_t_days: Optional[int] = None
@@ -43,6 +81,11 @@ class ResearchAssetUpdate(BaseModel):
     data_quality: Optional[str] = None
     is_money_market: Optional[bool] = None
     notes: Optional[str] = None
+
+    @field_validator("redeem_rules")
+    @classmethod
+    def _check_rules(cls, v):
+        return validate_redeem_rules(v) if v is not None else v
 
 
 class ResearchAssetIndicators(BaseModel):
@@ -81,6 +124,8 @@ class ResearchAssetResponse(BaseModel):
     mgmt_fee: Optional[float] = None
     custody_fee: Optional[float] = None
     purchase_fee: Optional[float] = None
+    sales_service_fee: Optional[float] = None
+    redeem_rules: List[RedeemRule] = []
     redeem_fee_note: str = ""
     min_purchase: Optional[float] = None
     redeem_t_days: Optional[int] = None
@@ -96,6 +141,26 @@ class ResearchPricePoint(BaseModel):
     close: float
     nav: Optional[float] = None
     acc_nav: Optional[float] = None
+
+
+class NavPoint(BaseModel):
+    date: str
+    close: float
+    ma20: Optional[float] = None
+    ma60: Optional[float] = None
+
+
+class BenchmarkSeries(BaseModel):
+    name: str
+    symbol: str
+    exchange: str
+    series: List[dict] = []          # [{"date": "...", "close": 123.4}]
+
+
+class NavHistoryDetail(BaseModel):
+    series: List[NavPoint]
+    benchmark: Optional[BenchmarkSeries] = None
+    source: str = ""
 
 
 class SyncResult(BaseModel):

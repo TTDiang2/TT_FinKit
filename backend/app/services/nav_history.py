@@ -118,6 +118,87 @@ _BENCHMARK_SYMBOL = "000300"
 _BENCHMARK_EXCHANGE = "SH"
 
 
+async def fetch_asset_benchmark(
+    symbol: str,
+    exchange: str,
+    begin: str,
+    end: str,
+) -> tuple[list[dict] | None, str | None]:
+    """Fetch a comparison benchmark series for a research asset.
+
+    ``symbol``/``exchange`` come from ``_pick_benchmark`` in research_assets.py:
+      - ("000300","SH")  → CSI300 index kline (existing tencent path)
+      - ("518880","SH")  → gold ETF kline (same tencent path)
+      - ("513100","SH")  → NASDAQ-100 ETF kline (same tencent path)
+      - ("bench-cnbd","IDX") → 中债综合财富指数 — attempted via akshare;
+        falls back to 国债ETF 511010 kline on any failure.
+      - None → caller skips benchmark entirely (money-market funds)
+
+    Returns (series, source) or (None, error_message) on failure.
+    """
+    try:
+        if symbol == "bench-cnbd":
+            return await _fetch_cnbd_benchmark(begin, end)
+        series = await _tencent_kline(symbol, exchange, begin, end)
+        if series:
+            return series, "tencent"
+        # fallback: try eastmoney kline path for the given symbol
+        series = await _eastmoney_kline(symbol, exchange, begin, end)
+        if series:
+            return series, "eastmoney"
+        return None, "所有数据源均未返回数据"
+    except Exception as e:
+        return None, f"基准获取失败：{e}"
+
+
+async def _tencent_kline(symbol: str, exchange: str, begin: str, end: str) -> list[dict]:
+    """Generic Tencent daily kline for SH/SZ index/ETF symbols (sh/sz prefix)."""
+    prefix = "sz" if str(exchange).upper() == "SZ" else "sh"
+    url = (
+        "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+        f"?param={prefix}{symbol},day,{begin},{end},640,qfq"
+    )
+    async with httpx.AsyncClient() as client:
+        r = await client.get(url, headers=_HEADERS, timeout=15.0)
+        r.raise_for_status()
+        data = r.json()
+    node = (data.get("data") or {}).get(f"{prefix}{symbol}") or {}
+    lines = node.get("day") or node.get("qfqday") or []
+    out = []
+    for parts in lines:
+        d = str(parts[0])[:10]
+        if len(parts) >= 3 and _in_range(d, begin, end):
+            out.append({"date": d, "close": float(parts[2])})
+    return out
+
+
+async def _fetch_cnbd_benchmark(begin: str, end: str) -> tuple[list[dict] | None, str | None]:
+    """中债综合财富指数 via akshare; fallback 国债ETF 511010 (tencent)."""
+    try:
+        import akshare as ak
+
+        def _run():
+            # 中债-综合财富(总值)指数，akshare 接口 code = "CBA00001"
+            return ak.bond_zh_index_close_csindex(symbol="CBA00001")
+
+        df = await asyncio.to_thread(_run)
+        out = []
+        for _, row in df.iterrows():
+            d = str(row["日期"])[:10]
+            close = float(row["收盘"])
+            if _in_range(d, begin, end):
+                out.append({"date": d, "close": close})
+        if out:
+            return out, "akshare-csindex"
+    except Exception:
+        pass
+    # fallback: 国债ETF 511010 via tencent
+    series = await _tencent_kline("511010", "SH", begin, end)
+    if series:
+        return series, "tencent(国债ETF)"
+    return None, "中债指数与国债ETF均获取失败"
+
+
 async def fetch_benchmark_series(begin: str, end: str) -> tuple[list[dict], str]:
     """沪深300 daily close series (Tencent ifzq → eastmoney kline → akshare fallback).
 
@@ -187,6 +268,18 @@ async def _tencent_index_kline(begin: str, end: str) -> list[dict]:
         d = str(parts[0])[:10]
         if len(parts) >= 3 and _in_range(d, begin, end):
             out.append({"date": d, "close": float(parts[2])})
+    # Freshness guard: Tencent sometimes returns a stale series (weeks/months old).
+    # If the last point is far behind `end`, treat the source as failed so the caller
+    # falls through to the next source instead of caching stale data (which made the
+    # benchmark line stop at an old date in the desktop app).
+    if out:
+        try:
+            last_date = out[-1]["date"]
+            lag = (datetime.strptime(end, "%Y-%m-%d") - datetime.strptime(last_date, "%Y-%m-%d")).days
+            if lag > 10:
+                return []
+        except ValueError:
+            pass
     return out
 
 

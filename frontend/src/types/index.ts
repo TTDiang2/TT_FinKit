@@ -379,6 +379,17 @@ export interface StrategyResponse {
   params_schema: Record<string, any>
   rebalance_freq: string
   is_builtin: boolean
+  folder?: string
+  source_file?: string
+  factor_keys?: string[]
+  latest_backtest?: {
+    backtest_id: string
+    status: string
+    ann_return: number | null
+    sharpe: number | null
+    max_drawdown: number | null
+    created_at: string | null
+  } | null
   created_at: string
   updated_at: string
 }
@@ -419,6 +430,11 @@ export interface ResearchAssetIndicators {
   max_drawdown: number | null; // fraction, e.g. -0.2130
 }
 
+export interface RedeemRule {
+  days: number | null;
+  fee_rate: number;
+}
+
 export interface ResearchAsset {
   id: string;
   symbol: string;
@@ -430,6 +446,8 @@ export interface ResearchAsset {
   mgmt_fee: number | null;
   custody_fee: number | null;
   purchase_fee: number | null;
+  sales_service_fee: number | null;
+  redeem_rules: RedeemRule[];
   redeem_fee_note: string;
   min_purchase: number | null;
   redeem_t_days: number | null;
@@ -621,6 +639,7 @@ export interface SignalRunResult {
 export interface BacktestResponse {
   id: string
   strategy_id: string
+  strategy_name?: string
   strategy_version: number
   params: Record<string, any>
   universe: string[]
@@ -630,6 +649,7 @@ export interface BacktestResponse {
   data_as_of: string
   status: 'pending' | 'running' | 'done' | 'failed'
   error?: string
+  factor_keys?: string[]
   created_at: string
   updated_at: string
   results?: BacktestResults
@@ -658,6 +678,7 @@ export interface BacktestMetrics {
   calmar: number
   sortino: number
   total_cost: number
+  total_cost_ratio: number
   turnover_annual: number
 }
 
@@ -672,7 +693,7 @@ export interface RebalanceRecord {
 }
 
 export interface Trade {
-  asset_id: string
+  symbol: string  // asset symbol (e.g. "000217"), NOT the internal UUID
   side: 'buy' | 'sell'
   amount: number
   fee: number

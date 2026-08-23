@@ -222,9 +222,15 @@ function eventTooltipLines(date: string): string[] {
   return evs.map(e => `${e.type === 'buy' ? '申购' : '赎回'} ${e.name} ${e.quantity}份 ${sym.value}${fmt(e.amount)}`)
 }
 
+// Normalization base (first NAV value) shared by chart data + tooltip
+const base0 = computed(() => {
+  const base = navSeries.value.map(p => p.nav)
+  return base.length && base[0] !== 0 ? base[0] : 1
+})
+
 const navChartData = computed(() => {
   const base = navSeries.value.map(p => p.nav)
-  const start = base.length && base[0] !== 0 ? base[0] : 1
+  const start = base0.value
   const datasets: any[] = [{
     label: '组合净值',
     data: base.map(v => v / start),
@@ -241,9 +247,21 @@ const navChartData = computed(() => {
   if (bm?.series?.length) {
     const b0 = bm.series[0].close
     if (b0 !== 0) {
+      // Forward-fill benchmark closes onto the portfolio NAV date axis (labels).
+      // Without this, the grey line has only trading-day points and Chart.js
+      // aligns them by INDEX — the last benchmark point lands on labels[N-1]
+      // (e.g. 2026-04-20 for the 1y view) instead of its real date, so the
+      // line appears to stop months early even though the data is complete.
+      const bCloseByDate = new Map(bm.series.map(s => [s.date, s.close] as const))
+      let lastClose = b0
+      const aligned = navSeries.value.map(p => {
+        const c = bCloseByDate.get(p.date)
+        if (c !== undefined) lastClose = c
+        return lastClose / b0
+      })
       datasets.push({
         label: '沪深300（起点归一）',
-        data: bm.series.map(p => p.close / b0),
+        data: aligned,
         borderColor: '#9ca3af',
         borderDash: [5, 4],
         borderWidth: 1.2,
@@ -285,7 +303,9 @@ const navChartData = computed(() => {
   return { labels: navSeries.value.map(p => p.date), datasets }
 })
 
-const navChartOpts = {
+// computed so legend visibility reacts to benchmark/event data arriving AFTER mount
+// (a plain object here would freeze legend.display=false forever — the bug that hid the legend)
+const navChartOpts = computed(() => ({
   responsive: true,
   maintainAspectRatio: false,
   interaction: { mode: 'index' as const, intersect: false },
@@ -296,9 +316,26 @@ const navChartOpts = {
         label: (ctx: any) => {
           const p = navSeries.value[ctx.dataIndex]
           if (ctx.dataset.label === '申购') return eventTooltipLines(p?.date ?? '')
-          if (ctx.dataset.label === '赎回') return []
+          if (ctx.dataset.label === '赎回') return eventTooltipLines(p?.date ?? '')
+          // Benchmark (沪深300) points must show benchmark data, not portfolio NAV
+          if (ctx.dataset.label === '沪深300（起点归一）') {
+            const d = p?.date ?? ''
+            const series = benchmark.value?.series ?? []
+            const b0 = series[0]?.close
+            // forward-fill: nearest trading-day close at or before the hovered date
+            let close: number | undefined
+            for (const s of series) {
+              if (s.date <= d) close = s.close
+              else break
+            }
+            if (close !== undefined) return [`沪深300 收盘 ${close.toFixed(2)}`, b0 ? `起点 ${b0.toFixed(2)}（归一）` : ''].filter(Boolean)
+            return ['沪深300']
+          }
           if (!p) return `净值 ${ctx.parsed.y.toFixed(4)}`
-          return [`净值 ${p.nav.toFixed(4)}`, `总值 ${sym.value}${fmt(p.total_value)}`]
+          // Show the NORMALIZED NAV (matches the curve, start=1.0) + total value
+          const start = base0.value
+          const normNav = start > 0 ? p.nav / start : p.nav
+          return [`净值 ${normNav.toFixed(4)}（起点 1.0）`, `总值 ${sym.value}${fmt(p.total_value)}`]
         },
       },
     },
@@ -307,7 +344,7 @@ const navChartOpts = {
     x: { ticks: { maxTicksLimit: 8, font: { size: 10 }, maxRotation: 0, autoSkipPadding: 20 }, grid: { display: false } },
     y: { ticks: { font: { size: 10 }, callback: (v: any) => Number(v).toFixed(3) }, grid: { color: 'rgba(0,0,0,0.05)' } },
   },
-}
+}))
 
 function warningSeverityClass(severity: HealthWarning['severity']) {
   switch (severity) {
