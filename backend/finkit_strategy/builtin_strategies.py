@@ -1,5 +1,6 @@
-"""4 built-in strategies: Equal Weight, Volatility Inverse, Momentum Rotation, Risk Parity."""
-from .base import Strategy, StrategyContext
+"""4 built-in strategies + SMA timing strategy."""
+from finkit_strategy import Strategy, StrategyContext
+
 
 class EqualWeightStrategy(Strategy):
     """等权再平衡：每月末等权持有 universe 中所有标的"""
@@ -54,7 +55,7 @@ class MomentumRotationStrategy(Strategy):
         if not ids:
             return None
         mom = ctx.momentum(ids, lookback=self.params["lookback_days"])
-        top = sorted(mom, key=mom.get, reverse=True)[:self.params["top_n"]]
+        top = sorted(mom, key=mom.get, reverse=True)[: self.params["top_n"]]
         if not top:
             return None
         w = 1.0 / len(top)
@@ -88,9 +89,55 @@ class RiskParityStrategy(Strategy):
         return {eq: w_eq / total, bd: w_bd / total}
 
 
+class SMATimingStrategy(Strategy):
+    """MA 均线择时：收盘价在 MA 上方全仓，跌破 MA 空仓。
+
+    仅适用于单一标的的场景（如 000217）。
+    参数 ma_days 控制均线窗口。
+    """
+    name = "MA 均线择时"
+    description = "收盘价上穿 N 日均线全仓，下穿空仓。仅适用于单一标的。"
+    rebalance_freq = "monthly"
+    params_schema = {
+        "ma_days": {"type": "int", "default": 20, "min": 5, "max": 250},
+    }
+
+    def target_weights(self, ctx: StrategyContext, date: str) -> dict[str, float] | None:
+        ids = self.universe(ctx)
+        if not ids:
+            return None
+        aid = ids[0]
+        price_series = ctx.prices.get(aid, {})
+        if not price_series:
+            return None
+        # 找到 date 当日或之前最近的价格
+        sorted_dates = sorted(d for d in price_series.keys() if d <= date)
+        if not sorted_dates:
+            return None
+        current_price = price_series[sorted_dates[-1]]
+        # 计算 MA(ma_days)
+        ma_days = self.params["ma_days"]
+        ma = self._sma(price_series, sorted_dates[-1], ma_days)
+        if ma is None:
+            return None
+        if current_price > ma:
+            return {aid: 1.0}
+        else:
+            return {aid: 0.0}
+
+    def _sma(self, price_series: dict[str, float], end_date: str, n: int) -> float | None:
+        """end_date 当日（含）向前取 n 个交易日，求简单平均。"""
+        dates = sorted(d for d in price_series.keys() if d <= end_date)
+        if len(dates) < n:
+            return None
+        vals = [price_series[d] for d in dates[-n:]]
+        return sum(vals) / n
+
+
 BUILTIN_STRATEGIES = [
     EqualWeightStrategy,
     VolatilityInverseStrategy,
     MomentumRotationStrategy,
     RiskParityStrategy,
+    SMATimingStrategy,
 ]

@@ -60,7 +60,7 @@
     </div>
 
     <!-- 导入弹窗 -->
-    <BaseModal v-if="showImport" title="导入策略" @close="showImport = false" width="max-w-2xl">
+    <BaseModal v-if="showImport" title="导入策略" @close="showImport = false">
       <div class="space-y-4">
         <div>
           <label class="block text-sm font-medium mb-1">策略名称</label>
@@ -74,7 +74,7 @@
           <label class="block text-sm font-medium mb-1">策略代码 (.py)</label>
           <textarea
             v-model="importForm.code"
-            rows="14"
+            rows="10"
             class="w-full px-3 py-2 text-sm font-mono border border-border-default rounded-md focus:outline-none focus:ring-1 focus:ring-accent-primary"
             placeholder="from finkit_strategy import Strategy, StrategyContext&#10;&#10;class MyStrategy(Strategy):&#10;    name = &quot;我的策略&quot;&#10;    description = &quot;&quot;&#10;    rebalance_freq = &quot;monthly&quot;&#10;    params_schema = {}&#10;&#10;    def target_weights(self, ctx, date):&#10;        # Return {asset_id: weight} or None&#10;        return {}"
           ></textarea>

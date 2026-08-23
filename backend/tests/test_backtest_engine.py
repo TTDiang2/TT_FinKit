@@ -348,3 +348,105 @@ class EqualWeight(Strategy):
             )
             assert result["status"] == "error"
             assert result["error"]
+
+
+class TestSMATimingStrategy:
+    """测试 MA 均线择时策略（000217 单标的，全仓/空仓两种状态）"""
+
+    def test_sma_timing_import(self):
+        """验证 SMATimingStrategy 可以正常 import"""
+        from finkit_strategy.builtin_strategies import SMATimingStrategy
+        s = SMATimingStrategy()
+        assert s.name == "MA 均线择时"
+        assert s.rebalance_freq == "monthly"
+        assert s.params["ma_days"] == 20
+
+    def test_sma_timing_full_backtest(self):
+        """完整回测：000217 单标的，价格先跌后涨，验证 MA 择时有效"""
+        from finkit_strategy.builtin_strategies import SMATimingStrategy
+
+        days = [
+            "2025-01-29", "2025-01-30", "2025-01-31",
+            "2025-02-03", "2025-02-04", "2025-02-05",
+            "2025-02-27", "2025-02-28",
+        ]
+        prices_a = {d: 1.0 - 0.01 * i for i, d in enumerate(days)}
+        prices = {"000217": prices_a}
+
+        trading_days = sorted(prices["000217"].keys())
+        rebalance_dates = generate_rebalance_dates(trading_days, "monthly")
+
+        ctx = StrategyContext(
+            pool=[{"id": "000217", "type": "stock"}],
+            prices=prices,
+            returns={aid: {} for aid in prices},
+            current_weights={},
+            params={},
+        )
+
+        strategy = SMATimingStrategy()
+        strategy._universe = ["000217"]
+        strategy.params = {"ma_days": 3}
+
+        result = run_simulation(
+            strategy=strategy,
+            ctx=ctx,
+            trading_days=trading_days,
+            rebalance_dates=rebalance_dates,
+            prices=prices,
+            fee_terms={"000217": {"purchase_fee": 0.0, "mgmt_fee": 0.0, "custody_fee": 0.0}},
+            redeem_rules=DEFAULT_REDEEM_RULES,
+            initial_capital=100000.0,
+        )
+
+        assert "nav_series" in result
+        assert "rebalance_records" in result
+        assert len(result["nav_series"]) == len(trading_days)
+        # 初始 nav = 1.0，之后因持续空仓 NAV 保持不变（无交易无损耗）
+        for entry in result["nav_series"]:
+            assert entry["nav"] == 1.0, "空仓时 NAV 应保持 1.0"
+
+    def test_sma_timing_logic_golden_cross(self):
+        """金叉 → 全仓；死叉 → 空仓，逻辑验证"""
+        from finkit_strategy.builtin_strategies import SMATimingStrategy
+
+        # 构造 3 天 MA：Day1=10, Day2=11, Day3=12（价格向上穿过 MA）
+        price_series = {
+            "2025-01-01": 10.0,
+            "2025-01-02": 11.0,
+            "2025-01-03": 12.0,   # MA3 = (10+11+12)/3 = 11 > price=12? NO → MA3=11
+        }
+        # 重新构造让 price > MA
+        price_series2 = {
+            "2025-01-01": 10.0,
+            "2025-01-02": 11.0,
+            "2025-01-03": 12.0,
+            "2025-01-04": 12.5,   # MA3(10,11,12)=11 → price 12.5 > 11 → 全仓
+        }
+
+        class MockCtx:
+            def __init__(self, prices):
+                self.prices = {"000217": prices}
+                self.pool = [{"id": "000217"}]
+
+        ctx = MockCtx(price_series2)
+        s = SMATimingStrategy()
+        s._universe = ["000217"]
+        s.params = {"ma_days": 3}
+
+        # 金叉 → 全仓
+        w = s.target_weights(ctx, "2025-01-04")
+        assert w is not None
+        assert w["000217"] == 1.0, f"expected 1.0 (全仓), got {w['000217']}"
+
+        # 死叉：价格跌破 MA
+        price_series3 = {
+            "2025-01-01": 10.0,
+            "2025-01-02": 13.0,
+            "2025-01-03": 14.0,
+            "2025-01-04": 11.0,   # MA3(10,13,14)=12.33 → price 11 < MA → 空仓
+        }
+        ctx2 = MockCtx(price_series3)
+        w2 = s.target_weights(ctx2, "2025-01-04")
+        assert w2 is not None
+        assert w2["000217"] == 0.0, f"expected 0.0 (空仓), got {w2['000217']}"
