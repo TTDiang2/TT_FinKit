@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+﻿from pydantic import BaseModel
 from typing import Optional
 
 class StrategyCreate(BaseModel):
@@ -7,6 +7,9 @@ class StrategyCreate(BaseModel):
     code: str
     params_schema: dict = {}
     rebalance_freq: str = "monthly"
+    folder: str = ""
+    source_file: Optional[str] = None
+    factor_keys: Optional[list[str]] = None
 
 class StrategyUpdate(BaseModel):
     name: Optional[str] = None
@@ -23,6 +26,10 @@ class StrategyResponse(BaseModel):
     params_schema: dict
     rebalance_freq: str
     is_builtin: bool
+    folder: str = ""
+    factor_keys: list[str] = []
+    source_file: Optional[str] = None
+    latest_backtest: Optional[dict] = None
     created_at: str
     updated_at: str
 
@@ -34,6 +41,12 @@ class StrategyImportResult(BaseModel):
     version: int
     status: str  # imported / updated
     error: Optional[str] = None
+
+class StrategyParseRequest(BaseModel):
+    code: str
+
+class StrategyMoveRequest(BaseModel):
+    folder: str
 
 class ActiveStrategySet(BaseModel):
     strategy_id: str

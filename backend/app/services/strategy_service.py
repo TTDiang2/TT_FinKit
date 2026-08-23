@@ -1,4 +1,4 @@
-"""Strategy management service."""
+﻿"""Strategy management service."""
 import ast, json
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,9 +33,25 @@ def validate_strategy_code(code: str) -> tuple[bool, str]:
         return False, "No Strategy subclass found. Must inherit from Strategy."
     return True, "OK"
 
-async def list_strategies(db: AsyncSession) -> list[Strategy]:
-    """List all strategy versions, ordered by name and version desc."""
-    result = await db.execute(select(Strategy).order_by(Strategy.name, desc(Strategy.version)))
+async def list_strategies(
+    db: AsyncSession,
+    folder: str | None = None,
+    sort: str = "created_at_desc",
+) -> list[Strategy]:
+    """List all strategy versions.
+
+    - folder: Optional exact-match filter (None = no filter)
+    - sort: "created_at_asc" | "created_at_desc" (default desc) — applied
+      BEFORE the dedup-by-name-keep-latest-version step in the router.
+    """
+    stmt = select(Strategy)
+    if folder is not None:
+        stmt = stmt.where(Strategy.folder == folder)
+    if sort == "created_at_asc":
+        stmt = stmt.order_by(Strategy.created_at.asc(), Strategy.name)
+    else:
+        stmt = stmt.order_by(Strategy.created_at.desc(), Strategy.name)
+    result = await db.execute(stmt)
     return list(result.scalars().all())
 
 async def get_strategy(db: AsyncSession, strategy_id: str, version: int | None = None) -> Strategy | None:
@@ -52,8 +68,13 @@ async def get_strategy(db: AsyncSession, strategy_id: str, version: int | None =
 async def import_strategy(
     db: AsyncSession, name: str, code: str, description: str = "",
     params_schema: dict = {}, rebalance_freq: str = "monthly",
+    folder: str = "", factor_keys: list[str] | None = None,
+    source_file: str | None = None,
 ) -> tuple[Strategy, str]:
     """Import or update a strategy. If name exists, bump version. Returns (strategy, status)."""
+    # factor_keys 存 Text 列必须 json.dumps（空列表存 None）
+    factor_keys_json = json.dumps(list(factor_keys), ensure_ascii=False) if factor_keys else None
+
     # Check for existing strategy with same name (get latest version)
     result = await db.execute(
         select(Strategy).where(Strategy.name == name).order_by(desc(Strategy.version))
@@ -66,6 +87,7 @@ async def import_strategy(
             name=name, code=code, description=description,
             version=new_version, params_schema=json.dumps(params_schema),
             rebalance_freq=rebalance_freq, is_builtin=False,
+            folder=folder, factor_keys=factor_keys_json, source_file=source_file,
         )
         db.add(strategy)
         await db.commit()
@@ -76,6 +98,7 @@ async def import_strategy(
             name=name, code=code, description=description,
             version=1, params_schema=json.dumps(params_schema),
             rebalance_freq=rebalance_freq, is_builtin=False,
+            folder=folder, factor_keys=factor_keys_json, source_file=source_file,
         )
         db.add(strategy)
         await db.commit()

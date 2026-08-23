@@ -38,11 +38,11 @@ async def run_signal_endpoint(db: AsyncSession = Depends(get_db)):
     # Load strategy params from active (or use defaults)
     active_params = {}
 
-    # Get universe from pooled research assets
+    # Get universe from pooled research assets (by SYMBOL, matching strategy API)
     from app.models.research_asset import ResearchAsset
     result = await db.execute(select(ResearchAsset).where(ResearchAsset.status == "pooled"))
     assets = list(result.scalars().all())
-    universe = [a.id for a in assets]
+    universe = [a.symbol for a in assets]
 
     try:
         signal_result = generate_signal(

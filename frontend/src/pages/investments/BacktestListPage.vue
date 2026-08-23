@@ -2,15 +2,15 @@
   <div>
     <div class="flex items-center justify-between mb-4">
       <h2 class="text-lg font-semibold">回测</h2>
-      <button @click="showNew = true" class="btn-primary">新建回测</button>
+      <button @click="showNew = true" class="btn-primary"><Plus :size="14" /> 新建回测</button>
     </div>
 
     <!-- 状态筛选 -->
     <div class="flex gap-2 mb-4">
-      <button v-for="s in ['all', 'done', 'running', 'failed']" :key="s"
-        @click="filterStatus = s"
-        :class="['px-3 py-1 text-xs rounded', filterStatus === s ? 'bg-accent-primary text-white' : 'bg-bg-tertiary text-text-secondary']">
-        {{ s === 'all' ? '全部' : s }}
+      <button v-for="s in statusOptions" :key="s.value"
+        @click="filterStatus = s.value"
+        :class="['px-3 py-1 text-xs rounded', filterStatus === s.value ? 'bg-accent-primary text-white' : 'bg-bg-tertiary text-text-secondary']">
+        {{ s.label }}
       </button>
     </div>
 
@@ -34,7 +34,7 @@
           <tr v-for="bt in filteredBacktests" :key="bt.id"
             @click="navigateTo(`/investments/backtests/${bt.id}`)"
             class="border-t border-border-default cursor-pointer hover:bg-bg-tertiary">
-            <td class="px-3 py-2 font-medium">{{ bt.strategy_id }}</td>
+            <td class="px-3 py-2 font-medium">{{ bt.strategy_name || bt.strategy_id.slice(0, 8) }}</td>
             <td class="px-3 py-2 text-center text-xs">v{{ bt.strategy_version }}</td>
             <td class="px-3 py-2 text-xs text-text-secondary">{{ bt.start_date }} → {{ bt.end_date }}</td>
             <td class="px-3 py-2 text-center text-xs">{{ bt.rebalance_freq }}</td>
@@ -84,8 +84,9 @@
         <div>
           <label class="block text-sm font-medium mb-1">调仓频率</label>
           <select v-model="newForm.rebalance_freq" class="w-full px-3 py-2 text-sm border border-border-default rounded-md">
-            <option value="monthly">月度</option>
-            <option value="weekly">周度</option>
+            <option value="monthly">月度（月末）</option>
+            <option value="weekly">周度（周五）</option>
+            <option value="daily">每日</option>
           </select>
         </div>
         <button @click="createBacktest" :disabled="creating || !newForm.strategy_id"
@@ -101,6 +102,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
+import { Plus } from 'lucide-vue-next'
 import { useApi } from '@/composables/useApi'
 import BaseModal from '@/components/common/BaseModal.vue'
 import type { BacktestResponse, StrategyResponse, ResearchAsset } from '@/types'
@@ -115,6 +117,12 @@ const showNew = ref(false)
 const creating = ref(false)
 const createError = ref('')
 const filterStatus = ref('all')
+const statusOptions = [
+  { value: 'all', label: '全部' },
+  { value: 'done', label: '完成' },
+  { value: 'running', label: '运行中' },
+  { value: 'failed', label: '失败' },
+]
 
 const newForm = ref({
   strategy_id: '',
@@ -150,7 +158,7 @@ async function loadPooledAssets() {
   try {
     const { data } = await api.get<ResearchAsset[]>('/research/assets?status=pooled')
     pooledAssets.value = data
-    newForm.value.universe = data.map(a => a.id)
+    newForm.value.universe = data.map(a => a.symbol)
   } catch {
     pooledAssets.value = []
   }

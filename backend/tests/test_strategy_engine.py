@@ -48,11 +48,12 @@ class TestStrategyBaseClass:
             def target_weights(self, ctx, date): return {}
 
         ctx = StrategyContext(pool=[
-            {"id": "A", "type": "equity"},
-            {"id": "B", "type": "bond"},
+            {"id": "uuid-A", "symbol": "000300", "type": "equity"},
+            {"id": "uuid-B", "symbol": "511010", "type": "bond"},
         ])
         s = MyStrat()
-        assert s.universe(ctx) == ["A", "B"]
+        # universe() returns SYMBOLS, not internal ids
+        assert s.universe(ctx) == ["000300", "511010"]
 
     def test_strategy_returns_none_skips_rebalance(self):
         class MyStrat(Strategy):
@@ -229,8 +230,8 @@ class TestBuiltinStrategies:
     def test_all_builtins_run_without_error(self):
         ctx = StrategyContext(
             pool=[
-                {"id": "000300", "type": "equity_index"},
-                {"id": "511010", "type": "bond_etf"},
+                {"id": "uuid-1", "symbol": "000300", "type": "equity_index"},
+                {"id": "uuid-2", "symbol": "511010", "type": "bond_etf"},
             ],
             returns={
                 "000300": {f"2025-01-{d:02d}": 0.01 for d in range(1, 21)},

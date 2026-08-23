@@ -310,12 +310,12 @@ class EqualWeight(Strategy):
     params_schema = {}
 
     def target_weights(self, ctx, date):
-        return {"A": 0.5, "B": 0.5}
+        return {"161005": 0.5, "511010": 0.5}
 '''
             result = _run_backtest_sync(
                 strategy_code=code,
                 params={},
-                universe=["A", "B"],
+                universe=["161005", "511010"],
                 start_date=TRADING_DAYS[0],
                 end_date=TRADING_DAYS[-1],
                 rebalance_freq="monthly",
@@ -377,7 +377,7 @@ class TestSMATimingStrategy:
         rebalance_dates = generate_rebalance_dates(trading_days, "monthly")
 
         ctx = StrategyContext(
-            pool=[{"id": "000217", "type": "stock"}],
+            pool=[{"id": "000217", "symbol": "000217", "type": "stock"}],
             prices=prices,
             returns={aid: {} for aid in prices},
             current_weights={},
@@ -427,7 +427,7 @@ class TestSMATimingStrategy:
         class MockCtx:
             def __init__(self, prices):
                 self.prices = {"000217": prices}
-                self.pool = [{"id": "000217"}]
+                self.pool = [{"id": "000217", "symbol": "000217"}]
 
         ctx = MockCtx(price_series2)
         s = SMATimingStrategy()

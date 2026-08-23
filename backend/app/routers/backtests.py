@@ -16,10 +16,11 @@ router = APIRouter(prefix="/api/backtests", tags=["backtests"])
 _background_tasks: set = set()
 
 
-def _backtest_to_response(bt) -> BacktestResponse:
-    return BacktestResponse(
+def _backtest_to_response(bt, strategy_name: str | None = None, factor_keys: list[str] | None = None) -> BacktestResponse:
+    resp = BacktestResponse(
         id=bt.id,
         strategy_id=bt.strategy_id,
+        strategy_name=strategy_name,
         strategy_version=bt.strategy_version,
         params=json.loads(bt.params or "{}"),
         universe=json.loads(bt.universe or "[]"),
@@ -29,24 +30,56 @@ def _backtest_to_response(bt) -> BacktestResponse:
         data_as_of=bt.data_as_of,
         status=bt.status,
         error=bt.error,
+        results=json.loads(bt.results) if bt.results else None,
+        factor_keys=factor_keys,
         created_at=str(bt.created_at),
         updated_at=str(bt.updated_at),
     )
+    return resp
 
 @router.get("", response_model=list[BacktestResponse])
 async def list_backtests_endpoint(limit: int = Query(50), db: AsyncSession = Depends(get_db)):
     backtests = await list_backtests(db, limit)
-    return [_backtest_to_response(bt) for bt in backtests]
+    # Batch-load strategy names + factor_keys for all backtests
+    strat_ids = list({bt.strategy_id for bt in backtests})
+    strats = {}
+    if strat_ids:
+        from app.models.strategy import Strategy
+        rows = (await db.execute(
+            select(Strategy.id, Strategy.name, Strategy.factor_keys)
+            .where(Strategy.id.in_(strat_ids))
+        )).all()
+        strats = {r[0]: (r[1], json.loads(r[2]) if r[2] else None) for r in rows}
+    out = []
+    for bt in backtests:
+        name, fkeys = strats.get(bt.strategy_id, (None, None))
+        out.append(_backtest_to_response(bt, strategy_name=name, factor_keys=fkeys))
+    return out
 
 @router.post("", response_model=BacktestResponse)
 async def create_backtest_endpoint(req: BacktestCreate, db: AsyncSession = Depends(get_db)):
     from app.models.strategy import Strategy
+    from app.models.research_asset import ResearchAsset
     result = await db.execute(select(Strategy).where(
         Strategy.id == req.strategy_id, Strategy.version == req.strategy_version
     ))
     strat = result.scalar_one_or_none()
     if not strat:
         raise HTTPException(status_code=404, detail="Strategy not found")
+
+    # Validate universe: entries must be existing asset SYMBOLS
+    if not req.universe:
+        raise HTTPException(status_code=400, detail="universe 不能为空：请至少选择一个标的")
+    asset_res = await db.execute(
+        select(ResearchAsset.symbol).where(ResearchAsset.symbol.in_(req.universe))
+    )
+    known = {r[0] for r in asset_res.all()}
+    unknown = [s for s in req.universe if s not in known]
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=f"标的代码不存在或未入池：{', '.join(unknown)}（universe 请使用标的代码如 000300，而非内部 id）",
+        )
 
     bt = await create_backtest(
         db, strategy_id=req.strategy_id, strategy_version=req.strategy_version,
@@ -92,10 +125,14 @@ async def get_backtest_endpoint(backtest_id: str, db: AsyncSession = Depends(get
     bt = await get_backtest(db, backtest_id)
     if not bt:
         raise HTTPException(status_code=404, detail="Backtest not found")
-    resp = _backtest_to_response(bt)
-    if bt.results:
-        resp.results = json.loads(bt.results)
-    return resp
+    # Fetch strategy name + factor_keys for detail page
+    from app.models.strategy import Strategy
+    strat = (await db.execute(
+        select(Strategy.name, Strategy.factor_keys).where(Strategy.id == bt.strategy_id)
+    )).first()
+    sname = strat[0] if strat else None
+    fkeys = json.loads(strat[1]) if strat and strat[1] else None
+    return _backtest_to_response(bt, strategy_name=sname, factor_keys=fkeys)
 
 @router.get("/{backtest_id}/status")
 async def get_backtest_status_endpoint(backtest_id: str, db: AsyncSession = Depends(get_db)):

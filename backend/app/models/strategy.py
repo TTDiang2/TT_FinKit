@@ -14,8 +14,14 @@ class Strategy(Base):
     version = Column(Integer, default=1)
     # JSON string of params schema: {"param_name": {"type": "int", "default": 3}}
     params_schema = Column(Text, default="{}")
-    rebalance_freq = Column(String, default="monthly")  # monthly / weekly
+    rebalance_freq = Column(String, default="monthly")  # monthly / weekly / daily
     # Is this a built-in strategy (cannot be deleted)?
     is_builtin = Column(Boolean, default=False)
+    # Folder for user grouping ('' = root, '__archive__' = archive box hidden by default)
+    folder = Column(String, default="")
+    # JSON array of factor keys the strategy declares (parsed from docstring FACTOR_KEYS)
+    factor_keys = Column(Text, nullable=True)
+    # Filename the strategy was imported from (when imported via file picker / folder scan)
+    source_file = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)

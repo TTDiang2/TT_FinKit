@@ -39,9 +39,12 @@ DEFAULT_REDEEM_RULES: list[dict] = [
 def generate_rebalance_dates(trading_days: list[str], freq: str = "monthly") -> list[str]:
     """Pick rebalance dates from a sorted trading-day calendar.
 
+    ``daily``  → every trading day.
     ``monthly`` → the last trading day of each calendar month present.
     ``weekly``  → every Friday present.
     """
+    if freq == "daily":
+        return list(trading_days)
     if freq == "weekly":
         return [d for d in trading_days if date.fromisoformat(d).weekday() == 4]
     # monthly: group by YYYY-MM, take the last trading day in each group
@@ -103,12 +106,13 @@ def _max_drawdown(navs: list[float]) -> float:
 
 
 def compute_metrics(
-    nav_series: list[dict], total_cost: float = 0.0, turnover: float = 0.0
+    nav_series: list[dict], total_cost: float = 0.0, turnover: float = 0.0,
+    initial_capital: float = INITIAL_CAPITAL,
 ) -> dict[str, float | None]:
     """Risk/return metrics from the nav series (navs[0] > 0 required).
 
     Returns: ann_return, ann_volatility, sharpe, max_drawdown, calmar,
-    sortino, total_cost, turnover_annual.
+    sortino, total_cost, turnover_annual (ratio = annual turnover / capital).
     """
     navs = [p["nav"] for p in nav_series]
     n = len(navs)
@@ -116,7 +120,9 @@ def compute_metrics(
         return {
             "ann_return": 0.0, "ann_volatility": 0.0, "sharpe": 0.0,
             "max_drawdown": 0.0, "calmar": 0.0, "sortino": 0.0,
-            "total_cost": round(total_cost, 4), "turnover_annual": 0.0,
+            "total_cost": round(total_cost, 4),
+            "total_cost_ratio": round(total_cost / initial_capital, 6) if initial_capital > 0 else 0.0,
+            "turnover_annual": 0.0,
         }
 
     daily_rets = [
@@ -149,7 +155,9 @@ def compute_metrics(
     else:
         sortino = 0.0
 
-    turnover_annual = turnover / years if years > 0 else 0.0
+    # Annual turnover RATIO: traded amount per year / portfolio capital.
+    # (The frontend displays this as a percentage.)
+    turnover_annual = (turnover / years / initial_capital) if years > 0 and initial_capital > 0 else 0.0
 
     return {
         "ann_return": round(ann_return, 6),
@@ -159,6 +167,7 @@ def compute_metrics(
         "calmar": round(calmar, 6),
         "sortino": round(sortino, 6),
         "total_cost": round(total_cost, 4),
+        "total_cost_ratio": round(total_cost / initial_capital, 6) if initial_capital > 0 else 0.0,
         "turnover_annual": round(turnover_annual, 6),
     }
 
@@ -323,7 +332,7 @@ def run_simulation(
                         total_cost += fee
                         total_turnover += diff
                         trades.append({
-                            "asset_id": aid, "side": "buy",
+                            "symbol": aid, "side": "buy",
                             "amount": round(diff, 4), "fee": round(fee, 4),
                         })
                     elif diff < -eps:
@@ -345,18 +354,26 @@ def run_simulation(
                         total_cost += fee
                         total_turnover += amount
                         trades.append({
-                            "asset_id": aid, "side": "sell",
+                            "symbol": aid, "side": "sell",
                             "amount": round(amount, 4), "fee": round(fee, 4),
                         })
                 if trades:
                     rebalance_records.append({"date": day, "trades": trades})
 
-        # day-end: mark to market + daily fee deducted from cash
+        # day-end: mark to market + daily fee deducted PRO-RATA from cash and
+        # holdings (like fund NAV accrual). Deducting only from cash would drive
+        # cash negative when fully invested, causing phantom sell trades on the
+        # next rebalance day (turnover explosion).
         invested = _invested(day)
         portfolio_value = cash + invested
         daily_fee = portfolio_value * _daily_fee_rate() / 365.0
-        if daily_fee > 0:
-            cash -= daily_fee
+        if daily_fee > 0 and portfolio_value > 0:
+            ratio = daily_fee / portfolio_value
+            cash -= cash * ratio
+            for aid in list(holdings.keys()):
+                holdings[aid] -= holdings[aid] * ratio
+                if holdings[aid] <= eps:
+                    holdings.pop(aid, None)
             portfolio_value -= daily_fee
             total_cost += daily_fee
 
@@ -377,7 +394,7 @@ def run_simulation(
             "weights": {k: round(v, 6) for k, v in weights.items() if v > 1e-9},
         })
 
-    metrics = compute_metrics(nav_series, total_cost, total_turnover)
+    metrics = compute_metrics(nav_series, total_cost, total_turnover, initial_capital)
     return {
         "nav_series": nav_series,
         "metrics": metrics,
@@ -405,49 +422,65 @@ def load_price_data(
 ]:
     """Read close series, daily returns, asset metadata and fee terms.
 
-    Prices come from the ``research_prices`` warehouse (asset_id, date, close).
+    ``universe`` is a list of asset SYMBOLS (e.g. "000300", "511010"). All
+    returned price/return/fee data is keyed by symbol so strategies never
+    deal with internal UUIDs. Prices come from the ``research_prices``
+    warehouse (asset_id, date, close).
     """
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     placeholders = ",".join("?" for _ in universe)
 
-    prices: dict[str, dict[str, float]] = {aid: {} for aid in universe}
-    rows = conn.execute(
-        "SELECT asset_id, date, close FROM research_prices "
-        f"WHERE asset_id IN ({placeholders}) AND date >= ? AND date <= ? "
-        "ORDER BY asset_id, date",
-        [*universe, start_date, end_date],
+    # Resolve symbols → internal asset ids, and build the symbol-keyed pool
+    pool: list[dict] = []
+    symbol_to_id: dict[str, str] = {}
+    fee_terms: dict[str, dict] = {}
+    arows = conn.execute(
+        "SELECT id, symbol, exchange, name, asset_type, mgmt_fee, custody_fee, purchase_fee "
+        f"FROM research_assets WHERE symbol IN ({placeholders})",
+        list(universe),
     ).fetchall()
-    for r in rows:
-        prices[r["asset_id"]][r["date"]] = float(r["close"])
+    for a in arows:
+        symbol_to_id[a["symbol"]] = a["id"]
+        pool.append({
+            "id": a["id"], "symbol": a["symbol"], "exchange": a["exchange"],
+            "name": a["name"], "type": a["asset_type"] or "fund",
+        })
+        fee_terms[a["symbol"]] = {
+            # DB stores fees as PERCENTAGE numbers (e.g. 0.5 = 0.5%/year);
+            # the engine uses decimal rates, so divide by 100.
+            "purchase_fee": float(a["purchase_fee"] or 0.0) / 100.0,
+            "mgmt_fee": float(a["mgmt_fee"] or 0.0) / 100.0,
+            "custody_fee": float(a["custody_fee"] or 0.0) / 100.0,
+        }
+
+    # Load prices by internal ids, then re-key by symbol
+    ids = [symbol_to_id[s] for s in universe if s in symbol_to_id]
+    prices: dict[str, dict[str, float]] = {s: {} for s in universe}
+    if ids:
+        id_placeholders = ",".join("?" for _ in ids)
+        rows = conn.execute(
+            "SELECT asset_id, date, close FROM research_prices "
+            f"WHERE asset_id IN ({id_placeholders}) AND date >= ? AND date <= ? "
+            "ORDER BY asset_id, date",
+            [*ids, start_date, end_date],
+        ).fetchall()
+        id_to_symbol = {v: k for k, v in symbol_to_id.items()}
+        for r in rows:
+            sym = id_to_symbol.get(r["asset_id"])
+            if sym is not None:
+                prices[sym][r["date"]] = float(r["close"])
 
     returns: dict[str, dict[str, float]] = {}
-    for aid, series in prices.items():
+    for sym, series in prices.items():
         rets: dict[str, float] = {}
         prev: float | None = None
         for d in sorted(series):
             if prev is not None and prev > 0:
                 rets[d] = series[d] / prev - 1.0
             prev = series[d]
-        returns[aid] = rets
+        returns[sym] = rets
 
-    pool: list[dict] = []
-    fee_terms: dict[str, dict] = {}
-    arows = conn.execute(
-        "SELECT id, symbol, exchange, name, asset_type, mgmt_fee, custody_fee, purchase_fee "
-        f"FROM research_assets WHERE id IN ({placeholders})",
-        list(universe),
-    ).fetchall()
-    for a in arows:
-        pool.append({
-            "id": a["id"], "symbol": a["symbol"], "exchange": a["exchange"],
-            "name": a["name"], "type": a["asset_type"] or "fund",
-        })
-        fee_terms[a["id"]] = {
-            "purchase_fee": float(a["purchase_fee"] or 0.0),
-            "mgmt_fee": float(a["mgmt_fee"] or 0.0),
-            "custody_fee": float(a["custody_fee"] or 0.0),
-        }
     conn.close()
     return prices, returns, pool, fee_terms
 

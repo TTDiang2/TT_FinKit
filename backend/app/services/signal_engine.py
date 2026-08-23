@@ -1,14 +1,16 @@
-"""Run active strategy to generate signal using real-time (up-to-today) data."""
+"""Run active strategy to generate signal using real-time (up-to-today) data.
+
+All asset-keyed data (prices / returns / factor_exposures / target_weights)
+uses SYMBOLS (e.g. "000300") — never the internal ResearchAsset.id UUID.
+"""
 import json
 from datetime import date
 
+
 def compute_risk_status(target_weights: dict, asset_exposures: dict) -> dict:
     """Compute risk status summary from target weights and current factor exposures."""
-    # For each factor, compute weighted average exposure
-    # Check deviation from neutral (0.3 threshold per ADR-14)
     status = {"alerts": [], "warnings": []}
 
-    # Collect all factors
     all_factors = set()
     for exposures in asset_exposures.values():
         all_factors.update(exposures.keys())
@@ -16,9 +18,9 @@ def compute_risk_status(target_weights: dict, asset_exposures: dict) -> dict:
     for factor in all_factors:
         weighted_exposure = 0.0
         total_weight = 0.0
-        for asset_id, weight in target_weights.items():
-            if asset_id in asset_exposures:
-                beta = asset_exposures[asset_id].get(factor, 0.0)
+        for symbol, weight in target_weights.items():
+            if symbol in asset_exposures:
+                beta = asset_exposures[symbol].get(factor, 0.0)
                 weighted_exposure += weight * beta
                 total_weight += abs(weight)
 
@@ -33,6 +35,7 @@ def compute_risk_status(target_weights: dict, asset_exposures: dict) -> dict:
 def get_next_rebalance_date(current_date: str, rebalance_freq: str) -> str:
     """Return next rebalance date after current_date.
 
+    daily: tomorrow
     monthly: last day of next month
     weekly: next Friday
     """
@@ -41,6 +44,8 @@ def get_next_rebalance_date(current_date: str, rebalance_freq: str) -> str:
 
     d = date.fromisoformat(current_date)
 
+    if rebalance_freq == "daily":
+        return (d + timedelta(days=1)).isoformat()
     if rebalance_freq == "monthly":
         # Last day of next month
         if d.month == 12:
@@ -69,58 +74,79 @@ def generate_signal(strategy_code: str, params: dict, universe: list[str],
 
     today = date.today().isoformat()
 
-    # Get asset prices from DB (up to today)
-    prices = {}  # asset_id -> {date: nav}
     with sqlite3.connect(db_path) as conn:
-        cur = conn.execute(
-            "SELECT asset_id, date, nav FROM asset_prices WHERE date <= ? ORDER BY asset_id, date",
-            (today,)
-        )
-        for asset_id, date_val, nav in cur.fetchall():
-            if asset_id not in prices:
-                prices[asset_id] = {}
-            prices[asset_id][date_val] = nav
+        conn.row_factory = sqlite3.Row
 
-    # Get asset metadata for pool
-    pool = []  # [{id, asset_type, name, mgmt_fee, custody_fee, purchase_fee, redeem_rules}]
-    with sqlite3.connect(db_path) as conn:
-        cur = conn.execute("SELECT id, symbol, name, asset_type, mgmt_fee, custody_fee, purchase_fee, redeem_rules FROM research_assets WHERE status = 'pooled'")
-        for row in cur.fetchall():
+        # Pool: pooled research assets, keyed by symbol for the strategy
+        pool = []
+        symbol_to_id: dict[str, str] = {}
+        arows = conn.execute(
+            "SELECT id, symbol, name, asset_type, mgmt_fee, custody_fee, "
+            "purchase_fee, redeem_rules FROM research_assets "
+            "WHERE status = 'pooled'"
+        ).fetchall()
+        for a in arows:
+            symbol_to_id[a["symbol"]] = a["id"]
             pool.append({
-                "id": row[0], "symbol": row[1], "name": row[2], "asset_type": row[3],
-                "mgmt_fee": row[4] or 0, "custody_fee": row[5] or 0,
-                "purchase_fee": row[6] or 0, "redeem_rules": json.loads(row[7] or "{}")
+                "id": a["id"], "symbol": a["symbol"], "name": a["name"],
+                "asset_type": a["asset_type"],
+                "mgmt_fee": a["mgmt_fee"] or 0, "custody_fee": a["custody_fee"] or 0,
+                "purchase_fee": a["purchase_fee"] or 0,
+                "redeem_rules": json.loads(a["redeem_rules"] or "{}"),
             })
 
-    # Compute returns from prices
-    returns = {}  # asset_id -> {date: return}
-    for asset_id, price_dict in prices.items():
-        sorted_dates = sorted(price_dict.keys())
-        returns[asset_id] = {}
-        for i in range(1, len(sorted_dates)):
-            prev_price = price_dict[sorted_dates[i-1]]
-            curr_price = price_dict[sorted_dates[i]]
-            if prev_price != 0:
-                returns[asset_id][sorted_dates[i]] = (curr_price - prev_price) / prev_price
+        # Prices: research_prices JOIN assets → symbol-keyed {date: nav}
+        prices: dict[str, dict[str, float]] = {}
+        id_to_symbol = {v: k for k, v in symbol_to_id.items()}
+        if symbol_to_id:
+            ids = list(symbol_to_id.values())
+            id_placeholders = ",".join("?" for _ in ids)
+            rows = conn.execute(
+                "SELECT asset_id, date, nav FROM research_prices "
+                f"WHERE asset_id IN ({id_placeholders}) AND date <= ? "
+                "ORDER BY asset_id, date",
+                [*ids, today],
+            ).fetchall()
+            for r in rows:
+                sym = id_to_symbol.get(r["asset_id"])
+                if sym is None:
+                    continue
+                if sym not in prices:
+                    prices[sym] = {}
+                prices[sym][r["date"]] = float(r["nav"])
 
-    # Get factor exposures (most recent)
-    factor_exposures = {}  # asset_id -> {factor_name: beta}
-    try:
-        with sqlite3.connect(db_path) as conn:
-            cur = conn.execute(
-                """SELECT ae.asset_id, f.name, ae.beta
+        # Factor exposures: latest as_of per asset → symbol → {factor KEY: beta}
+        factor_exposures: dict[str, dict[str, float]] = {}
+        try:
+            rows = conn.execute(
+                """SELECT ra.symbol, f.key, ae.beta
                    FROM factor_exposures ae
                    JOIN factors f ON ae.factor_id = f.id
+                   JOIN research_assets ra ON ra.id = ae.asset_id
                    WHERE ae.as_of_date = (
-                       SELECT MAX(as_of_date) FROM factor_exposures WHERE asset_id = ae.asset_id
+                       SELECT MAX(as_of_date) FROM factor_exposures
+                       WHERE asset_id = ae.asset_id
                    )"""
-            )
-            for asset_id, factor_name, beta in cur.fetchall():
-                if asset_id not in factor_exposures:
-                    factor_exposures[asset_id] = {}
-                factor_exposures[asset_id][factor_name] = beta
-    except Exception:
-        factor_exposures = {}
+            ).fetchall()
+            for sym, factor_key, beta in rows:
+                if not factor_key:
+                    continue
+                if sym not in factor_exposures:
+                    factor_exposures[sym] = {}
+                factor_exposures[sym][factor_key] = beta
+        except Exception:
+            factor_exposures = {}
+
+    # Compute returns from prices (symbol-keyed)
+    returns: dict[str, dict[str, float]] = {}
+    for sym, price_dict in prices.items():
+        sorted_dates = sorted(price_dict.keys())
+        returns[sym] = {}
+        for i in range(1, len(sorted_dates)):
+            prev_price = price_dict[sorted_dates[i - 1]]
+            curr_price = price_dict[sorted_dates[i]]
+            if prev_price != 0:
+                returns[sym][sorted_dates[i]] = (curr_price - prev_price) / prev_price
 
     # Run strategy
     rebalance_dates = [today]  # Only run for today

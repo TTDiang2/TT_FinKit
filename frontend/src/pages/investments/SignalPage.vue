@@ -3,7 +3,7 @@
     <div class="flex items-center justify-between mb-4">
       <h2 class="text-lg font-semibold">信号</h2>
       <button @click="runSignal" :disabled="running" class="btn-primary disabled:opacity-50">
-        {{ running ? '生成中...' : '运行策略生成信号' }}
+        <Zap :size="14" /> {{ running ? '生成中...' : '运行策略生成信号' }}
       </button>
     </div>
 
@@ -95,6 +95,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import type { AxiosError } from 'axios'
+import { Zap } from 'lucide-vue-next'
 import { useApi } from '@/composables/useApi'
 import type { SignalResponse, SignalRunResult } from '@/types'
 

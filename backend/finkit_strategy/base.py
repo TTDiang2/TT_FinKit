@@ -5,29 +5,34 @@ from typing import Any
 @dataclass
 class StrategyContext:
     """Unified data access for backtesting and live signals.
-    
+
     All data is read-only. Strategies access price/factor data ONLY through
     these methods - no DB connection, no network access in subprocess.
+
+    All asset-keyed data uses SYMBOLS (e.g. "000300", "511010") as keys —
+    NOT the internal ResearchAsset.id UUID. See ``pool`` for the full
+    asset records (which carry both ``id`` and ``symbol``).
     """
-    # list of asset dicts: [{"id": str, "type": str, "name": str, ...}, ...]
+    # list of asset dicts: [{"id": str(uuid), "symbol": str, "name": str,
+    #                        "type": str, "exchange": str}, ...]
     pool: list[dict] = field(default_factory=list)
-    # nav/prices: asset_id -> {date: value}
+    # nav/prices: symbol -> {date: value}
     prices: dict[str, dict[str, float]] = field(default_factory=dict)
-    # daily returns: asset_id -> {date: return_rate}
+    # daily returns: symbol -> {date: return_rate}
     returns: dict[str, dict[str, float]] = field(default_factory=dict)
     # factor values: factor_name -> {date: value}
     factor_values: dict[str, dict[str, float]] = field(default_factory=dict)
-    # factor betas: asset_id -> factor_name -> beta
+    # factor betas: symbol -> factor_name -> beta
     factor_exposures: dict[str, dict[str, float]] = field(default_factory=dict)
-    # current portfolio weights: {asset_id: weight}
+    # current portfolio weights: {symbol: weight}
     current_weights: dict[str, float] = field(default_factory=dict)
     params: dict[str, Any] = field(default_factory=dict)
     now: str = ""
 
     def nav_history(self, asset_ids: list[str], begin: str, end: str) -> dict[str, list[tuple[str, float]]]:
-        """Return nav/cum return series for assets in date range.
-        
-        Returns: {asset_id: [(date, value), ...]} sorted by date ascending.
+        """Return nav/cum return series for symbols in date range.
+
+        Returns: {symbol: [(date, value), ...]} sorted by date ascending.
         """
         result = {}
         for aid in asset_ids:
@@ -40,7 +45,7 @@ class StrategyContext:
         return result
 
     def get_returns(self, asset_ids: list[str], begin: str, end: str) -> dict[str, list[tuple[str, float]]]:
-        """Return daily return series for assets in date range."""
+        """Return daily return series for symbols in date range."""
         result = {}
         for aid in asset_ids:
             series = []
@@ -103,7 +108,11 @@ class StrategyContext:
         return series
 
     def factor_exposure(self, asset_id: str, factor_name: str) -> float:
-        """Return latest beta/exposure of asset to factor."""
+        """Return latest beta/exposure of asset to factor.
+
+        ``factor_name`` is the factor's stable KEY (e.g. "gold", "equity") —
+        not its display name. Factor keys never change across renames.
+        """
         return self.factor_exposures.get(asset_id, {}).get(factor_name, 0.0)
 
 
@@ -129,11 +138,17 @@ class Strategy:
                 self.params[key] = val
 
     def universe(self, ctx: StrategyContext) -> list[str]:
-        """Return list of asset_ids in the investment universe."""
-        return [a["id"] for a in ctx.pool]
+        """Return list of asset SYMBOLS in the investment universe.
+
+        Symbols (e.g. "000300", "511010") are the canonical asset key in all
+        strategy-facing data (ctx.pool / prices / returns / factor_exposures /
+        target_weights). ``ctx.pool`` keeps the full asset record (including
+        the internal ``id`` UUID) for lookups.
+        """
+        return [a["symbol"] for a in ctx.pool]
 
     def target_weights(self, ctx: StrategyContext, date: str) -> dict[str, float] | None:
-        """Return {asset_id: weight} for the given rebalance date.
+        """Return {symbol: weight} for the given rebalance date.
         
         Return None to skip rebalancing (maintain current weights).
         """

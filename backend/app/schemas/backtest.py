@@ -5,7 +5,7 @@ class BacktestCreate(BaseModel):
     strategy_id: str
     strategy_version: int
     params: dict = {}
-    universe: list[str]  # list of asset_ids
+    universe: list[str]  # list of asset SYMBOLS (e.g. "000300", "511010")
     start_date: str  # YYYY-MM-DD
     end_date: str
     rebalance_freq: str = "monthly"
@@ -13,9 +13,10 @@ class BacktestCreate(BaseModel):
 class BacktestResponse(BaseModel):
     id: str
     strategy_id: str
+    strategy_name: Optional[str] = None
     strategy_version: int
     params: dict
-    universe: list[str]
+    universe: list[str]  # list of asset symbols
     start_date: str
     end_date: str
     rebalance_freq: str
@@ -23,13 +24,14 @@ class BacktestResponse(BaseModel):
     status: str
     error: Optional[str] = None
     results: Optional[dict] = None
+    factor_keys: Optional[list[str]] = None
     created_at: str
     updated_at: str
 
 class BacktestResult(BaseModel):
     nav_series: list[dict]  # [{"date": "...", "nav": 1.0, "portfolio_value": 100000}]
     metrics: dict  # {ann_return, ann_volatility, sharpe, max_drawdown, calmar, sortino, total_cost, turnover_annual}
-    weight_history: list[dict]  # [{"date": "...", "weights": {"asset_id": weight}}]
-    rebalance_records: list[dict]  # [{"date": "...", "trades": [{"asset_id": "", "side": "buy", "amount": 0, "fee": 0}]}]
-    factor_view: dict  # {target_exposure, realized_exposure, contribution}
+    weight_history: list[dict]  # [{"date": "...", "weights": {"symbol": weight}}]
+    rebalance_records: list[dict]  # [{"date": "...", "trades": [{"symbol": "", "side": "buy", "amount": 0, "fee": 0}]}]
+    factor_view: dict  # {target_exposure, realized_exposure, contribution} — contribution keyed by symbol
     risk_view: dict  # {max_drawdown_series, var_95, cvar_95, risk_contrib}
