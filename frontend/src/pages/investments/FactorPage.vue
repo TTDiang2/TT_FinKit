@@ -340,11 +340,13 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useApi } from '@/composables/useApi'
+import { useToast } from '@/composables/useToast'
 import { RefreshCw, Sparkles } from 'lucide-vue-next'
 import BaseModal from '@/components/common/BaseModal.vue'
 import type { FactorResponse, ExposureMatrix, ContributionResult, AgentFactorCandidate, AgentPreviewResult } from '@/types'
 
 const api = useApi()
+const toast = useToast()
 const activeTab = ref<string>('library')
 
 // ---- state ----
@@ -471,6 +473,9 @@ async function loadMatrix() {
     if (!matrixAsOf.value && matrix.value.as_of) {
       matrixAsOf.value = matrix.value.as_of!.slice(0, 7)
     }
+  } catch (e: any) {
+    const msg = e?.response?.data?.detail || e?.message || '查询失败'
+    toast.show(`暴露矩阵查询失败：${msg}`, 'error')
   } finally {
     matrixLoading.value = false
   }
@@ -480,8 +485,20 @@ async function recomputeExposures() {
   recomputing.value = true
   try {
     // full=true 深度回填所有历史月份（否则只算最新月，贡献分析的历史区间会无数据）
-    await api.post('/research/factors/recompute-exposures', null, { params: { full: true } })
+    const r = await api.post<{ assets: number; factors: number; months: number; regressions: number; rows_written: number; skipped: any[] }>(
+      '/research/factors/recompute-exposures', null, { params: { full: true } }
+    )
     await loadMatrix()
+    const skipped = r.data?.skipped || []
+    if (skipped.length) {
+      const reason = skipped[0]?.reason || '部分标的被跳过'
+      toast.show(`暴露重算完成，${skipped.length} 个标的被跳过：${reason}`, 'warning')
+    } else {
+      toast.show(`暴露重算完成（${r.data?.regressions || 0} 个月快照，${r.data?.rows_written || 0} 个 β）`, 'success')
+    }
+  } catch (e: any) {
+    const msg = e?.response?.data?.detail || e?.message || '重算失败'
+    toast.show(`重算暴露失败：${msg}`, 'error')
   } finally {
     recomputing.value = false
   }

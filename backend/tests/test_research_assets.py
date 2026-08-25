@@ -239,6 +239,40 @@ class TestComputeIndicators:
         assert lag_days(None) is None
         assert lag_days("2020-01-01") > 1000
 
+    def test_dual_sharpe_windows(self):
+        """Full-sample vs trailing-1Y windows diverge when early history
+        drags the long-run mean (the user-visible scenario)."""
+        import random
+        from datetime import date, timedelta
+
+        random.seed(42)
+        rows = []
+        # 3 years: year 1 choppy negative drift, years 2-3 strong uptrend
+        d = date(2023, 8, 1)
+        end = date(2026, 8, 1)
+        price = 1.0
+        while d <= end:
+            year = d.year
+            if year == 2023:
+                price *= (1 + random.uniform(-0.012, 0.004))
+            else:
+                price *= (1 + random.uniform(0.000, 0.010))
+            rows.append((d.isoformat(), round(price, 4)))
+            d += timedelta(days=1)
+        a = ResearchAsset(symbol="x", name="x", user_id="u")
+        ind = compute_asset_indicators(a, self._prices(rows))
+
+        assert ind.sharpe is not None and ind.sharpe_1y is not None
+        # Trailing 1Y is anchored to the strong recent window, so it should
+        # dominate the full-sample (which still includes 2023's drag).
+        assert ind.sharpe_1y > ind.sharpe, (
+            f"trailing-1Y {ind.sharpe_1y:.2f} should beat full-sample "
+            f"{ind.sharpe:.2f} when recent history is much stronger"
+        )
+        # Both windows still need valid vol and a positive number of points.
+        assert ind.ann_volatility > 0 and ind.ann_volatility_1y > 0
+        assert ind.points == len(rows)
+
 
 class TestRouter:
     def _no_ifind(self, monkeypatch):

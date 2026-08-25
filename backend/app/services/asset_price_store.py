@@ -131,6 +131,10 @@ def compute_asset_indicators(
 
     Money-market funds: vol/sharpe/ann_return are None (near-constant series
     would explode the ratios — same rule as the closed-positions table).
+
+    Two Sharpe windows are returned:
+    - Full-sample: geometric annualized return / vol over the whole series
+    - Trailing 1Y: same ratios over the last 252 trading days, matching ret_1y
     """
     prices = sorted(prices, key=lambda p: p.date)
     closes = [p.close for p in prices]
@@ -149,9 +153,6 @@ def compute_asset_indicators(
             else:
                 break
         if idx is None:
-            # series shorter than the window: fall back to the earliest point,
-            # but only when the series spans >= 2/3 of the window — a 20-day
-            # stretch must not be labelled as a "1-year return"
             if (dates[-1] - dates[0]).days < days * 2 // 3:
                 return None
             idx = 0
@@ -161,14 +162,21 @@ def compute_asset_indicators(
         return closes[-1] / base - 1.0 if base > 0 else None
 
     if asset.is_money_market:
-        # mmf close series is par-priced (1.0): returns/drawdown carry no
-        # information — only data coverage (points/dates) is meaningful
         return ResearchAssetIndicators(
             points=len(closes),
             first_date=prices[0].date,
             last_date=prices[-1].date,
             latest_close=closes[-1],
         )
+
+    full_ann_return = annualized_return(closes)
+    full_ann_vol = annualized_volatility(closes)
+    full_sharpe = sharpe_ratio(closes)
+
+    trailing_closes = closes[-252:]
+    trailing_ann_return = annualized_return(trailing_closes) if len(trailing_closes) >= 2 else None
+    trailing_ann_vol = annualized_volatility(trailing_closes) if len(trailing_closes) >= 2 else None
+    trailing_sharpe = sharpe_ratio(trailing_closes) if (trailing_ann_return is not None and trailing_ann_vol is not None) else None
 
     return ResearchAssetIndicators(
         points=len(closes),
@@ -177,9 +185,12 @@ def compute_asset_indicators(
         latest_close=closes[-1],
         ret_1m=_ret_over(30),
         ret_1y=_ret_over(365),
-        ann_return=annualized_return(closes),
-        ann_volatility=annualized_volatility(closes),
-        sharpe=sharpe_ratio(closes),
+        ann_return=full_ann_return,
+        ann_volatility=full_ann_vol,
+        sharpe=full_sharpe,
+        ann_return_1y=trailing_ann_return,
+        ann_volatility_1y=trailing_ann_vol,
+        sharpe_1y=trailing_sharpe,
         max_drawdown=max_drawdown(closes),
     )
 

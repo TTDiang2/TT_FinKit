@@ -48,7 +48,7 @@
                 名称 <SortIcon :dir="sortDir" :active="sortKey === 'name'" />
               </button>
             </th>
-            <th class="px-3 py-2 font-medium">
+            <th class="px-3 py-2 font-medium min-w-[110px]">
               <button @click="sortBy('category')" class="inline-flex items-center gap-0.5 hover:text-text-primary">
                 分类 <SortIcon :dir="sortDir" :active="sortKey === 'category'" />
               </button>
@@ -74,8 +74,13 @@
               </button>
             </th>
             <th class="px-3 py-2 font-medium text-right">
-              <button @click="sortBy('sharpe')" class="inline-flex items-center gap-0.5 hover:text-text-primary">
+              <button @click="sortBy('sharpe')" class="inline-flex items-center gap-0.5 hover:text-text-primary" title="全样本几何年化夏普">
                 夏普 <SortIcon :dir="sortDir" :active="sortKey === 'sharpe'" />
+              </button>
+            </th>
+            <th class="px-3 py-2 font-medium text-right">
+              <button @click="sortBy('sharpe_1y')" class="inline-flex items-center gap-0.5 hover:text-text-primary" title="近 1 年滚动窗口夏普（与近1年列同口径）">
+                夏普 1Y <SortIcon :dir="sortDir" :active="sortKey === 'sharpe_1y'" />
               </button>
             </th>
             <th class="px-3 py-2 font-medium text-right">
@@ -90,11 +95,11 @@
             </th>
             <!-- 入池 tab：费用列 -->
             <template v-if="activeTab === 'pooled'">
-              <th class="px-3 py-2 font-medium text-right">管理费</th>
-              <th class="px-3 py-2 font-medium text-right">申购费</th>
-              <th class="px-3 py-2 font-medium text-right">赎回费</th>
-              <th class="px-3 py-2 font-medium text-right">托管费</th>
-              <th class="px-3 py-2 font-medium text-right">销售服务费</th>
+              <th class="px-3 py-2 font-medium text-right min-w-[70px]">管理费</th>
+              <th class="px-3 py-2 font-medium text-right min-w-[70px]">申购费</th>
+              <th class="px-3 py-2 font-medium text-right min-w-[150px]">赎回费</th>
+              <th class="px-3 py-2 font-medium text-right min-w-[70px]">托管费</th>
+              <th class="px-3 py-2 font-medium text-right min-w-[80px]">销售服务费</th>
             </template>
             <th class="px-3 py-2 font-medium text-right">操作</th>
           </tr>
@@ -116,7 +121,12 @@
             <td class="px-3 py-2 text-right" :class="colorClassNullable(a.indicators.ret_1m)">{{ pct(a.indicators.ret_1m) }}</td>
             <td class="px-3 py-2 text-right" :class="colorClassNullable(a.indicators.ret_1y)">{{ pct(a.indicators.ret_1y) }}</td>
             <td class="px-3 py-2 text-right">{{ pct(a.indicators.ann_volatility) }}</td>
-            <td class="px-3 py-2 text-right">{{ a.indicators.sharpe != null ? a.indicators.sharpe.toFixed(2) : '—' }}</td>
+            <td class="px-3 py-2 text-right" :title="`全样本夏普（年化 ${(a.indicators.ann_return ?? 0)*100 >= 0 ? '+' : ''}${(a.indicators.ann_return ?? 0)*100 > 10 ? (a.indicators.ann_return ?? 0).toFixed(0) : (a.indicators.ann_return ?? 0).toFixed(2)}% / 波动 ${(a.indicators.ann_volatility ?? 0)*100 > 1 ? (a.indicators.ann_volatility ?? 0).toFixed(1) : (a.indicators.ann_volatility ?? 0).toFixed(2)}%）`">
+              {{ a.indicators.sharpe != null ? a.indicators.sharpe.toFixed(2) : '—' }}
+            </td>
+            <td class="px-3 py-2 text-right text-text-secondary" :title="`近 1Y 滚动夏普（与近1年列同口径）`">
+              {{ a.indicators.sharpe_1y != null ? a.indicators.sharpe_1y.toFixed(2) : '—' }}
+            </td>
             <td class="px-3 py-2 text-right" :class="colorClassNullable(a.indicators.max_drawdown)">{{ pct(a.indicators.max_drawdown) }}</td>
             <td class="px-3 py-2 text-right text-xs">
               <div :class="lagClass(a)">{{ a.indicators.points ? `${a.indicators.points} 行` : '无数据' }}</div>
@@ -142,10 +152,10 @@
             </td>
           </tr>
           <tr v-if="!loading && !filteredAssets.length">
-            <td :colspan="activeTab === 'pooled' ? 16 : 11" class="px-4 py-8 text-center text-text-muted">{{ activeTab === 'watchlist' ? '暂无自选标的，点击右上角「添加自选」' : '暂无入池标的，从自选列表点击「入池」' }}</td>
+            <td :colspan="activeTab === 'pooled' ? 17 : 12" class="px-4 py-8 text-center text-text-muted">{{ activeTab === 'watchlist' ? '暂无自选标的，点击右上角「添加自选」' : '暂无入池标的，从自选列表点击「入池」' }}</td>
           </tr>
           <tr v-if="loading">
-            <td :colspan="activeTab === 'pooled' ? 16 : 11" class="px-4 py-8 text-center text-text-muted">加载中…</td>
+            <td :colspan="activeTab === 'pooled' ? 17 : 12" class="px-4 py-8 text-center text-text-muted">加载中…</td>
           </tr>
         </tbody>
       </table>
@@ -529,7 +539,7 @@ const pooledCount = computed(() => assets.value.filter(a => a.status === 'pooled
 const categories = computed(() => [...new Set(assets.value.map(a => a.category).filter(Boolean))] as string[])
 
 // ---- sorting ----
-type SortKey = 'name' | 'category' | 'latest_close' | 'ret_1m' | 'ret_1y' | 'ann_volatility' | 'sharpe' | 'max_drawdown' | 'points'
+type SortKey = 'name' | 'category' | 'latest_close' | 'ret_1m' | 'ret_1y' | 'ann_volatility' | 'sharpe' | 'sharpe_1y' | 'max_drawdown' | 'points'
 const sortKey = ref<SortKey>('name')
 const sortDir = ref<'asc' | 'desc'>('asc')
 
@@ -551,6 +561,7 @@ function sortVal(a: AssetRow, key: SortKey): number | string | null | undefined 
     case 'ret_1y': return a.indicators.ret_1y
     case 'ann_volatility': return a.indicators.ann_volatility
     case 'sharpe': return a.indicators.sharpe
+    case 'sharpe_1y': return a.indicators.sharpe_1y
     case 'max_drawdown': return a.indicators.max_drawdown
     case 'points': return a.indicators.points
   }

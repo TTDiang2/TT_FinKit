@@ -95,9 +95,14 @@ class ResearchAssetIndicators(BaseModel):
     latest_close: Optional[float] = None
     ret_1m: Optional[float] = None      # fractional, e.g. 0.0235
     ret_1y: Optional[float] = None
+    # 全样本指标（含早期较差数据，可能与近 1Y 偏差较大）
     ann_return: Optional[float] = None
     ann_volatility: Optional[float] = None
     sharpe: Optional[float] = None
+    # 近 1Y 滚动窗口指标，与 ret_1y 同口径
+    ann_return_1y: Optional[float] = None
+    ann_volatility_1y: Optional[float] = None
+    sharpe_1y: Optional[float] = None
     max_drawdown: Optional[float] = None  # fractional, e.g. -0.2130
 
 

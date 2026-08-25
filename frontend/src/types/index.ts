@@ -427,6 +427,11 @@ export interface ResearchAssetIndicators {
   ann_return: number | null;
   ann_volatility: number | null;
   sharpe: number | null;
+  // Trailing 1Y window (same cadence as ret_1y); full-sample ann_* above can
+  // diverge sharply from ret_1y when early history drags the long-run mean.
+  ann_return_1y: number | null;
+  ann_volatility_1y: number | null;
+  sharpe_1y: number | null;
   max_drawdown: number | null; // fraction, e.g. -0.2130
 }
 
