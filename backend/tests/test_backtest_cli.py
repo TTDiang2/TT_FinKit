@@ -80,8 +80,10 @@ class TestRunBacktestCli:
         assert res.returncode == 0, f"stderr: {res.stderr}"
         data = json.loads(res.stdout)
         assert data["status"] == "ok"
-        assert data["metrics"]["sharpe"] > 1.0
-        assert data["metrics"]["ann_return"] > 0.07
+        # 含真实费率（C 类销售服务费/赎回档位/T+N 锁定）后夏普显著低于
+        # 未计费版本，但策略仍应正收益——断言只要求仍盈利
+        assert data["metrics"]["sharpe"] > 0.5
+        assert data["metrics"]["ann_return"] > 0.05
         assert len(data["nav_series"]) > 500
         assert len(data["weight_history"]) == len(data["nav_series"])
         # human summary present on stderr

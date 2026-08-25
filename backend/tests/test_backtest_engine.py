@@ -266,7 +266,8 @@ def _build_test_db(path: str) -> None:
     conn.executescript("""
     CREATE TABLE research_assets (
         id TEXT PRIMARY KEY, symbol TEXT, exchange TEXT, name TEXT,
-        asset_type TEXT, mgmt_fee REAL, custody_fee REAL, purchase_fee REAL
+        asset_type TEXT, mgmt_fee REAL, custody_fee REAL, purchase_fee REAL,
+        sales_service_fee REAL, redeem_rules TEXT, redeem_t_days INTEGER
     );
     CREATE TABLE research_prices (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -274,12 +275,12 @@ def _build_test_db(path: str) -> None:
     );
     """)
     conn.execute(
-        "INSERT INTO research_assets VALUES (?,?,?,?,?,?,?,?)",
-        ("A", "161005", "FUND_CN", "Fund A", "fund", 0.0, 0.0, 0.0),
+        "INSERT INTO research_assets VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        ("A", "161005", "FUND_CN", "Fund A", "fund", 0.0, 0.0, 0.0, 0.0, None, 0),
     )
     conn.execute(
-        "INSERT INTO research_assets VALUES (?,?,?,?,?,?,?,?)",
-        ("B", "511010", "SH", "Bond ETF", "bond_etf", 0.0, 0.0, 0.0),
+        "INSERT INTO research_assets VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        ("B", "511010", "SH", "Bond ETF", "bond_etf", 0.0, 0.0, 0.0, 0.0, None, 0),
     )
     for i, d in enumerate(TRADING_DAYS):
         conn.execute(
@@ -292,6 +293,116 @@ def _build_test_db(path: str) -> None:
         )
     conn.commit()
     conn.close()
+
+
+class SwitchAToB(Strategy):
+    """1月31日满仓 A，2月28日切到 B——触发一次真实卖出+买入。"""
+
+    name = "SwitchAToB"
+    description = ""
+    rebalance_freq = "monthly"
+    params_schema = {}
+
+    def target_weights(self, ctx, date):
+        return {"B": 1.0} if date >= "2025-02-01" else {"A": 1.0}
+
+
+class TestSettlementAndCosts:
+    """T+N 锁定 / 销售服务费 / per-asset 赎回费 / 滑点 的回归测试。"""
+
+    def _run(self, strategy, fee_terms, rebalance_dates=None, redeem_rules=None,
+             slippage=0.0, prices=None):
+        prices = prices or PRICES
+        trading_days = sorted(set().union(*(set(p) for p in prices.values())))
+        rebalance_dates = rebalance_dates or generate_rebalance_dates(trading_days, "monthly")
+        ctx = StrategyContext(
+            pool=[{"id": "A", "type": "fund"}, {"id": "B", "type": "bond_etf"}],
+            prices=prices,
+            returns={aid: {} for aid in prices},
+            current_weights={},
+            params={},
+        )
+        return run_simulation(
+            strategy=strategy, ctx=ctx, trading_days=trading_days,
+            rebalance_dates=rebalance_dates, prices=prices, fee_terms=fee_terms,
+            redeem_rules=redeem_rules or DEFAULT_REDEEM_RULES,
+            initial_capital=100000.0, slippage=slippage,
+        )
+
+    def test_sell_proceeds_locked_by_redeem_t_days(self):
+        """赎回资金 T+N 锁定：T+2 卖出后资金不可用，释放后才能再买入。"""
+        # 日历延续到 3 月初，让 2/28 卖出的 T+2 资金在窗口内释放
+        days = TRADING_DAYS + ["2025-03-03", "2025-03-04"]
+        prices = {"A": {d: 1.0 + 0.01 * i for i, d in enumerate(days)},
+                  "B": {d: 1.0 - 0.01 * i for i, d in enumerate(days)}}
+        fee = {
+            "A": {"purchase_fee": 0.0, "mgmt_fee": 0.0, "custody_fee": 0.0,
+                  "sales_service_fee": 0.0, "redeem_rules": [], "redeem_t_days": 2},
+            "B": {"purchase_fee": 0.0, "mgmt_fee": 0.0, "custody_fee": 0.0,
+                  "sales_service_fee": 0.0, "redeem_rules": [], "redeem_t_days": 0},
+        }
+        rebal = ["2025-01-31", "2025-02-28", "2025-03-03"]
+        result = self._run(SwitchAToB(), fee, rebalance_dates=rebal, prices=prices)
+        recs = result["rebalance_records"]
+        # 2/28：卖 A 成功，买 B 因资金锁定失败（diff<=0 -> 无 buy 记录）
+        feb_rec = next(r for r in recs if r["date"] == "2025-02-28")
+        assert [t["side"] for t in feb_rec["trades"]] == ["sell"], feb_rec["trades"]
+        # 3/3：锁定资金（3/2）已释放，买入 B 成功
+        mar_rec = next(r for r in recs if r["date"] == "2025-03-03")
+        assert any(t["side"] == "buy" for t in mar_rec["trades"]), mar_rec["trades"]
+        # 对比无锁定：2/28 就能买入 B（卖出资金即时可用）
+        fee_no_lock = {k: {**v, "redeem_t_days": 0} for k, v in fee.items()}
+        res_no_lock = self._run(SwitchAToB(), fee_no_lock, rebalance_dates=rebal, prices=prices)
+        feb_no_lock = next(r for r in res_no_lock["rebalance_records"] if r["date"] == "2025-02-28")
+        assert any(t["side"] == "buy" for t in feb_no_lock["trades"]), feb_no_lock["trades"]
+
+    def test_sales_service_fee_deducted_daily(self):
+        """销售服务费（C 类）按日计提，会降低最终净值。"""
+        base = {
+            "A": {"purchase_fee": 0.0, "mgmt_fee": 0.0, "custody_fee": 0.0,
+                  "sales_service_fee": 0.0, "redeem_rules": [], "redeem_t_days": 0},
+            "B": {"purchase_fee": 0.0, "mgmt_fee": 0.0, "custody_fee": 0.0,
+                  "sales_service_fee": 0.0, "redeem_rules": [], "redeem_t_days": 0},
+        }
+        res0 = self._run(AllInA(), base)
+        with_service = {
+            k: {**v, "sales_service_fee": 0.004 if k == "A" else 0.0}
+            for k, v in base.items()
+        }
+        res1 = self._run(AllInA(), with_service)
+        # 0.4%/年 计提 8 个交易日 → 应有微小但可测的净值差
+        assert res1["nav_series"][-1]["nav"] < res0["nav_series"][-1]["nav"]
+        assert res0["metrics"]["total_cost"] < res1["metrics"]["total_cost"]
+
+    def test_per_asset_redeem_rules_override_default(self):
+        """fee_terms 里的 per-asset redeem_rules 优先于全局默认。"""
+        fee = {
+            "A": {"purchase_fee": 0.0, "mgmt_fee": 0.0, "custody_fee": 0.0,
+                  "sales_service_fee": 0.0,
+                  "redeem_rules": [{"max_days": 100, "fee_rate": 0.02}],
+                  "redeem_t_days": 0},
+            "B": {"purchase_fee": 0.0, "mgmt_fee": 0.0, "custody_fee": 0.0,
+                  "sales_service_fee": 0.0, "redeem_rules": [], "redeem_t_days": 0},
+        }
+        # 持有 <100 天卖出 → 2% 而非默认 0.5%
+        result = self._run(SwitchAToB(), fee, rebalance_dates=["2025-01-31", "2025-02-28"])
+        sell_rec = [t for t in result["rebalance_records"][-1]["trades"] if t["side"] == "sell"]
+        assert sell_rec and sell_rec[0]["fee"] > 0
+        # 2% fee 的金额 ≈ 卖出金额 * 2%
+        assert abs(sell_rec[0]["fee"] / sell_rec[0]["amount"] - 0.02) < 1e-6
+
+    def test_slippage_increases_costs(self):
+        """滑点参数会增大买卖成本。"""
+        base = {
+            "A": {"purchase_fee": 0.0, "mgmt_fee": 0.0, "custody_fee": 0.0,
+                  "sales_service_fee": 0.0, "redeem_rules": [], "redeem_t_days": 0},
+            "B": {"purchase_fee": 0.0, "mgmt_fee": 0.0, "custody_fee": 0.0,
+                  "sales_service_fee": 0.0, "redeem_rules": [], "redeem_t_days": 0},
+        }
+        res0 = self._run(AllInA(), base)
+        res1 = self._run(AllInA(), base, slippage=0.01)
+        assert res1["metrics"]["total_cost"] > res0["metrics"]["total_cost"]
+        assert res1["nav_series"][-1]["nav"] < res0["nav_series"][-1]["nav"]
 
 
 class TestSubprocessEndToEnd:

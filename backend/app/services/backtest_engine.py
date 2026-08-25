@@ -17,7 +17,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 INITIAL_CAPITAL = 100_000.0
@@ -70,6 +70,24 @@ def redeem_fee_rate(rules: list[dict], holding_days: int) -> float:
         if max_days is not None and holding_days < max_days:
             return float(rule.get("fee_rate", 0.0))
     return float(rules[-1].get("fee_rate", 0.0))
+
+
+def _db_redeem_rules_to_engine(raw: str | None) -> list[dict]:
+    """research_assets.redeem_rules (JSON, % rates) -> engine rule list."""
+    if not raw:
+        return []
+    try:
+        rows = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    out: list[dict] = []
+    for r in rows:
+        if isinstance(r, dict) and "fee_rate" in r:
+            out.append({
+                "max_days": r.get("days"),
+                "fee_rate": float(r.get("fee_rate") or 0.0) / 100.0,
+            })
+    return out
 
 
 def compute_trade_cost(
@@ -257,13 +275,18 @@ def run_simulation(
     fee_terms: dict[str, dict],
     redeem_rules: list[dict],
     initial_capital: float = INITIAL_CAPITAL,
+    slippage: float = 0.0,
 ) -> dict:
     """Simulate the strategy over a trading calendar.
 
     Between rebalance dates weights drift with prices; a daily
-    (mgmt+custody)/365 fee is deducted from total value. On rebalance days the
-    strategy is asked for target weights (``None`` = maintain current) and the
-    diff is traded, with purchase fee on buys and tiered redeem fee on sells.
+    (mgmt+custody+sales_service)/365 fee is deducted from total value. On
+    rebalance days the strategy is asked for target weights (``None`` =
+    maintain current) and the diff is traded, with purchase fee on buys and
+    tiered redeem fee on sells (per-asset rules from ``fee_terms`` when
+    present, else the ``redeem_rules`` fallback). Sell proceeds are locked for
+    the asset's ``redeem_t_days`` (T+N settlement) before becoming usable;
+    ``slippage`` (fraction) is applied to both legs as an extra cost.
     """
     rebalance_set = set(rebalance_dates)
     universe = list(prices.keys())
@@ -272,6 +295,7 @@ def run_simulation(
     holdings: dict[str, float] = {}   # asset_id -> shares
     buy_dates: dict[str, str] = {}    # asset_id -> first buy date (tiered fee)
     cash = float(initial_capital)
+    locked_funds: list[tuple[str, float]] = []  # (release_date, amount) from T+N sells
     portfolio_value = float(initial_capital)
     total_cost = 0.0
     total_turnover = 0.0
@@ -286,20 +310,37 @@ def run_simulation(
     def _invested(day: str) -> float:
         return sum(sh * _price(aid, day) for aid, sh in holdings.items())
 
-    def _daily_fee_rate() -> float:
-        """Weighted-average (mgmt+custody)/year over held assets."""
+    def _locked_total() -> float:
+        return sum(amt for _, amt in locked_funds)
+
+    def _rules_for(aid: str) -> list[dict]:
+        per_asset = (fee_terms.get(aid) or {}).get("redeem_rules")
+        return per_asset if per_asset else redeem_rules
+
+    def _daily_fee_rate(day: str) -> float:
+        """Weighted-average (mgmt+custody+sales_service)/year over held assets."""
         total_v = sum(sh * _price(aid, day) for aid, sh in holdings.items())
         if total_v <= 0:
             return 0.0
         weighted = sum(
             sh * _price(aid, day)
             * (fee_terms.get(aid, {}).get("mgmt_fee", 0.0)
-               + fee_terms.get(aid, {}).get("custody_fee", 0.0))
+               + fee_terms.get(aid, {}).get("custody_fee", 0.0)
+               + fee_terms.get(aid, {}).get("sales_service_fee", 0.0))
             for aid, sh in holdings.items()
         )
         return weighted / total_v
 
     for day in trading_days:
+        # T+N settlement: release sell proceeds that have cleared today
+        still_locked: list[tuple[str, float]] = []
+        for rel, amt in locked_funds:
+            if rel <= day:
+                cash += amt
+            else:
+                still_locked.append((rel, amt))
+        locked_funds = still_locked
+
         invested = _invested(day)
 
         trades: list[dict] = []
@@ -313,7 +354,7 @@ def run_simulation(
                 else:
                     target = {aid: max(0.0, w) / gross for aid, w in target.items()}
 
-                portfolio_value = cash + invested
+                portfolio_value = cash + invested + _locked_total()
                 for aid in sorted(set(holdings) | set(target)):
                     px = _price(aid, day)
                     if px <= 0:
@@ -322,7 +363,13 @@ def run_simulation(
                     target_value = portfolio_value * target.get(aid, 0.0)
                     diff = target_value - current_value
                     if diff > eps:
-                        fee = diff * fee_terms.get(aid, {}).get("purchase_fee", 0.0)
+                        # 可用现金受限（T+N 锁定期资金未到账）时，按可用现金买，
+                        # 不足部分留在现金——真实世界同样无法透支买入
+                        if diff > cash + eps:
+                            diff = max(cash, 0.0)
+                            if diff <= eps:
+                                continue
+                        fee = diff * (fee_terms.get(aid, {}).get("purchase_fee", 0.0) + slippage)
                         bought = diff / px
                         was_empty = holdings.get(aid, 0.0) <= eps
                         holdings[aid] = holdings.get(aid, 0.0) + bought
@@ -343,14 +390,21 @@ def run_simulation(
                              - date.fromisoformat(buy_dates.get(aid, day))).days,
                         )
                         fee, _rate = compute_trade_cost(
-                            "sell", amount, 0.0, redeem_rules, holding_days
+                            "sell", amount, 0.0, _rules_for(aid), holding_days
                         )
+                        fee += amount * slippage
                         sold = amount / px
                         holdings[aid] = holdings.get(aid, 0.0) - sold
                         if holdings[aid] <= eps:
                             holdings.pop(aid, None)
                             buy_dates.pop(aid, None)
-                        cash += amount - fee
+                        t_days = (fee_terms.get(aid, {}) or {}).get("redeem_t_days", 0)
+                        if t_days > 0:
+                            rel = (date.fromisoformat(day)
+                                   + timedelta(days=t_days)).isoformat()
+                            locked_funds.append((rel, amount - fee))
+                        else:
+                            cash += amount - fee
                         total_cost += fee
                         total_turnover += amount
                         trades.append({
@@ -365,8 +419,8 @@ def run_simulation(
         # cash negative when fully invested, causing phantom sell trades on the
         # next rebalance day (turnover explosion).
         invested = _invested(day)
-        portfolio_value = cash + invested
-        daily_fee = portfolio_value * _daily_fee_rate() / 365.0
+        portfolio_value = cash + invested + _locked_total()
+        daily_fee = portfolio_value * _daily_fee_rate(day) / 365.0
         if daily_fee > 0 and portfolio_value > 0:
             ratio = daily_fee / portfolio_value
             cash -= cash * ratio
@@ -436,7 +490,8 @@ def load_price_data(
     symbol_to_id: dict[str, str] = {}
     fee_terms: dict[str, dict] = {}
     arows = conn.execute(
-        "SELECT id, symbol, exchange, name, asset_type, mgmt_fee, custody_fee, purchase_fee "
+        "SELECT id, symbol, exchange, name, asset_type, mgmt_fee, custody_fee, "
+        "purchase_fee, sales_service_fee, redeem_rules, redeem_t_days "
         f"FROM research_assets WHERE symbol IN ({placeholders})",
         list(universe),
     ).fetchall()
@@ -452,6 +507,11 @@ def load_price_data(
             "purchase_fee": float(a["purchase_fee"] or 0.0) / 100.0,
             "mgmt_fee": float(a["mgmt_fee"] or 0.0) / 100.0,
             "custody_fee": float(a["custody_fee"] or 0.0) / 100.0,
+            "sales_service_fee": float(a["sales_service_fee"] or 0.0) / 100.0,
+            # DB redeem_rules is [{"days": int|null, "fee_rate": %}, ...];
+            # engine expects [{"max_days": int|null, "fee_rate": decimal}].
+            "redeem_rules": _db_redeem_rules_to_engine(a["redeem_rules"]),
+            "redeem_t_days": int(a["redeem_t_days"] or 0),
         }
 
     # Load prices by internal ids, then re-key by symbol
@@ -537,6 +597,7 @@ try:
     cost_config = data.get("cost_config") or {}
     redeem_rules = cost_config.get("redeem_rules") or DEFAULT_REDEEM_RULES
     initial_capital = float(cost_config.get("initial_capital", 100000.0))
+    slippage = float(cost_config.get("slippage", 0.0))
 
     out = run_simulation(
         strategy=strategy,
@@ -547,6 +608,7 @@ try:
         fee_terms=fee_terms,
         redeem_rules=redeem_rules,
         initial_capital=initial_capital,
+        slippage=slippage,
     )
     out["status"] = "ok"
     out["error"] = None

@@ -147,7 +147,7 @@ class AssetRotationStrategy(Strategy):
     params_schema = {
         "symbols": {"type": "str", "default": "000217,000667,002910,006432,378546"},
         "lookback_days": {"type": "int", "default": 180, "min": 20, "max": 500},
-        "top_k": {"type": "int", "default": 2, "min": 1, "max": 6},
+        "top_k": {"type": "int", "default": 3, "min": 1, "max": 6},
     }
 
     def target_weights(self, ctx: StrategyContext, date: str) -> dict[str, float] | None:

@@ -17,10 +17,12 @@ factor_keys:
   - symbols: 逗号分隔的大类标的 symbol 白名单，默认
     000217(黄金),000667(绝对收益),002910(A股),006432(债券),378546(海外)
   - lookback_days: 动量窗口（交易日），默认 180
-  - top_k: 持有最强前几个等权，默认 2
+  - top_k: 持有最强前几个等权，默认 3
 
-实测（2021-09~2026-08，含真实费率）：
-  lookback=180, top_k=2 → 年化 20.95%, 夏普 1.155, 最大回撤 -14.29%
+实测（2021-09~2026-08，含真实费率：C 类销售服务费/各标的赎回档位/T+N 到账）：
+  lookback=180, top_k=1 → 年化 27.69%, 夏普 1.167, 最大回撤 -35.5%
+  lookback=180, top_k=2 → 年化 16.30%, 夏普 0.980, 最大回撤 -13.9%
+  lookback=180, top_k=3 → 年化 16.08%, 夏普 1.146, 最大回撤 -15.6%  ← 默认(均衡)
 """
 
 from finkit_strategy import Strategy, StrategyContext
@@ -34,7 +36,7 @@ class AssetRotationStrategy(Strategy):
     params_schema = {
         "symbols": {"type": "str", "default": "000217,000667,002910,006432,378546"},
         "lookback_days": {"type": "int", "default": 180, "min": 20, "max": 500},
-        "top_k": {"type": "int", "default": 2, "min": 1, "max": 6},
+        "top_k": {"type": "int", "default": 3, "min": 1, "max": 6},
     }
 
     def target_weights(self, ctx: StrategyContext, date: str) -> dict[str, float] | None:
