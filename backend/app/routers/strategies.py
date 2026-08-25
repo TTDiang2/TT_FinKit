@@ -19,8 +19,9 @@ import json
 
 router = APIRouter(prefix="/api/strategies", tags=["strategies"])
 
-# 策略文件夹扫描路径（P4 约定，见 docs/plans/2026-08-23-... P4.2）
-STRATEGIES_DIR = Path(r"D:\TT_FinKit\strategies")
+# 策略文件夹扫描路径（P4 约定，见 docs/plans/2026-08-23-... P4.2）。
+# 动态定位到仓库根下的 strategies/（避免硬编码绝对路径在换机器后失效）。
+STRATEGIES_DIR = Path(__file__).resolve().parents[3] / "strategies"
 
 
 def _factor_keys_from_str(raw: str | None) -> list[str]:
