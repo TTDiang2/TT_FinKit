@@ -450,3 +450,95 @@ class TestSMATimingStrategy:
         w2 = s.target_weights(ctx2, "2025-01-04")
         assert w2 is not None
         assert w2["000217"] == 0.0, f"expected 0.0 (空仓), got {w2['000217']}"
+
+
+class TestAssetRotation:
+    """大类资产动量轮动：动量信号 + 前 K 等权。"""
+
+    def test_rotation_picks_highest_momentum(self):
+        from finkit_strategy.builtin_strategies import AssetRotationStrategy
+
+        # 3 个标的：A 涨、B 平、C 跌 -> 动量 A > B > C
+        days = [f"2026-0{m}-15" for m in range(1, 8)]
+        # A 持续涨到 1.2，C 跌到 0.8
+        prices = {
+            "A": {d: 1.0 + 0.02 * i for i, d in enumerate(days)},
+            "B": {d: 1.0 for d in days},
+            "C": {d: 1.0 - 0.02 * i for i, d in enumerate(days)},
+        }
+        ctx = StrategyContext(
+            pool=[{"id": "a", "symbol": "A"}, {"id": "b", "symbol": "B"}, {"id": "c", "symbol": "C"}],
+            prices=prices,
+            returns={s: {} for s in prices},
+            current_weights={},
+            params={},
+        )
+        s = AssetRotationStrategy()
+        s.params = {"symbols": "A,B,C", "lookback_days": 60, "top_k": 1}
+        w = s.target_weights(ctx, days[-1])
+        assert w is not None and list(w.keys()) == ["A"], f"expected pick A, got {w}"
+        assert list(w.values())[0] == 1.0
+
+        # top_k=2 -> A 和 B 等权
+        s2 = AssetRotationStrategy()
+        s2.params = {"symbols": "A,B,C", "lookback_days": 60, "top_k": 2}
+        w2 = s2.target_weights(ctx, days[-1])
+        assert w2 is not None and set(w2.keys()) == {"A", "B"}, f"expected A,B, got {w2}"
+        assert abs(list(w2.values())[0] - 0.5) < 1e-9
+
+    def test_rotation_ignores_symbols_not_in_pool(self):
+        from finkit_strategy.builtin_strategies import AssetRotationStrategy
+
+        days = ["2026-06-15", "2026-07-15"]
+        prices = {"A": {d: 1.0 + 0.05 * i for i, d in enumerate(days)}}
+        ctx = StrategyContext(
+            pool=[{"id": "a", "symbol": "A"}],
+            prices=prices, returns={"A": {}}, current_weights={}, params={},
+        )
+        s = AssetRotationStrategy()
+        # 白名单含不存在的 D，应被忽略，仍选中 A
+        s.params = {"symbols": "A,D", "lookback_days": 30, "top_k": 1}
+        w = s.target_weights(ctx, days[-1])
+        assert w is not None and list(w.keys()) == ["A"]
+
+    def test_rotation_full_backtest_reaches_high_sharpe(self):
+        """180日/top2 在真实价格上应跑出夏普>1、收益>7%（用模拟趋势数据）。"""
+        import random
+        from datetime import date, timedelta
+
+        random.seed(1)
+        base = date(2022, 1, 3)
+        end = date(2026, 8, 25)
+        prices = {}
+        for sym, drift, vol in [("A", 0.003, 0.01), ("B", 0.001, 0.008), ("C", 0.002, 0.012)]:
+            px = 1.0
+            series = {}
+            d = base
+            while d <= end:
+                px *= (1 + random.gauss(drift, vol))
+                series[d.isoformat()] = round(px, 4)
+                d += timedelta(days=1)
+            prices[sym] = series
+
+        trading_days = sorted(set().union(*(set(p) for p in prices.values())))
+        rebalance_dates = generate_rebalance_dates(trading_days, "monthly")
+        ctx = StrategyContext(
+            pool=[{"id": "a", "symbol": "A"}, {"id": "b", "symbol": "B"}, {"id": "c", "symbol": "C"}],
+            prices=prices,
+            returns={s: {} for s in prices},
+            current_weights={},
+            params={},
+        )
+        from finkit_strategy.builtin_strategies import AssetRotationStrategy
+        s = AssetRotationStrategy()
+        s.params = {"symbols": "A,B,C", "lookback_days": 180, "top_k": 2}
+        result = run_simulation(
+            strategy=s, ctx=ctx, trading_days=trading_days, rebalance_dates=rebalance_dates,
+            prices=prices,
+            fee_terms={sym: {"purchase_fee": 0.0, "mgmt_fee": 0.0, "custody_fee": 0.0} for sym in prices},
+            redeem_rules=DEFAULT_REDEEM_RULES,
+            initial_capital=100000.0,
+        )
+        m = result["metrics"]
+        assert m["ann_return"] > 0.07, f"ann_return {m['ann_return']} should beat 7%"
+        assert m["sharpe"] > 1.0, f"sharpe {m['sharpe']} should beat 1"

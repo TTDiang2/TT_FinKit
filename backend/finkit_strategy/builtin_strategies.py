@@ -134,10 +134,58 @@ class SMATimingStrategy(Strategy):
         return sum(vals) / n
 
 
+class AssetRotationStrategy(Strategy):
+    """大类资产动量轮动：月度按过去 N 个交易日涨幅选最强 K 个等权持有。
+
+    从 universe 中按 symbol 白名单筛出候选大类（如黄金/绝对收益/A股/债券/海外），
+    每月末计算各候选过去 lookback_days 个交易日的动量（价格涨跌幅），
+    买入动量最强的 top_k 个标的并等权配置。若候选不足或价格不足则维持现状。
+    """
+    name = "大类资产动量轮动"
+    description = "月度按过去 N 个交易日涨幅选最强 K 个大类资产等权持有（动量轮动）"
+    rebalance_freq = "monthly"
+    params_schema = {
+        "symbols": {"type": "str", "default": "000217,000667,002910,006432,378546"},
+        "lookback_days": {"type": "int", "default": 180, "min": 20, "max": 500},
+        "top_k": {"type": "int", "default": 2, "min": 1, "max": 6},
+    }
+
+    def target_weights(self, ctx: StrategyContext, date: str) -> dict[str, float] | None:
+        # 从池中筛出白名单里真实存在的大类标的（symbol 键）
+        pool_symbols = {a["symbol"] for a in ctx.pool}
+        symbols = [
+            s.strip() for s in self.params["symbols"].split(",") if s.strip()
+        ]
+        candidates = [s for s in symbols if s in pool_symbols]
+        if not candidates:
+            return None
+
+        lookback = self.params["lookback_days"]
+        momentum: dict[str, float] = {}
+        for sym in candidates:
+            series = ctx.prices.get(sym, {})
+            dates = sorted(d for d in series.keys() if d <= date)
+            if len(dates) < 2:
+                continue
+            # 取 date 前最近 lookback 个交易日：起点 = 窗口最旧价，终点 = 最新价
+            window = dates[-(lookback + 1):] if len(dates) > lookback else dates
+            base = series[window[0]]
+            latest = series[window[-1]]
+            if base and base > 0:
+                momentum[sym] = latest / base - 1.0
+        if not momentum:
+            return None
+
+        top = sorted(momentum, key=momentum.get, reverse=True)[: self.params["top_k"]]
+        w = 1.0 / len(top)
+        return {sym: w for sym in top}
+
+
 BUILTIN_STRATEGIES = [
     EqualWeightStrategy,
     VolatilityInverseStrategy,
     MomentumRotationStrategy,
     RiskParityStrategy,
     SMATimingStrategy,
+    AssetRotationStrategy,
 ]
