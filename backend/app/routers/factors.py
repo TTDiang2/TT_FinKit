@@ -259,10 +259,12 @@ async def exposure_history(
 @router.post("/recompute-exposures")
 async def recompute_exposures_endpoint(
     full: bool = Query(False),
+    window_days: int = Query(252, ge=21, le=1260,
+                            description="OLS 回归滚动窗口 (trading days) — 默认 252 ≈ 1 年"),
     user_id: str = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await recompute_exposures(db, user_id, full=full)
+    result = await recompute_exposures(db, user_id, full=full, window_days=window_days)
     # chain factor evaluation (IC/ICIR) — pure numpy, fast after exposures exist
     from ..services.factor_evaluation import evaluate_all_factors
     try:
@@ -270,6 +272,7 @@ async def recompute_exposures_endpoint(
         result["evaluation"] = eval_summary
     except Exception as e:
         result["evaluation"] = {"evaluated": [], "skipped": [], "error": f"{type(e).__name__}: {e}"}
+    result["window_days"] = window_days
     return result
 
 

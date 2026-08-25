@@ -117,10 +117,28 @@
     <div v-if="activeTab === 'analysis'">
       <!-- 暴露矩阵 section -->
       <h3 class="text-sm font-medium mb-2">暴露矩阵</h3>
-      <div class="flex gap-3 mb-3 items-center">
+      <div class="flex gap-3 mb-3 items-center flex-wrap">
         <div class="text-sm text-text-secondary">月份：</div>
         <input v-model="matrixAsOf" type="month" class="px-3 py-1.5 text-sm border border-border-default rounded-md" />
         <button @click="loadMatrix" class="btn-secondary">查询</button>
+        <div class="text-sm text-text-secondary">窗口：</div>
+        <select v-model="windowDays" class="px-3 py-1.5 text-sm border border-border-default rounded-md focus:outline-none focus:ring-1 focus:ring-accent-primary">
+          <option :value="63">3 个月</option>
+          <option :value="126">6 个月</option>
+          <option :value="252">1 年</option>
+          <option :value="504">2 年</option>
+        </select>
+<button @click="recomputeExposures" :disabled="recomputing" class="btn-secondary">
+          <RefreshCw :size="14" :class="recomputing ? 'animate-spin' : ''" /> {{ recomputing ? '重算中…' : '重算暴露' }}
+        </button>
+        <div v-if="recomputing" class="text-xs text-text-muted flex items-center gap-1">
+          正在重算 {{ matrix.assets.length || pooledAssets.length }} 个标的 × {{ matrixFactors.length || matrix.factors.length }} 个因子（{{ windowDays }} 日窗口），约需 {{ Math.max(1, Math.round((matrix.assets.length || pooledAssets.length) * 1.5)) }} 分钟…
+        </div>
+        <div class="text-sm text-text-secondary">组合：</div>
+        <select v-model="matrixCategoryFilter" class="px-3 py-1.5 text-sm border border-border-default rounded-md focus:outline-none focus:ring-1 focus:ring-accent-primary">
+          <option value="">全部因子</option>
+          <option v-for="c in exposureCategories" :key="c" :value="c">{{ categoryLabel(c) }}</option>
+        </select>
         <div class="text-xs text-text-muted ml-auto">Beta 色阶：正红负绿 | 粗体 = |t|&gt;1.5 显著 | 岭回归标黄</div>
       </div>
       <div v-if="matrixLoading" class="text-sm text-text-muted py-4 text-center">加载中…</div>
@@ -130,7 +148,7 @@
           <thead class="bg-bg-tertiary text-left">
             <tr>
               <th class="px-3 py-2 font-medium sticky left-0 bg-bg-tertiary z-10">标的</th>
-              <th v-for="ff in matrix.factors" :key="ff.id" class="px-3 py-2 font-medium text-center min-w-24">
+              <th v-for="ff in matrixFactors" :key="ff.id" class="px-3 py-2 font-medium text-center min-w-24">
                 <div>{{ ff.name }}</div>
                 <div class="text-xs font-normal text-text-muted">{{ ff.stats.latest_value != null ? (ff.stats.latest_value * 100).toFixed(2) + '%' : '—' }}</div>
               </th>
@@ -146,7 +164,7 @@
                 <div class="text-xs text-text-muted">{{ row.symbol }}</div>
                 <span v-if="row.is_money_market" class="text-xs text-text-muted">货币基金</span>
               </td>
-              <td v-for="ff in matrix.factors" :key="ff.id" class="px-3 py-2 text-center">
+              <td v-for="ff in matrixFactors" :key="ff.id" class="px-3 py-2 text-center">
                 <div v-if="row.cells?.[ff.id]" :class="['font-medium', betaColor(row.cells[ff.id].beta)]">
                   {{ row.cells[ff.id].beta >= 0 ? '+' : '' }}{{ row.cells[ff.id].beta.toFixed(3) }}
                   <span v-if="row.cells[ff.id].significant" class="font-bold" title="|t|>1.5 显著">*</span>
@@ -295,6 +313,44 @@
         </div>
       </div>
       <div v-else class="text-sm text-text-muted py-4 text-center">选择标的和区间，点击"分析"</div>
+
+      <!-- 时序热力图 section -->
+      <hr class="my-6 border-border-default" />
+      <h3 class="text-sm font-medium mb-2">β 时序热力图</h3>
+      <div class="flex gap-3 mb-3 items-center flex-wrap">
+        <div class="text-sm text-text-secondary">标的</div>
+        <select v-model="historyAsset" class="px-3 py-1.5 text-sm border border-border-default rounded-md min-w-48 focus:outline-none focus:ring-1 focus:ring-accent-primary">
+          <option value="">— 选择标的 —</option>
+          <option v-for="a in pooledAssets" :key="a.value" :value="a.value">{{ a.label }}</option>
+        </select>
+        <button @click="loadExposureHistory" :disabled="!historyAsset || historyLoading" class="btn-secondary">
+          <RefreshCw :size="14" :class="historyLoading ? 'animate-spin' : ''" /> {{ historyLoading ? '加载中…' : '加载' }}
+        </button>
+        <div class="text-xs text-text-muted ml-auto">行为月份，列为因子 | 红=正β，蓝=负β | 空=该月无暴露</div>
+      </div>
+
+      <div v-if="historyError" class="mb-3 px-4 py-3 bg-expense-bg border border-expense-color rounded-md text-sm text-expense-color">{{ historyError }}</div>
+      <div v-if="historyLoading" class="text-sm text-text-muted py-4 text-center">加载中…</div>
+      <div v-else-if="historyHistory.length" class="bg-white rounded-lg shadow-sm overflow-auto">
+        <table class="w-full text-xs">
+          <thead class="bg-bg-tertiary text-left">
+            <tr>
+              <th class="px-2 py-1.5 font-medium sticky left-0 bg-bg-tertiary z-10">月份</th>
+              <th v-for="h in historyFactors" :key="h.key" class="px-2 py-1.5 font-medium text-center" :title="h.name">{{ h.name }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="m in historyMonths" :key="m" class="border-t border-border-default">
+              <td class="px-2 py-1.5 sticky left-0 bg-white z-10 text-text-muted">{{ m }}</td>
+              <td v-for="h in historyFactors" :key="h.key" class="px-1 py-1 text-center">
+                <div v-if="historyCell(m, h.key)" class="w-8 h-4 mx-auto rounded-sm" :style="{ backgroundColor: betaToColor(historyCell(m, h.key)!) }" :title="`${h.name}: β=${historyCell(m, h.key)!.toFixed(3)}`"></div>
+                <div v-else class="text-text-muted">·</div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div v-else-if="!historyLoading && !historyError" class="text-sm text-text-muted py-4 text-center">选择标的并点击"加载"，查看该标的各因子 β 的月度演化</div>
     </div>
     <BaseModal v-if="agentModal" :title="'Agent 构建因子'" @close="agentModal = false" width="max-w-lg">
       <div v-if="!agentResult && !agentError" class="space-y-4">
@@ -343,7 +399,7 @@ import { useApi } from '@/composables/useApi'
 import { useToast } from '@/composables/useToast'
 import { RefreshCw, Sparkles } from 'lucide-vue-next'
 import BaseModal from '@/components/common/BaseModal.vue'
-import type { FactorResponse, ExposureMatrix, ContributionResult, AgentFactorCandidate, AgentPreviewResult } from '@/types'
+import type { FactorResponse, ExposureMatrix, ExposureHistoryPoint, ContributionResult, AgentFactorCandidate, AgentPreviewResult } from '@/types'
 
 const api = useApi()
 const toast = useToast()
@@ -360,6 +416,12 @@ const matrix = ref<ExposureMatrix>({ as_of: null, factors: [], assets: [] })
 const matrixLoading = ref(false)
 const matrixAsOf = ref('')
 const recomputing = ref(false)
+const windowDays = ref(252)
+const matrixCategoryFilter = ref('')          // '' = 全部因子，否则按 category 过滤暴露矩阵列
+const historyAsset = ref('')
+const historyHistory = ref<ExposureHistoryPoint[]>([])
+const historyLoading = ref(false)
+const historyError = ref('')
 const pooledAssets = ref<Array<{ value: string; label: string }>>([])
 const contribAsset = ref('')
 const contribStart = ref('')
@@ -415,6 +477,7 @@ function fmt4(n: number): string {
 }
 
 const categories = computed(() => [...new Set(factors.value.map(f => f.category).filter(Boolean))] as string[])
+const exposureCategories = computed(() => [...new Set(matrix.value.factors.map(f => f.category).filter(Boolean))] as string[])
 const filteredFactors = computed(() =>
   categoryFilter.value ? factors.value.filter(f => f.category === categoryFilter.value) : factors.value)
 
@@ -464,6 +527,53 @@ async function toggleActive(f: FactorResponse) {
   await loadFactors()
 }
 
+// 暴露矩阵列按 category 过滤（因子组合视图：权益/债券/风格/宏观）
+const matrixFactors = computed(() =>
+  matrixCategoryFilter.value
+    ? matrix.value.factors.filter(f => f.category === matrixCategoryFilter.value)
+    : matrix.value.factors
+)
+
+async function loadExposureHistory() {
+  if (!historyAsset.value) return
+  historyLoading.value = true
+  historyError.value = ''
+  try {
+    historyHistory.value = (await api.get<ExposureHistoryPoint[]>('/research/factors/exposure-history', {
+      params: { asset_id: historyAsset.value },
+    })).data
+  } catch (e: any) {
+    historyError.value = e?.response?.data?.detail || e?.message || '历史暴露获取失败'
+    historyHistory.value = []
+  } finally {
+    historyLoading.value = false
+  }
+}
+
+function betaToColor(beta: number): string {
+  // blue(负) -> white(0) -> red(正)，β 范围约 [-2, 2]
+  const v = Math.max(-1, Math.min(1, beta / 2))
+  if (v >= 0) return `rgba(239, 68, 68, ${(v * 0.9 + 0.1).toFixed(2)})`
+  return `rgba(59, 130, 246, ${((-v) * 0.9 + 0.1).toFixed(2)})`
+}
+
+const historyFactors = computed(() => {
+  const seen: Array<{ key: string; name: string }> = []
+  for (const h of historyHistory.value) {
+    if (!seen.some(s => s.key === h.factor_id)) {
+      seen.push({ key: h.factor_id, name: h.factor_name })
+    }
+  }
+  return seen
+})
+
+const historyMonths = computed(() => [...new Set(historyHistory.value.map(h => h.as_of_date))] as string[])
+
+function historyCell(month: string, factorId: string): number | null {
+  const hit = historyHistory.value.find(h => h.as_of_date === month && h.factor_id === factorId)
+  return hit ? hit.beta : null
+}
+
 async function loadMatrix() {
   matrixLoading.value = true
   try {
@@ -486,7 +596,7 @@ async function recomputeExposures() {
   try {
     // full=true 深度回填所有历史月份（否则只算最新月，贡献分析的历史区间会无数据）
     const r = await api.post<{ assets: number; factors: number; months: number; regressions: number; rows_written: number; skipped: any[] }>(
-      '/research/factors/recompute-exposures', null, { params: { full: true } }
+      '/research/factors/recompute-exposures', null, { params: { full: true, window_days: windowDays.value } }
     )
     await loadMatrix()
     const skipped = r.data?.skipped || []
