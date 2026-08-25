@@ -272,11 +272,17 @@ def _transform_for_factor(defn, raw):
 # orchestration
 # --------------------------------------------------------------------------- #
 
+_FETCH_TIMEOUT_S = 180
+
+
 async def _run_with_retry(fn: Callable, sem: asyncio.Semaphore):
     """Run sync fn in a thread behind the semaphore; retry 0.5s / 2s / 8s.
 
     ``NoDataError`` is deterministic (snapshot-only source, symbol not found,
-    insufficient history) and is NOT retried.
+    insufficient history) and is NOT retried.  Each attempt is bounded by
+    ``_FETCH_TIMEOUT_S`` — akshare carries no request timeout, so one hung
+    socket would otherwise stall the whole batch (the abandoned to_thread
+    worker is left to die on its own).
     """
     delays = (0.0, 0.5, 2.0, 8.0)
     last_exc: Optional[Exception] = None
@@ -285,7 +291,9 @@ async def _run_with_retry(fn: Callable, sem: asyncio.Semaphore):
             await asyncio.sleep(delay)
         async with sem:
             try:
-                return await asyncio.to_thread(fn)
+                return await asyncio.wait_for(
+                    asyncio.to_thread(fn), timeout=_FETCH_TIMEOUT_S
+                )
             except NoDataError:
                 raise
             except Exception as e:  # noqa: BLE001 — retryable (transient network)
@@ -295,7 +303,11 @@ async def _run_with_retry(fn: Callable, sem: asyncio.Semaphore):
 
 async def _incremental_upsert(db, factor, return_rows, level_rows=None) -> int:
     """Insert only rows newer than the stored max date (per kind); UNIQUE
-    conflict skip keeps the operation idempotent. Returns return-kind count."""
+    conflict skip keeps the operation idempotent. Returns return-kind count.
+
+    Chunked at 500 rows: SQLite caps bound parameters per statement
+    ("too many SQL variables") and first-time full pulls exceed it.
+    """
     max_return = (
         await db.execute(
             select(func.max(FactorValue.date)).where(
@@ -320,10 +332,10 @@ async def _incremental_upsert(db, factor, return_rows, level_rows=None) -> int:
             if max_level is None or d > max_level:
                 to_insert.append({"factor_id": factor.id, "date": d,
                                   "value": float(v), "kind": "level"})
-    if to_insert:
+    for i in range(0, len(to_insert), 500):
         await db.execute(
             sqlite_insert(FactorValue)
-            .values(to_insert)
+            .values(to_insert[i:i + 500])
             .on_conflict_do_nothing(index_elements=["factor_id", "date", "kind"])
         )
     return len([r for r in to_insert if r["kind"] == "return"])

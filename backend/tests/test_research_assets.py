@@ -244,8 +244,16 @@ class TestRouter:
     def _no_ifind(self, monkeypatch):
         async def fake_creds(db, user_id):
             return None, None
+
+        async def fake_bg_sync(asset_id, user_id):
+            pass
+
         import app.services.ifind_client as ic
         monkeypatch.setattr(ic, "get_credentials", fake_creds)
+        # create_asset schedules a real-network price sync in the background;
+        # asyncio.run teardown waits for its non-cancellable to_thread call,
+        # which hangs the test whenever eastmoney is slow/unreachable
+        monkeypatch.setattr(ra, "_sync_asset_prices_task", fake_bg_sync)
 
     def test_create_autocompletes_name_and_detects_money_market(self, monkeypatch):
         async def inner():
@@ -353,6 +361,56 @@ class TestRouter:
                 assert out.mgmt_fee == 0.5 and out.purchase_fee == 0.15
                 await asyncio.sleep(0.05)  # let create_task run
                 assert synced == [a.id]
+            finally:
+                await db.close()
+                await engine.dispose()
+        asyncio.run(inner())
+
+    def test_pool_with_redeem_rules_dict_input(self, monkeypatch):
+        """Regression: model_dump turns redeem_rules into list[dict] — the
+        fee helpers must accept both RedeemRule objects and plain dicts
+        (the frontend pool/edit forms always send rules, which used to 500)."""
+        async def inner():
+            self._no_ifind(monkeypatch)
+
+            async def fake_pool_sync(asset_id, user_id):
+                pass
+
+            monkeypatch.setattr(ra, "_pool_sync_task", fake_pool_sync)
+            db, engine = await _make_db()
+            try:
+                u = await _mk_user(db)
+                a = await _mk_asset(db, u.id)
+                out = await ra.pool_asset(
+                    a.id,
+                    ra.ResearchAssetPool(
+                        redeem_rules=[
+                            ra.RedeemRule(days=7, fee_rate=1.5),
+                            ra.RedeemRule(days=30, fee_rate=0.5),
+                            ra.RedeemRule(days=None, fee_rate=0.0),
+                        ],
+                    ),
+                    user_id=u.id, db=db,
+                )
+                assert out.status == "pooled"
+                assert [r.model_dump() for r in out.redeem_rules] == [
+                    {"days": 7, "fee_rate": 1.5},
+                    {"days": 30, "fee_rate": 0.5},
+                    {"days": None, "fee_rate": 0.0},
+                ]
+                assert out.redeem_fee_note == "<7天 1.5%，<30天 0.5%，其余 0%"
+
+                upd = await ra.update_asset(
+                    a.id,
+                    ra.ResearchAssetUpdate(
+                        redeem_rules=[ra.RedeemRule(days=7, fee_rate=1.0),
+                                      ra.RedeemRule(days=None, fee_rate=0.0)],
+                    ),
+                    user_id=u.id, db=db,
+                )
+                assert [r.model_dump() for r in upd.redeem_rules] == [
+                    {"days": 7, "fee_rate": 1.0}, {"days": None, "fee_rate": 0.0}
+                ]
             finally:
                 await db.close()
                 await engine.dispose()

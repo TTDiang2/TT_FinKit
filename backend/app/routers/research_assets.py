@@ -38,10 +38,18 @@ router = APIRouter(prefix="/api/research/assets", tags=["research-assets"])
 # Fee helpers
 # --------------------------------------------------------------------------- #
 
+def _rule_pair(r) -> tuple[Optional[int], float]:
+    """(days, fee_rate) from a RedeemRule or a plain dict (model_dump output)."""
+    if isinstance(r, dict):
+        return r.get("days"), float(r.get("fee_rate") or 0.0)
+    return r.days, r.fee_rate
+
+
 def _rules_to_json(rules) -> str:
     """Serialize List[RedeemRule] (or plain dicts) to the DB Text column."""
     return json.dumps(
-        [{"days": r.days, "fee_rate": r.fee_rate} for r in rules], ensure_ascii=False
+        [dict(zip(("days", "fee_rate"), _rule_pair(r))) for r in rules],
+        ensure_ascii=False,
     )
 
 
@@ -50,11 +58,11 @@ def _rules_to_note(rules) -> str:
     if not rules:
         return ""
     parts = []
-    for r in rules:
-        if r.days is None:
-            parts.append(f"其余 {r.fee_rate:g}%")
+    for days, fee in map(_rule_pair, rules):
+        if days is None:
+            parts.append(f"其余 {fee:g}%")
         else:
-            parts.append(f"<{r.days}天 {r.fee_rate:g}%")
+            parts.append(f"<{days}天 {fee:g}%")
     return "，".join(parts)
 
 
