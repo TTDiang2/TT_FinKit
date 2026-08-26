@@ -16,3 +16,4 @@ pyxirr>=0.10.0
 ddgs>=9.0.0
 tavily-python>=0.5.0
 akshare==1.18.88
+yfinance>=0.2.40

@@ -6,7 +6,7 @@ from ..schemas.backtest import BacktestCreate, BacktestResponse, BacktestResult
 from ..services.backtest_service import (
     create_backtest, get_backtest, list_backtests, update_backtest_status, delete_backtest
 )
-from ..services.backtest_engine import run_backtest_in_subprocess
+from ..services.backtest_engine import run_backtest_in_subprocess, load_benchmark_series
 import json
 
 router = APIRouter(prefix="/api/backtests", tags=["backtests"])
@@ -119,6 +119,22 @@ async def _run_backtest_async(backtest_id: str, strategy_code: str, params: dict
                 )
         except Exception as e:
             await update_backtest_status(db, backtest_id, "failed", error=str(e))
+
+@router.get("/benchmark")
+async def get_benchmark(
+    start: str = Query(..., description="YYYY-MM-DD"),
+    end: str = Query(..., description="YYYY-MM-DD"),
+):
+    """CSI300 benchmark series for a date range.
+
+    Lets OLD backtest results (created before benchmark was embedded) render
+    the excess-return / rolling-alpha-beta charts without a re-run.
+    """
+    bench = load_benchmark_series("finkit.db", start, end)
+    if not bench:
+        raise HTTPException(status_code=404, detail="基准因子(equity)无该区间数据")
+    return bench
+
 
 @router.get("/{backtest_id}", response_model=BacktestResponse)
 async def get_backtest_endpoint(backtest_id: str, db: AsyncSession = Depends(get_db)):

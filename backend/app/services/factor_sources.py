@@ -41,12 +41,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 from typing import Optional
 
-_BROWSER_UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-)
-
-_EASTMONEY_KLINE_URL = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
+from .market_data import fetch_returns as _md_fetch_returns
 
 _AK = None
 
@@ -62,26 +57,6 @@ def _ak():
         import akshare as m
         _AK = m
     return _AK
-
-
-def _ensure_browser_ua() -> None:
-    """Patch requests' default UA to a browser UA (idempotent).
-
-    East Money closes connections when requests advertises
-    ``python-requests/x.y.z``; a browser UA keeps the akshare wrappers alive.
-    """
-    import requests.utils
-    if getattr(requests.utils.default_user_agent, "_finkit_patched", False):
-        return
-
-    def _patched() -> str:
-        return _BROWSER_UA
-
-    _patched._finkit_patched = True  # type: ignore[attr-defined]
-    requests.utils.default_user_agent = _patched
-
-
-_ensure_browser_ua()
 
 
 def _returns_from_closes(pairs: list[tuple[str, float]]) -> list[tuple[str, float]]:
@@ -107,180 +82,18 @@ def _df_series(df, date_col: str, value_col: str) -> list[tuple[str, float]]:
 
 
 # --------------------------------------------------------------------------- #
-# index wrappers
+# index wrappers — A股/美股/全球指数统一走 market_data middleware
 # --------------------------------------------------------------------------- #
-
-_INDEX_KLINE_COLUMNS = [
-    "日期", "开盘", "收盘", "最高", "最低", "成交量", "成交额", "振幅", "涨跌幅", "涨跌额", "换手率",
-]
-
-# 全球指数中文名 -> 东财 secid（push2his 全球市场前缀 100）
-_GLOBAL_INDEX_SECIDS = {
-    "日经225": "100.N225",
-    "德国DAX30": "100.GDAXI",
-    "恒生指数": "100.HSI",
-}
-
-
-def _em_kline_closes(secid: str) -> list[tuple[str, float]]:
-    """East Money push2his kline, full history in one call -> [(date, close)].
-
-    Uses the exact parameter set verified live (no ``ut`` token, ``fqt=1``,
-    ``beg=0``, browser UA + quote-page Referer); the variant with ``ut`` and
-    ``beg=YYYYMMDD`` gets connections reset by the CDN.
-    """
-    import requests
-
-    params = {
-        "secid": secid,
-        "fields1": "f1,f2,f3,f4,f5,f6",
-        "fields2": "f51,f52,f53,f54,f55,f56,f57",
-        "klt": "101",
-        "fqt": "1",
-        "beg": "0",
-        "end": "20500101",
-    }
-    r = requests.get(
-        _EASTMONEY_KLINE_URL, params=params,
-        headers={"User-Agent": _BROWSER_UA, "Referer": "https://quote.eastmoney.com/"},
-        timeout=30,
-    )
-    r.raise_for_status()
-    klines = (r.json().get("data") or {}).get("klines") or []
-    out: list[tuple[str, float]] = []
-    for row in klines:
-        parts = row.split(",")
-        if len(parts) < 3:
-            continue
-        try:
-            out.append((parts[0][:10], float(parts[2])))
-        except ValueError:
-            continue
-    return out
-
-
-def _tencent_kline_closes(tx_code: str, max_pages: int = 30) -> list[tuple[str, float]]:
-    """Tencent kline 接口 (web.ifzq.gtimg.cn) 翻页拉全历史。
-
-    用 ``kline/kline``（end 参数生效），而非 ``fqkline/get``（end 被忽略）。
-    每次把 ``end`` 设为上次返回最旧日期的前一天，直到返回空页/无新行/不足 640 行。
-    """
-    import datetime
-    import requests
-
-    collected: dict[str, float] = {}
-    end = datetime.date.today().isoformat()
-    for _ in range(max_pages):
-        url = (f"https://web.ifzq.gtimg.cn/appstock/app/kline/kline"
-               f"?param={tx_code},day,,{end},640")
-        r = requests.get(url, timeout=30, headers={"Referer": "https://gu.qq.com/"})
-        r.raise_for_status()
-        rows = (r.json().get("data", {}).get(tx_code, {}) or {}).get("day") or []
-        if not rows:
-            break
-        new = 0
-        for row in rows:
-            d = row[0][:10]
-            try:
-                if d not in collected:
-                    collected[d] = float(row[2])
-                    new += 1
-            except (ValueError, IndexError):
-                continue
-        oldest = rows[0][0][:10]
-        if new == 0 or len(rows) < 640:
-            break
-        end = (datetime.date.fromisoformat(oldest) - datetime.timedelta(days=1)).isoformat()
-    return sorted(collected.items())
-
-
-def _a_share_secid(code: str) -> str:
-    """A股指数代码 -> 东财 secid：399xxx 深市前缀 0.，其余沪市前缀 1.。"""
-    return f"0.{code}" if code.startswith("399") else f"1.{code}"
-
-
-def _a_share_tx_code(code: str) -> str:
-    """A股指数代码 -> 腾讯代码：399xxx 前缀 sz，其余前缀 sh。"""
-    return f"sz{code}" if code.startswith("399") else f"sh{code}"
-
-
-def _index_kline_direct(code: str, begin: str, end: str):
-    """Direct East Money kline fetch — akshare's index_zh_a_hist bypass.
-
-    Mirrors akshare's exact params/columns; used only when
-    ``ak.index_zh_a_hist`` cannot reach its symbol map endpoint
-    (``80.push2.eastmoney.com`` blocked).  Tries market prefixes 1./0./2./47.
-    """
-    import pandas as pd
-    import requests
-
-    last_exc: Optional[Exception] = None
-    for market in ("1.", "0.", "2.", "47."):
-        params = {
-            "secid": f"{market}{code}",
-            "ut": "7eea3edcaed734bea9cbfc24409ed989",
-            "fields1": "f1,f2,f3,f4,f5,f6",
-            "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
-            "klt": "101",
-            "fqt": "0",
-            "beg": begin,
-            "end": end,
-        }
-        try:
-            r = requests.get(
-                _EASTMONEY_KLINE_URL, params=params,
-                headers={"User-Agent": _BROWSER_UA}, timeout=20,
-            )
-            data = r.json()
-        except Exception as e:  # noqa: BLE001
-            last_exc = e
-            continue
-        klines = (data.get("data") or {}).get("klines") or []
-        if klines:
-            rows = [row.split(",") for row in klines]
-            return pd.DataFrame(rows, columns=_INDEX_KLINE_COLUMNS)
-    if last_exc is not None:
-        raise last_exc
-    return pd.DataFrame()
 
 
 def fetch_index_pct(code: str) -> list[tuple[str, float]]:
-    """A股指数日收益。三级回退：akshare → 东财直连 → 腾讯翻页。
-
-    akshare 走 index_zh_a_hist（依赖 80.push2 符号表，常被拒）；
-    东财直连 push2his 一次拉全历史；腾讯按 640 行/页回翻 kline/kline。
-    任一源抛错或返回空，**绝不**向上抛——直接试下一个，保证最后一站
-    失败才 NoDataError/raise。
+    """A股指数日收益。回退链（market_data 中间件）:
+    东财直连 → 腾讯翻页 → akshare → yfinance。全链失败抛 NoDataError。
     """
-    today = date.today()
-    begin = (today - timedelta(days=5 * 365)).strftime("%Y%m%d")
-    end = today.strftime("%Y%m%d")
     try:
-        ak = _ak()
-        df = ak.index_zh_a_hist(symbol=code, period="daily", start_date=begin, end_date=end)
-        if df is None or df.empty or "涨跌幅" not in df.columns:
-            df = _index_kline_direct(code, begin, end)
-        if df is not None and not df.empty and "涨跌幅" in df.columns:
-            import pandas as pd
-            out = []
-            for _, row in df.iterrows():
-                v = row["涨跌幅"]
-                if not pd.isna(v):
-                    out.append((str(row["日期"]), float(v) / 100.0))
-            if out:
-                return out
-    except Exception:  # noqa: BLE001 — fall through to direct sources
-        pass
-
-    try:
-        closes = _em_kline_closes(_a_share_secid(code))
-        if closes:
-            return _returns_from_closes(closes)
-    except Exception:  # noqa: BLE001
-        pass
-
-    closes = _tencent_kline_closes(_a_share_tx_code(code))
-    return _returns_from_closes(closes)
+        return _md_fetch_returns(code, chain="cn_index")
+    except RuntimeError as e:
+        raise NoDataError(str(e)) from e
 
 
 def fetch_index_pct_sw(code: str) -> list[tuple[str, float]]:
@@ -293,47 +106,22 @@ def fetch_index_pct_sw(code: str) -> list[tuple[str, float]]:
 
 
 def fetch_index_pct_us(symbol: str) -> list[tuple[str, float]]:
-    """美股指数日收益（新浪）—— close 自行计算，首行跳过。"""
-    ak = _ak()
-    df = ak.index_us_stock_sina(symbol=symbol)
-    if df is None or df.empty:
+    """美股指数日收益。回退链：新浪(akshare) → yfinance。全链失败返回空。"""
+    try:
+        return _md_fetch_returns(symbol, chain="us")
+    except RuntimeError:
         return []
-    return _returns_from_closes(_df_series(df, "date", "close"))
 
 
 def fetch_index_pct_global(name_cn: str) -> list[tuple[str, float]]:
-    """全球指数日收益。回退链：akshare → 东财直连(secid 映射) → 腾讯(仅港股)。
+    """全球指数日收益。回退链（market_data）: 东财直连 → 腾讯(仅恒生) → yfinance。
 
-    akshare 的 index_global_hist_em 依赖 py_mini_racer(V8) 计算东财加密参数，
-    并发初始化会崩溃且东财连接常被拒；直连 push2his 无需 V8，全历史一次返回。
-    任一源抛错或返回空都试下一个，全部失败才 raise NoDataError。
+    yfinance 直连 Yahoo（^N225/^GDAXI/^HSI），东财/V8 崩溃或拒连时的兜底。
     """
     try:
-        ak = _ak()
-        df = ak.index_global_hist_em(symbol=name_cn)
-        if df is not None and not df.empty:
-            return _returns_from_closes(_df_series(df, "日期", "最新价"))
-    except Exception:  # noqa: BLE001 — V8 crash / connection refused: fall through
-        pass
-
-    secid = _GLOBAL_INDEX_SECIDS.get(name_cn)
-    if secid:
-        try:
-            closes = _em_kline_closes(secid)
-            if closes:
-                return _returns_from_closes(closes)
-        except Exception:  # noqa: BLE001
-            pass
-
-    if name_cn == "恒生指数":
-        try:
-            closes = _tencent_kline_closes("hkHSI")
-            if closes:
-                return _returns_from_closes(closes)
-        except Exception:  # noqa: BLE001
-            pass
-
-    raise NoDataError(f"全球指数 {name_cn} 所有数据源均未取到数据")
+        return _md_fetch_returns(name_cn, chain="global")
+    except RuntimeError as e:
+        raise NoDataError(f"全球指数 {name_cn} 所有数据源均未取到数据: {e}") from e
 
 
 # --------------------------------------------------------------------------- #

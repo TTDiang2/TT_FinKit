@@ -93,10 +93,42 @@
               <input type="range" min="1" max="30" step="1" :value="ddThresholdPct" @input="ddThresholdPct = parseFloat(($event.target as HTMLInputElement).value)" class="w-24" />
               <span class="text-xs text-text-primary w-8">{{ ddThresholdPct.toFixed(0) }}%</span>
             </div>
+            <div class="flex items-center gap-2 ml-2 border-l border-border-default pl-4">
+              <span class="text-xs text-text-muted">预测</span>
+              <select v-model="mcHorizon" @change="mcForecast && runMonteCarlo()" class="text-xs border border-border-default rounded px-1 py-0.5">
+                <option :value="30">30日</option>
+                <option :value="60">60日</option>
+                <option :value="120">120日</option>
+              </select>
+              <button v-if="!mcForecast" @click="mcOn = true; runMonteCarlo()" class="btn-secondary text-xs">模拟未来</button>
+              <button v-else @click="runMonteCarlo()" class="btn-secondary text-xs">重跑</button>
+              <button v-if="mcForecast" @click="clearMonteCarlo()" class="text-xs text-text-muted hover:text-text-primary">清除</button>
+            </div>
           </div>
         </div>
         <div style="height: 340px">
           <Line v-if="navChartData" :data="navChartData" :options="navChartOpts" :plugins="[stagnantPlugin, drawdownPlugin]" />
+        </div>
+        <div v-if="mcForecast" class="grid grid-cols-4 gap-3 mt-3 text-xs">
+          <div class="flex items-center justify-between border border-border-default rounded-lg px-3 py-1.5">
+            <span class="text-text-muted">预测 P5（悲观）</span>
+            <span class="font-medium text-expense-color">{{ mcForecast.p5f.toFixed(3) }}</span>
+          </div>
+          <div class="flex items-center justify-between border border-border-default rounded-lg px-3 py-1.5">
+            <span class="text-text-muted">预测中位数</span>
+            <span class="font-medium text-text-primary">{{ mcForecast.p50f.toFixed(3) }}</span>
+          </div>
+          <div class="flex items-center justify-between border border-border-default rounded-lg px-3 py-1.5">
+            <span class="text-text-muted">预测 P95（乐观）</span>
+            <span class="font-medium text-income-color">{{ mcForecast.p95f.toFixed(3) }}</span>
+          </div>
+          <div class="flex items-center justify-between border border-border-default rounded-lg px-3 py-1.5">
+            <span class="text-text-muted">{{ mcHorizon }} 日后亏损概率</span>
+            <span class="font-medium">{{ (mcForecast.lossProb * 100).toFixed(1) }}%</span>
+          </div>
+          <div class="col-span-4 text-xs text-text-muted">
+            紫色扇形 = FHS 模拟（EWMA 波动率滤波 + 区块自举，800 路径）· 仅统计展示，非投资建议
+          </div>
         </div>
       </div>
 
@@ -225,7 +257,7 @@ import { Line } from 'vue-chartjs'
 import { Chart as ChartJS, LineElement, PointElement, CategoryScale, LinearScale, Tooltip, Legend, Filler } from 'chart.js'
 import { useApi } from '@/composables/useApi'
 import BacktestCharts from './BacktestCharts.vue'
-import type { BacktestResponse, CustomFactorStat } from '@/types'
+import type { BacktestResponse, CustomFactorStat, BenchmarkSeries } from '@/types'
 
 ChartJS.register(LineElement, PointElement, CategoryScale, LinearScale, Tooltip, Legend, Filler)
 
@@ -239,11 +271,15 @@ function goBack() {
   router.push('/investments/strategies?sub=backtest')
 }
 
-// NAV chart data: line + benchmark + buy/sell scatter overlay
+// NAV chart data: line + benchmark + buy/sell scatter overlay + MC forecast fan
 const navChartData = computed(() => {
   const r = backtest.value?.results
   if (!r?.nav_series?.length) return null
-  const labels = r.nav_series.map(p => p.date)
+  const histLabels = r.nav_series.map(p => p.date)
+  const histLen = histLabels.length
+  const mc = mcForecast.value
+  const labels = mc ? [...histLabels, ...mc.labels] : histLabels
+  const pad = mc ? new Array(histLen).fill(null) : []
   const navData = r.nav_series.map(p => p.nav)
 
   // benchmark aligned by date (null where missing)
@@ -253,7 +289,7 @@ const navChartData = computed(() => {
     // renormalize benchmark to portfolio's first nav for visual comparability
     const firstB = r.benchmark.series[0].nav || 1
     const scale = navData[0] / firstB
-    labels.forEach((d, i) => {
+    histLabels.forEach((d, i) => {
       const b = bmap.get(d)
       if (b != null) benchData[i] = b * scale
     })
@@ -264,8 +300,8 @@ const navChartData = computed(() => {
   r.nav_series.forEach((p, i) => { dateIdx[p.date] = i })
   const buyData: (number | null)[] = new Array(labels.length).fill(null)
   const sellData: (number | null)[] = new Array(labels.length).fill(null)
-  const buyMeta: any[] = new Array(labels.length).fill(null)
-  const sellMeta: any[] = new Array(labels.length).fill(null)
+  const buyMeta: any[] = new Array(histLen).fill(null)
+  const sellMeta: any[] = new Array(histLen).fill(null)
   for (const rec of r.rebalance_records) {
     const idx = dateIdx[rec.date]
     if (idx == null) continue
@@ -309,6 +345,36 @@ const navChartData = computed(() => {
       _meta: sellMeta,
     },
   )
+  if (mc) {
+    const f = (arr: number[]) => [...pad, ...arr]
+    datasets.push(
+      {
+        label: `预测P95`, data: f(mc.p95),
+        borderColor: 'rgba(139,92,246,0.4)', backgroundColor: 'rgba(139,92,246,0.08)',
+        borderWidth: 1, pointRadius: 0, fill: '+1', tension: 0.25,
+      },
+      {
+        label: `预测P75`, data: f(mc.p75),
+        borderColor: 'transparent', backgroundColor: 'rgba(139,92,246,0.13)',
+        borderWidth: 0, pointRadius: 0, fill: '+1', tension: 0.25,
+      },
+      {
+        label: `预测P25`, data: f(mc.p25),
+        borderColor: 'transparent', backgroundColor: 'transparent',
+        borderWidth: 0, pointRadius: 0, fill: false, tension: 0.25,
+      },
+      {
+        label: '预测中位数', data: f(mc.p50),
+        borderColor: '#8b5cf6', borderWidth: 2, borderDash: [6, 3],
+        pointRadius: 0, fill: false, tension: 0.25,
+      },
+      {
+        label: `预测P5`, data: f(mc.p5),
+        borderColor: 'rgba(139,92,246,0.4)', borderWidth: 1,
+        pointRadius: 0, fill: false, tension: 0.25,
+      },
+    )
+  }
   return { labels, datasets }
 })
 
@@ -393,6 +459,94 @@ const drawdownPlugin = {
   },
 }
 
+// ---- 蒙特卡洛 v2：FHS（EWMA 波动率滤波 + 区块自举）叠加在净值曲线未来段 ----
+const navRets = computed(() => {
+  const ns = backtest.value?.results?.nav_series || []
+  const out: number[] = []
+  for (let i = 1; i < ns.length; i++) if (ns[i - 1].nav > 0) out.push(ns[i].nav / ns[i - 1].nav - 1)
+  return out
+})
+
+interface McForecast {
+  labels: string[]           // 未来交易日（不含历史）
+  p5: number[]; p25: number[]; p50: number[]; p75: number[]; p95: number[]
+  lossProb: number
+  p5f: number; p50f: number; p95f: number
+}
+const mcOn = ref(false)
+const mcHorizon = ref(60)
+const mcForecast = ref<McForecast | null>(null)
+
+function runMonteCarlo() {
+  const rs = navRets.value
+  const navs = backtest.value?.results?.nav_series || []
+  const last = navs[navs.length - 1]
+  if (rs.length < 126 || !last) return
+  const mu = rs.reduce((a, b) => a + b, 0) / rs.length
+  // EWMA 波动率滤波 → 标准化创新 z（保留厚尾，去掉波动率聚集）
+  const LAM = 0.94
+  const z: number[] = []
+  let sig2 = rs.slice(0, 30).reduce((a, r) => a + (r - mu) ** 2, 0) / 30
+  let sigT = Math.sqrt(sig2)
+  for (const r of rs) {
+    sig2 = LAM * sig2 + (1 - LAM) * (r - mu) ** 2
+    sigT = Math.sqrt(sig2)
+    z.push((r - mu) / (sigT || 1e-9))
+  }
+  const H = mcHorizon.value, P = 800, BL = 5
+  const finals: number[] = []
+  const paths: number[][] = []
+  for (let p = 0; p < P; p++) {
+    // 区块自举（块长 5，保留序列相关性）
+    const zs: number[] = []
+    while (zs.length < H) {
+      const s = Math.floor(Math.random() * Math.max(1, z.length - BL))
+      for (let k = 0; k < BL && zs.length < H; k++) zs.push(z[s + k])
+    }
+    // 前向递推：波动率按 EWMA 动态演化，重放当前波动率状态
+    let s2 = sigT ** 2
+    let v = last.nav
+    const path: number[] = [v]
+    for (let d = 0; d < H; d++) {
+      const rstar = mu + zs[d] * Math.sqrt(s2)
+      v *= (1 + rstar)
+      path.push(v)
+      s2 = LAM * s2 + (1 - LAM) * (rstar - mu) ** 2
+    }
+    paths.push(path)
+    finals.push(v)
+  }
+  const q = (arr: number[], pct: number) => {
+    const s = [...arr].sort((a, b) => a - b)
+    return s[Math.min(s.length - 1, Math.floor(pct * s.length))]
+  }
+  const lines = [5, 25, 50, 75, 95].map(pct => {
+    const line: number[] = []
+    for (let d = 0; d <= H; d++) line.push(q(paths.map(pt => pt[d]), pct / 100))
+    return line
+  })
+  // 未来标签：跳过周末的交易日
+  const labels: string[] = []
+  {
+    const dt = new Date(last.date)
+    for (let d = 0; d < H; d++) {
+      do { dt.setDate(dt.getDate() + 1) } while (dt.getDay() === 0 || dt.getDay() === 6)
+      labels.push(dt.toISOString().slice(0, 10))
+    }
+  }
+  mcForecast.value = {
+    labels,
+    p5: lines[0], p25: lines[1], p50: lines[2], p75: lines[3], p95: lines[4],
+    lossProb: finals.filter(v => v < last.nav).length / finals.length,
+    p5f: q(finals, 0.05), p50f: q(finals, 0.5), p95f: q(finals, 0.95),
+  }
+}
+
+function clearMonteCarlo() {
+  mcForecast.value = null
+  mcOn.value = false
+}
+
 // 失效区间红色遮罩：merged_periods (date range) → x 轴像素矩形
 const stagnantPlugin = {
   id: 'stagnantBands',
@@ -437,7 +591,7 @@ const navChartOpts = computed(() => {
           if (v == null) return ''
           const meta = ds._meta?.[ctx.dataIndex]
           if (meta) return `${ds.label}: ${meta}`
-          return `${ds.label}`
+          return `${ds.label}: ${v.toFixed(4)}`
         },
       },
     },
@@ -477,6 +631,17 @@ async function load() {
   const id = route.params.id as string
   const { data } = await api.get<BacktestResponse>(`/backtests/${id}`)
   backtest.value = data
+  // 旧回测（benchmark 字段上线前创建）懒加载基准，让超额收益/滚动Alpha-Beta图可用
+  if (data.results && !data.results.benchmark && data.start_date && data.end_date) {
+    try {
+      const { data: bench } = await api.get<BenchmarkSeries>('/backtests/benchmark', {
+        params: { start: data.start_date, end: data.end_date },
+      })
+      if (bench?.series?.length && backtest.value?.results) {
+        backtest.value.results.benchmark = bench
+      }
+    } catch { /* 基准不可用时不阻断 */ }
+  }
   // Load factor evaluations if strategy declares factor_keys
   if (data.factor_keys?.length) {
     try {

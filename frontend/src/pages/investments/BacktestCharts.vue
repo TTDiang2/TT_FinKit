@@ -82,24 +82,9 @@
       <!-- 组合因子暴露 -->
       <div class="bg-white rounded-lg shadow-sm p-4">
         <h3 class="text-sm font-medium mb-3">组合因子暴露 <span class="text-xs text-text-muted font-normal">· 全程平均加权 β（时间均值）</span></h3>
-        <div style="height: 260px"><Bar v-if="expoData" :data="expoData" :options="expoOpts" /></div>
-      </div>
-
-      <!-- 蒙特卡洛预测 -->
-      <div class="bg-white rounded-lg shadow-sm p-4">
-        <div class="flex items-center justify-between mb-3">
-          <h3 class="text-sm font-medium">蒙特卡洛预测 <span class="text-xs text-text-muted font-normal">· 随机游走 500 路径 × 30 交易日</span></h3>
-          <button @click="runMonteCarlo" class="btn-secondary text-xs">{{ mcResult ? '重新模拟' : '运行模拟' }}</button>
-        </div>
-        <div v-if="mcResult" style="height: 200px"><Line :data="mcResult.chart" :options="mcOpts" /></div>
-        <div v-else class="h-[200px] flex items-center justify-center text-text-muted text-sm">
-          基于历史日收益的 μ/σ 随机游走外推（非投资建议）
-        </div>
-        <div v-if="mcResult" class="grid grid-cols-4 gap-2 mt-3 text-xs">
-          <div class="text-center"><div class="text-text-muted">P5</div><div class="font-medium text-expense-color">{{ mcResult.p5.toFixed(3) }}</div></div>
-          <div class="text-center"><div class="text-text-muted">中位数</div><div class="font-medium text-text-primary">{{ mcResult.p50.toFixed(3) }}</div></div>
-          <div class="text-center"><div class="text-text-muted">P95</div><div class="font-medium text-income-color">{{ mcResult.p95.toFixed(3) }}</div></div>
-          <div class="text-center"><div class="text-text-muted">亏损概率</div><div class="font-medium">{{ (mcResult.lossProb * 100).toFixed(1) }}%</div></div>
+        <div style="height: 260px">
+          <Bar v-if="expoData" :data="expoData" :options="expoOpts" />
+          <div v-else class="h-full flex items-center justify-center text-text-muted text-sm">无因子暴露数据（旧回测重新运行后自动生成）</div>
         </div>
       </div>
     </div>
@@ -402,68 +387,6 @@ const expoData = computed(() => {
   }
 })
 
-// ---- 蒙特卡洛 ----
-const mcResult = ref<{ chart: any; p5: number; p50: number; p95: number; lossProb: number } | null>(null)
-function gauss() {
-  let u = 0, v = 0
-  while (u === 0) u = Math.random()
-  while (v === 0) v = Math.random()
-  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v)
-}
-function runMonteCarlo() {
-  const xs = rets.value
-  const last = navs.value[navs.value.length - 1]
-  if (xs.length < 60 || !last) return
-  const mu = xs.reduce((a, b) => a + b, 0) / xs.length
-  const sd = Math.sqrt(xs.reduce((a, b) => a + (b - mu) ** 2, 0) / (xs.length - 1))
-  const H = 30, P = 500
-  const paths: number[][] = []
-  const finals: number[] = []
-  for (let p = 0; p < P; p++) {
-    let v = last.nav
-    const path: number[] = [v]
-    for (let d = 0; d < H; d++) {
-      v *= (1 + mu + sd * gauss())
-      path.push(v)
-    }
-    paths.push(path)
-    finals.push(v)
-  }
-  const q = (arr: number[], p: number) => {
-    const s = [...arr].sort((a, b) => a - b)
-    return s[Math.min(s.length - 1, Math.floor(p * s.length))]
-  }
-  const perDay = [5, 25, 50, 75, 95].map(pct => {
-    const line: number[] = []
-    for (let d = 0; d <= H; d++) line.push(q(paths.map(pt => pt[d]), pct / 100))
-    return line
-  })
-  // forecast labels: business days
-  const labels: string[] = [last.date]
-  {
-    const dt = new Date(last.date)
-    for (let d = 0; d < H; d++) {
-      do { dt.setDate(dt.getDate() + 1) } while (dt.getDay() === 0 || dt.getDay() === 6)
-      labels.push(dt.toISOString().slice(0, 10))
-    }
-  }
-  const chart = {
-    labels,
-    datasets: [
-      { label: 'P95', data: perDay[4], borderColor: RED, backgroundColor: 'rgba(244,67,54,0.10)', borderWidth: 1, pointRadius: 0, fill: '+1' },
-      { label: 'P25-P75', data: perDay[1], borderColor: RED, backgroundColor: 'rgba(244,67,54,0.14)', borderWidth: 0, pointRadius: 0, fill: '+1' },
-      { label: 'P75', data: perDay[3], borderColor: 'transparent', backgroundColor: 'transparent', pointRadius: 0, fill: false },
-      { label: '中位数', data: perDay[2], borderColor: BLUE, borderWidth: 2, pointRadius: 0, fill: false, borderDash: [4, 3] },
-      { label: 'P5', data: perDay[0], borderColor: GREEN, backgroundColor: 'transparent', borderWidth: 1, pointRadius: 0, fill: false },
-    ],
-  }
-  mcResult.value = {
-    chart,
-    p5: q(finals, 0.05), p50: q(finals, 0.5), p95: q(finals, 0.95),
-    lossProb: finals.filter(v => v < last.nav).length / finals.length,
-  }
-}
-
 // ---- chart options ----
 const baseScales = {
   x: { ticks: { maxTicksLimit: 10, font: { size: 9 }, maxRotation: 0, autoSkipPadding: 15 }, grid: { display: false } },
@@ -491,10 +414,5 @@ const expoOpts = {
   responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
   scales: { ...baseScales, x: { ...baseScales.x, indexAxis: undefined } },
   indexAxis: 'y' as const,
-}
-const mcOpts = {
-  responsive: true, maintainAspectRatio: false,
-  plugins: { legend: { labels: { boxWidth: 12, font: { size: 10 } } } },
-  scales: baseScales,
 }
 </script>

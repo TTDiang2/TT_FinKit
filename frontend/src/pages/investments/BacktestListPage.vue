@@ -5,58 +5,78 @@
       <button @click="showNew = true" class="btn-primary"><Plus :size="14" /> 新建回测</button>
     </div>
 
-    <!-- 状态筛选 -->
-    <div class="flex gap-2 mb-4">
-      <button v-for="s in statusOptions" :key="s.value"
-        @click="filterStatus = s.value"
-        :class="['px-3 py-1 text-xs rounded', filterStatus === s.value ? 'bg-accent-primary text-white' : 'bg-bg-tertiary text-text-secondary']">
-        {{ s.label }}
-      </button>
+    <!-- 按策略分组的回测列表 -->
+    <div v-if="groups.length">
+      <div v-for="g in groups" :key="g.strategyId" class="bg-white rounded-lg shadow-sm mb-4 overflow-hidden">
+        <div
+          class="flex items-center justify-between px-4 py-2.5 cursor-pointer select-none hover:bg-bg-tertiary/60"
+          @click="toggleGroup(g.strategyId)"
+        >
+          <div class="flex items-center gap-2">
+            <ChevronDown :size="14" class="transition-transform text-text-muted" :class="expandedGroupIds.has(g.strategyId) ? '' : '-rotate-90'" />
+            <span class="text-sm font-medium">{{ g.name }}</span>
+            <span class="text-xs text-text-muted">{{ g.items.length }} 次回测</span>
+            <span v-if="g.runningCount" class="text-xs text-blue-600">● {{ g.runningCount }} 运行中</span>
+            <span v-if="g.failedCount" class="text-xs text-expense-color">{{ g.failedCount }} 失败</span>
+          </div>
+          <span class="text-xs text-text-muted">最近 {{ fmtDateTime(g.items[0].created_at) }}</span>
+        </div>
+
+        <table v-if="expandedGroupIds.has(g.strategyId)" class="w-full text-sm border-t border-border-default">
+          <thead class="bg-bg-tertiary text-left">
+            <tr>
+              <th class="px-3 py-2 font-medium">区间</th>
+              <th class="px-3 py-2 font-medium text-center">频率</th>
+              <th class="px-3 py-2 font-medium text-right">年化收益</th>
+              <th class="px-3 py-2 font-medium text-right">夏普</th>
+              <th class="px-3 py-2 font-medium text-right">最大回撤</th>
+              <th class="px-3 py-2 font-medium text-right">创建时间</th>
+              <th class="px-3 py-2 font-medium text-center">状态</th>
+              <th class="px-3 py-2"></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="bt in g.items" :key="bt.id"
+              @click="navigateTo(`/investments/backtests/${bt.id}`)"
+              class="border-t border-border-default cursor-pointer hover:bg-bg-tertiary">
+              <td class="px-3 py-2 text-xs text-text-secondary">{{ bt.start_date }} → {{ bt.end_date }}</td>
+              <td class="px-3 py-2 text-center text-xs">{{ freqLabel(bt.rebalance_freq) }}</td>
+              <td class="px-3 py-2 text-right" :class="metricClass(bt.results?.metrics?.ann_return)">
+                {{ fmtPct(bt.results?.metrics?.ann_return) }}
+              </td>
+              <td class="px-3 py-2 text-right">{{ fmtNum(bt.results?.metrics?.sharpe) }}</td>
+              <td class="px-3 py-2 text-right" :class="metricClass(bt.results?.metrics?.max_drawdown)">
+                {{ fmtPct(bt.results?.metrics?.max_drawdown) }}
+              </td>
+              <td class="px-3 py-2 text-right text-xs text-text-muted">{{ fmtDateTime(bt.created_at) }}</td>
+              <td class="px-3 py-2 text-center">
+                <span v-if="bt.status !== 'done'" :class="statusClass(bt.status)" class="px-1.5 py-0.5 text-xs rounded">
+                  {{ statusLabel(bt.status) }}
+                </span>
+                <span v-else class="text-text-muted text-xs">✓</span>
+              </td>
+              <td class="px-3 py-2 text-right whitespace-nowrap" @click.stop>
+                <template v-if="deleteId === bt.id">
+                  <span class="text-xs text-text-muted mr-1">确认删除？</span>
+                  <button @click="deleteBacktest(bt)" :disabled="deleting" class="px-1.5 py-0.5 text-xs rounded bg-expense-bg text-expense-color disabled:opacity-50">
+                    确认
+                  </button>
+                  <button @click="deleteId = null" class="px-1.5 py-0.5 text-xs rounded bg-bg-tertiary text-text-secondary ml-1">
+                    取消
+                  </button>
+                </template>
+                <button v-else @click="deleteId = bt.id" class="p-1 rounded hover:bg-expense-bg text-text-muted hover:text-expense-color" title="删除该回测">
+                  <Trash2 :size="14" />
+                </button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </div>
 
-    <!-- 回测列表 -->
-    <div class="bg-white rounded-lg shadow-sm overflow-hidden">
-      <table class="w-full text-sm">
-        <thead class="bg-bg-tertiary text-left">
-          <tr>
-            <th class="px-3 py-2 font-medium">策略</th>
-            <th class="px-3 py-2 font-medium text-center">版本</th>
-            <th class="px-3 py-2 font-medium">区间</th>
-            <th class="px-3 py-2 font-medium text-center">频率</th>
-            <th class="px-3 py-2 font-medium text-right">年化收益</th>
-            <th class="px-3 py-2 font-medium text-right">夏普</th>
-            <th class="px-3 py-2 font-medium text-right">最大回撤</th>
-            <th class="px-3 py-2 font-medium text-center">状态</th>
-            <th class="px-3 py-2 font-medium text-right">创建时间</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="bt in filteredBacktests" :key="bt.id"
-            @click="navigateTo(`/investments/backtests/${bt.id}`)"
-            class="border-t border-border-default cursor-pointer hover:bg-bg-tertiary">
-            <td class="px-3 py-2 font-medium">{{ bt.strategy_name || bt.strategy_id.slice(0, 8) }}</td>
-            <td class="px-3 py-2 text-center text-xs">v{{ bt.strategy_version }}</td>
-            <td class="px-3 py-2 text-xs text-text-secondary">{{ bt.start_date }} → {{ bt.end_date }}</td>
-            <td class="px-3 py-2 text-center text-xs">{{ bt.rebalance_freq }}</td>
-            <td class="px-3 py-2 text-right" :class="metricClass(bt.results?.metrics?.ann_return)">
-              {{ fmtPct(bt.results?.metrics?.ann_return) }}
-            </td>
-            <td class="px-3 py-2 text-right">{{ fmtNum(bt.results?.metrics?.sharpe) }}</td>
-            <td class="px-3 py-2 text-right" :class="metricClass(bt.results?.metrics?.max_drawdown)">
-              {{ fmtPct(bt.results?.metrics?.max_drawdown) }}
-            </td>
-            <td class="px-3 py-2 text-center">
-              <span :class="statusClass(bt.status)" class="px-1.5 py-0.5 text-xs rounded">
-                {{ statusLabel(bt.status) }}
-              </span>
-            </td>
-            <td class="px-3 py-2 text-right text-xs text-text-muted">{{ fmtDate(bt.created_at) }}</td>
-          </tr>
-          <tr v-if="!backtests.length">
-            <td colspan="9" class="px-4 py-8 text-center text-text-muted">暂无回测记录</td>
-          </tr>
-        </tbody>
-      </table>
+    <div v-else class="bg-white rounded-lg shadow-sm py-10 text-center text-text-muted text-sm">
+      暂无回测记录，点击右上角「新建回测」开始
     </div>
 
     <!-- 新建回测弹窗 -->
@@ -100,9 +120,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { Plus } from 'lucide-vue-next'
+import { Plus, Trash2, ChevronDown } from 'lucide-vue-next'
 import { useApi } from '@/composables/useApi'
 import BaseModal from '@/components/common/BaseModal.vue'
 import type { BacktestResponse, StrategyResponse, ResearchAsset } from '@/types'
@@ -116,13 +136,10 @@ const loading = ref(false)
 const showNew = ref(false)
 const creating = ref(false)
 const createError = ref('')
-const filterStatus = ref('all')
-const statusOptions = [
-  { value: 'all', label: '全部' },
-  { value: 'done', label: '完成' },
-  { value: 'running', label: '运行中' },
-  { value: 'failed', label: '失败' },
-]
+
+const expandedGroupIds = ref<Set<string>>(new Set())
+const deleteId = ref<string | null>(null)
+const deleting = ref(false)
 
 const newForm = ref({
   strategy_id: '',
@@ -134,10 +151,46 @@ const newForm = ref({
   params: {},
 })
 
-const filteredBacktests = computed(() => {
-  if (filterStatus.value === 'all') return backtests.value
-  return backtests.value.filter(b => b.status === filterStatus.value)
+// ---- 按策略分组（组内按创建时间倒序，组间按最近创建倒序） ----
+const groups = computed(() => {
+  const map = new Map<string, { strategyId: string; name: string; items: BacktestResponse[]; runningCount: number; failedCount: number }>()
+  for (const bt of backtests.value) {
+    const key = bt.strategy_id
+    if (!map.has(key)) map.set(key, { strategyId: key, name: bt.strategy_name || key.slice(0, 8), items: [], runningCount: 0, failedCount: 0 })
+    const g = map.get(key)!
+    g.items.push(bt)
+    if (bt.status === 'running' || bt.status === 'pending') g.runningCount++
+    if (bt.status === 'failed') g.failedCount++
+  }
+  const arr = [...map.values()]
+  for (const g of arr) {
+    g.items.sort((a, b) => (a.created_at < b.created_at ? 1 : -1))
+    g.name = g.items[0].strategy_name || g.strategyId.slice(0, 8)
+  }
+  arr.sort((a, b) => (a.items[0].created_at < b.items[0].created_at ? 1 : -1))
+  return arr
 })
+
+const hasActive = computed(() => backtests.value.some(b => b.status === 'running' || b.status === 'pending'))
+let pollTimer: number | null = null
+
+function toggleGroup(id: string) {
+  const s = new Set(expandedGroupIds.value)
+  if (s.has(id)) s.delete(id)
+  else s.add(id)
+  expandedGroupIds.value = s
+}
+
+function startPolling() {
+  if (pollTimer != null || !hasActive.value) return
+  pollTimer = window.setInterval(loadBacktests, 5000)
+}
+function stopPolling() {
+  if (pollTimer != null) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
+}
 
 async function loadBacktests() {
   loading.value = true
@@ -146,6 +199,8 @@ async function loadBacktests() {
     backtests.value = data
   } finally {
     loading.value = false
+    if (hasActive.value) startPolling()
+    else stopPolling()
   }
 }
 
@@ -187,6 +242,19 @@ async function createBacktest() {
   }
 }
 
+async function deleteBacktest(bt: BacktestResponse) {
+  deleting.value = true
+  try {
+    await api.delete(`/backtests/${bt.id}`)
+    backtests.value = backtests.value.filter(x => x.id !== bt.id)
+    deleteId.value = null
+  } catch (e: unknown) {
+    createError.value = apiErrorMessage(e)
+  } finally {
+    deleting.value = false
+  }
+}
+
 function apiErrorMessage(e: unknown): string {
   if (e && typeof e === 'object' && 'response' in e) {
     const detail = (e as { response?: { data?: { detail?: string } } }).response?.data?.detail
@@ -201,7 +269,11 @@ function navigateTo(path: string) {
 
 function fmtPct(v?: number) { return v != null ? `${(v * 100).toFixed(1)}%` : '-' }
 function fmtNum(v?: number) { return v != null ? v.toFixed(2) : '-' }
-function fmtDate(v?: string) { return v ? v.slice(0, 10) : '-' }
+function fmtDateTime(v?: string) { return v ? v.slice(0, 16) : '-' }
+function freqLabel(f: string) {
+  const m: Record<string, string> = { monthly: '月度', weekly: '周度', daily: '每日' }
+  return m[f] || f
+}
 function metricClass(v?: number) {
   if (v == null) return 'text-text-muted'
   return v >= 0 ? 'text-income-color' : 'text-expense-color'
@@ -216,4 +288,5 @@ function statusLabel(s: string) {
 }
 
 onMounted(() => { loadBacktests(); loadStrategies(); loadPooledAssets() })
+onUnmounted(stopPolling)
 </script>
