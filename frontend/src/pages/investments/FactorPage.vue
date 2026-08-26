@@ -12,6 +12,28 @@
         <button v-if="activeTab === 'library'" @click="openAgentModal" class="btn-primary">
           <Sparkles :size="14" /> Agent 构建因子
         </button>
+        <div v-if="activeTab === 'analysis'" class="relative">
+          <button @click="showAssetPicker = !showAssetPicker" class="btn-secondary">
+            重算范围: {{ recomputeAssetIds.length ? `${recomputeAssetIds.length} 个标的` : '全部标的' }}
+          </button>
+          <div v-if="showAssetPicker" class="absolute right-0 top-full mt-1 z-20 bg-white border border-border-default rounded-md shadow-lg p-2 w-72 max-h-80 overflow-auto">
+            <label class="flex items-center gap-2 text-xs px-1 py-1 cursor-pointer font-medium">
+              <input type="checkbox" :checked="recomputeAssetIds.length === 0" @change="recomputeAssetIds = []" />
+              全部入池标的
+            </label>
+            <div class="border-t border-border-default my-1"></div>
+            <label v-for="a in pooledAssets" :key="a.value" class="flex items-center gap-2 text-xs px-1 py-1 cursor-pointer hover:bg-bg-tertiary rounded">
+              <input type="checkbox" :value="a.value" v-model="recomputeAssetIds" />
+              <span class="truncate">{{ a.label }}</span>
+            </label>
+            <div class="border-t border-border-default my-1"></div>
+            <div class="flex gap-2 px-1 pt-1">
+              <button @click="recomputeAssetIds = pooledAssets.map(a => a.value)" class="text-xs text-accent-primary hover:underline">全选</button>
+              <button @click="recomputeAssetIds = []" class="text-xs text-text-muted hover:underline">清空</button>
+              <button @click="showAssetPicker = false" class="ml-auto text-xs text-accent-primary hover:underline">完成</button>
+            </div>
+          </div>
+        </div>
         <button v-if="activeTab === 'analysis'" @click="recomputeExposures" :disabled="recomputing" class="btn-secondary">
           <RefreshCw :size="14" :class="recomputing ? 'animate-spin' : ''" /> {{ recomputing ? '重算中…' : '重算暴露' }}
         </button>
@@ -422,7 +444,9 @@ const historyAsset = ref('')
 const historyHistory = ref<ExposureHistoryPoint[]>([])
 const historyLoading = ref(false)
 const historyError = ref('')
-const pooledAssets = ref<Array<{ value: string; label: string }>>([])
+const pooledAssets = ref<Array<{ value: string; label: string; symbol: string }>>([])
+const showAssetPicker = ref(false)
+const recomputeAssetIds = ref<string[]>([])
 const contribAsset = ref('')
 const contribStart = ref('')
 const contribEnd = ref('')
@@ -594,9 +618,17 @@ async function loadMatrix() {
 async function recomputeExposures() {
   recomputing.value = true
   try {
-    // full=true 深度回填所有历史月份（否则只算最新月，贡献分析的历史区间会无数据）
+    // full=true 会自然回填所有历史月份（如果只缺最新月，每日刷新会自动补）
+    const symbols = recomputeAssetIds.value
+      .map(id => pooledAssets.value.find(a => a.value === id)?.symbol)
+      .filter((s): s is string => !!s)
     const r = await api.post<{ assets: number; factors: number; months: number; regressions: number; rows_written: number; skipped: any[] }>(
-      '/research/factors/recompute-exposures', null, { params: { full: true, window_days: windowDays.value } }
+      '/research/factors/recompute-exposures', null, {
+        params: {
+          full: true, window_days: windowDays.value,
+          ...(symbols.length ? { asset_symbols: symbols.join(',') } : {}),
+        },
+      }
     )
     await loadMatrix()
     const skipped = r.data?.skipped || []
@@ -637,7 +669,7 @@ async function loadContribution() {
 
 async function loadPooledAssets() {
   const assets = (await api.get<any[]>('/research/assets?status=pooled')).data as any[]
-  pooledAssets.value = assets.map((a: any) => ({ value: a.id, label: `${a.name} (${a.symbol})` }))
+  pooledAssets.value = assets.map((a: any) => ({ value: a.id, label: `${a.name} (${a.symbol})`, symbol: a.symbol }))
 }
 
 // ---- agent ----

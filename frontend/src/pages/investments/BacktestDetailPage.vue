@@ -81,20 +81,33 @@
 
       <!-- 调仓记录 -->
       <div class="bg-white rounded-lg shadow-sm p-4">
-        <h3 class="text-sm font-medium mb-3">调仓记录 <span class="text-xs text-text-muted font-normal">· 阶段统计=上次调仓至本次调仓的表现</span></h3>
+        <h3 class="text-sm font-medium mb-3">调仓记录 <span class="text-xs text-text-muted font-normal">· 阶段=上次调仓至本次 · 累计=回测开始至本次 · settle=赎回款到账自动补买</span></h3>
         <table class="w-full text-xs">
           <thead class="bg-bg-tertiary text-left">
             <tr>
               <th class="px-2 py-1.5 font-medium">日期</th>
               <th class="px-2 py-1.5 font-medium">交易</th>
-              <th class="px-2 py-1.5 font-medium">阶段盈亏</th>
-              <th class="px-2 py-1.5 font-medium">阶段年化</th>
-              <th class="px-2 py-1.5 font-medium">阶段波动</th>
+              <th class="px-2 py-1.5 font-medium" colspan="4" style="border-left: 1px solid rgba(0,0,0,0.08)">阶段（上次调仓至今）</th>
+              <th class="px-2 py-1.5 font-medium" colspan="4" style="border-left: 1px solid rgba(0,0,0,0.08)">累计（开测至今）</th>
+            </tr>
+            <tr class="bg-bg-tertiary/60">
+              <th></th><th></th>
+              <th class="px-2 py-1 font-medium" style="border-left: 1px solid rgba(0,0,0,0.08)">盈亏</th>
+              <th class="px-2 py-1 font-medium">年化</th>
+              <th class="px-2 py-1 font-medium">波动</th>
+              <th class="px-2 py-1 font-medium">夏普</th>
+              <th class="px-2 py-1 font-medium" style="border-left: 1px solid rgba(0,0,0,0.08)">盈亏</th>
+              <th class="px-2 py-1 font-medium">年化</th>
+              <th class="px-2 py-1 font-medium">波动</th>
+              <th class="px-2 py-1 font-medium">夏普</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="rec in backtest.results.rebalance_records" :key="rec.date" class="border-t border-border-default align-top">
-              <td class="px-2 py-1.5 whitespace-nowrap">{{ rec.date }}</td>
+            <tr v-for="rec in backtest.results.rebalance_records" :key="rec.date + rec.kind" class="border-t border-border-default align-top">
+              <td class="px-2 py-1.5 whitespace-nowrap">
+                {{ rec.date }}
+                <span v-if="rec.kind === 'settle'" class="ml-1 px-1 py-0.5 rounded bg-blue-50 text-blue-600" style="font-size:10px">settle</span>
+              </td>
               <td class="px-2 py-1.5">
                 <div v-for="t in rec.trades" :key="t.symbol + t.side" class="mb-0.5">
                   <span :class="t.side === 'buy' ? 'text-expense-color' : 'text-income-color'" class="font-medium">{{ t.side === 'buy' ? '买' : '卖' }}</span>
@@ -102,16 +115,23 @@
                   ¥{{ t.amount.toFixed(0) }}
                 </div>
               </td>
-              <td class="px-2 py-1.5 whitespace-nowrap" :class="(rec.period_stats?.pnl ?? 0) >= 0 ? 'text-income-color' : 'text-expense-color'">
-                {{ rec.period_stats ? `¥${rec.period_stats.pnl.toFixed(0)}` : '—' }}
-              </td>
-              <td class="px-2 py-1.5 whitespace-nowrap" :class="(rec.period_stats?.ann_return ?? 0) >= 0 ? 'text-income-color' : 'text-expense-color'">
-                {{ rec.period_stats?.ann_return != null ? fmtPct(rec.period_stats.ann_return) : '—' }}
-              </td>
-              <td class="px-2 py-1.5 whitespace-nowrap">{{ rec.period_stats?.ann_volatility != null ? fmtPct(rec.period_stats.ann_volatility) : '—' }}</td>
+              <template v-if="rec.period_stats">
+                <td class="px-2 py-1.5 whitespace-nowrap" :class="rec.period_stats.pnl >= 0 ? 'text-income-color' : 'text-expense-color'" style="border-left: 1px solid rgba(0,0,0,0.06)">¥{{ rec.period_stats.pnl.toFixed(0) }}</td>
+                <td class="px-2 py-1.5 whitespace-nowrap" :class="rec.period_stats.ann_return >= 0 ? 'text-income-color' : 'text-expense-color'">{{ fmtPct(rec.period_stats.ann_return) }}</td>
+                <td class="px-2 py-1.5 whitespace-nowrap">{{ fmtPct(rec.period_stats.ann_volatility) }}</td>
+                <td class="px-2 py-1.5 whitespace-nowrap">{{ rec.period_stats.sharpe != null ? rec.period_stats.sharpe.toFixed(2) : '—' }}</td>
+              </template>
+              <template v-else><td colspan="4" style="border-left: 1px solid rgba(0,0,0,0.06)">—</td></template>
+              <template v-if="rec.cumulative_stats">
+                <td class="px-2 py-1.5 whitespace-nowrap" :class="rec.cumulative_stats.pnl >= 0 ? 'text-income-color' : 'text-expense-color'" style="border-left: 1px solid rgba(0,0,0,0.06)">¥{{ rec.cumulative_stats.pnl.toFixed(0) }}</td>
+                <td class="px-2 py-1.5 whitespace-nowrap" :class="rec.cumulative_stats.ann_return >= 0 ? 'text-income-color' : 'text-expense-color'">{{ fmtPct(rec.cumulative_stats.ann_return) }}</td>
+                <td class="px-2 py-1.5 whitespace-nowrap">{{ fmtPct(rec.cumulative_stats.ann_volatility) }}</td>
+                <td class="px-2 py-1.5 whitespace-nowrap">{{ rec.cumulative_stats.sharpe != null ? rec.cumulative_stats.sharpe.toFixed(2) : '—' }}</td>
+              </template>
+              <template v-else><td colspan="4" style="border-left: 1px solid rgba(0,0,0,0.06)">—</td></template>
             </tr>
             <tr v-if="!backtest.results.rebalance_records.length">
-              <td colspan="5" class="px-2 py-2 text-center text-text-muted">无调仓记录</td>
+              <td colspan="10" class="px-2 py-2 text-center text-text-muted">无调仓记录</td>
             </tr>
           </tbody>
         </table>

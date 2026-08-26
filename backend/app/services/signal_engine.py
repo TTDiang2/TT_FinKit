@@ -95,25 +95,27 @@ def generate_signal(strategy_code: str, params: dict, universe: list[str],
                 "redeem_rules": json.loads(a["redeem_rules"] or "{}"),
             })
 
-        # Prices: research_prices JOIN assets → symbol-keyed {date: nav}
+        # Prices: research_prices JOIN assets → symbol-keyed {date: price}
+        # nav is NULL for all warehouse rows (data lives in `close`) — use
+        # COALESCE so a future nav backfill doesn't break this either.
         prices: dict[str, dict[str, float]] = {}
         id_to_symbol = {v: k for k, v in symbol_to_id.items()}
         if symbol_to_id:
             ids = list(symbol_to_id.values())
             id_placeholders = ",".join("?" for _ in ids)
             rows = conn.execute(
-                "SELECT asset_id, date, nav FROM research_prices "
+                "SELECT asset_id, date, COALESCE(nav, close) AS px FROM research_prices "
                 f"WHERE asset_id IN ({id_placeholders}) AND date <= ? "
                 "ORDER BY asset_id, date",
                 [*ids, today],
             ).fetchall()
             for r in rows:
                 sym = id_to_symbol.get(r["asset_id"])
-                if sym is None:
+                if sym is None or r["px"] is None:
                     continue
                 if sym not in prices:
                     prices[sym] = {}
-                prices[sym][r["date"]] = float(r["nav"])
+                prices[sym][r["date"]] = float(r["px"])
 
         # Factor exposures: latest as_of per asset → symbol → {factor KEY: beta}
         factor_exposures: dict[str, dict[str, float]] = {}

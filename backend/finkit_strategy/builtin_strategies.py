@@ -142,13 +142,14 @@ class AssetRotationStrategy(Strategy):
     买入动量最强的 top_k 个标的并等权配置。若候选不足或价格不足则维持现状。
     """
     name = "大类资产动量轮动"
-    description = "月度按过去 N 个交易日涨幅选最强 K 个等权持有；缓冲带减少换手"
+    description = "月度选最强 K 个等权持有；缓冲带减少换手；绝对动量过滤震荡市"
     rebalance_freq = "monthly"
     params_schema = {
         "symbols": {"type": "str", "default": "000217,000667,002910,006432,378546"},
         "lookback_days": {"type": "int", "default": 180, "min": 20, "max": 500},
         "top_k": {"type": "int", "default": 3, "min": 1, "max": 6},
         "buffer": {"type": "int", "default": 1, "min": 0, "max": 3},
+        "momentum_floor": {"type": "float", "default": 0.0, "min": -1.0, "max": 0.5},
     }
 
     def target_weights(self, ctx: StrategyContext, date: str) -> dict[str, float] | None:
@@ -177,7 +178,13 @@ class AssetRotationStrategy(Strategy):
         if not momentum:
             return None
 
-        ranked = sorted(momentum, key=momentum.get, reverse=True)
+        ranked_all = sorted(momentum, key=momentum.get, reverse=True)
+        # 绝对动量过滤：动量低于 floor 的资产不入选；
+        # 全部低于 floor 时返回全零 target（空仓避险），避免震荡市硬扛
+        floor = self.params.get("momentum_floor", 0.0)
+        ranked = [s for s in ranked_all if momentum[s] >= floor]
+        if not ranked:
+            return {aid: 0.0 for aid in ctx.prices}
         rank = {sym: i for i, sym in enumerate(ranked)}
         k = self.params["top_k"]
         buffer_n = self.params.get("buffer", 0)
@@ -189,7 +196,7 @@ class AssetRotationStrategy(Strategy):
             if w > 1e-6 and sym in rank and rank[sym] < k + buffer_n:
                 keep.add(sym)
         if not keep:
-            return None
+            return {aid: 0.0 for aid in ctx.prices}
         w_each = 1.0 / len(keep)
         return {sym: w_each for sym in keep}
 

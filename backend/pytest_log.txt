@@ -8,4 +8,4 @@ C:\Users\TTDiang\AppData\Local\Programs\Python\Python310\lib\site-packages\pydan
     warnings.warn(DEPRECATION_MESSAGE, DeprecationWarning)
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-161 passed, 2 warnings in 7.64s
+161 passed, 2 warnings in 6.58s

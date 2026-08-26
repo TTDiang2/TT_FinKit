@@ -697,6 +697,8 @@ export interface RebalanceRecord {
   date: string
   trades: Trade[]
   period_stats?: RebalancePeriodStats
+  cumulative_stats?: RebalancePeriodStats
+  kind?: 'rebalance' | 'settle'
 }
 
 export interface RebalancePeriodStats {
@@ -706,6 +708,7 @@ export interface RebalancePeriodStats {
   ret: number
   ann_return: number
   ann_volatility: number
+  sharpe?: number | null
 }
 
 export interface Trade {

@@ -123,6 +123,62 @@ def _max_drawdown(navs: list[float]) -> float:
     return mdd
 
 
+SETTLE_TOL_PCT = 0.005     # position considered filled when gap < 0.5% of portfolio
+SETTLE_MIN_AMOUNT = 100.0  # skip dust-sized top-up trades
+
+
+def _settle_pending(
+    day: str,
+    target: dict[str, float],
+    holdings: dict[str, float],
+    buy_dates: dict[str, str],
+    cash: float,
+    prices: dict[str, dict[str, float]],
+    fee_terms: dict[str, dict],
+    slippage: float,
+    universe: list[str],
+    eps: float,
+) -> list[dict]:
+    """Top up under-weight positions with freshly released cash.
+
+    Fills the largest gaps first while cash lasts; stops when every position
+    is within SETTLE_TOL_PCT of its target or cash runs out.
+    """
+    invested = sum(sh * prices.get(aid, {}).get(day, 0.0) for aid, sh in holdings.items())
+    pv = cash + invested
+    if pv <= 0:
+        return []
+    tol_v = pv * SETTLE_TOL_PCT
+    gaps: list[tuple[float, str, float]] = []
+    for aid in set(universe) | set(holdings):
+        tw = target.get(aid, 0.0)
+        px = prices.get(aid, {}).get(day, 0.0)
+        if px <= 0:
+            continue
+        gap = pv * tw - holdings.get(aid, 0.0) * px
+        if gap > max(tol_v, SETTLE_MIN_AMOUNT):
+            gaps.append((gap, aid, px))
+    trades: list[dict] = []
+    for gap, aid, px in sorted(gaps, key=lambda g: -g[0]):
+        if cash <= eps:
+            break
+        diff = min(gap, cash)
+        if diff <= SETTLE_MIN_AMOUNT:
+            continue
+        fee = diff * (fee_terms.get(aid, {}) or {}).get("purchase_fee", 0.0) + diff * slippage
+        was_empty = holdings.get(aid, 0.0) <= eps
+        holdings[aid] = holdings.get(aid, 0.0) + diff / px
+        if was_empty:
+            buy_dates[aid] = day
+        trades.append({
+            "symbol": aid,
+            "name": (fee_terms.get(aid, {}) or {}).get("name", ""),
+            "side": "buy",
+            "amount": round(diff, 4), "fee": round(fee, 4),
+        })
+    return trades
+
+
 def _stage_stats(
     start_date: str, end_date: str, seg_values: list[float]
 ) -> dict:
@@ -133,17 +189,8 @@ def _stage_stats(
     ret = seg_values[-1] / seg_values[0] - 1.0
     days = max(1, (date.fromisoformat(end_date) - date.fromisoformat(start_date)).days)
     ann_return = (1.0 + ret) ** (365.0 / days) - 1.0 if ret > -1 else -1.0
-    rets = [
-        seg_values[i] / seg_values[i - 1] - 1.0
-        for i in range(1, len(seg_values))
-        if seg_values[i - 1] > 0
-    ]
-    if len(rets) > 1:
-        mean = sum(rets) / len(rets)
-        var = sum((r - mean) ** 2 for r in rets) / (len(rets) - 1)
-        ann_vol = math.sqrt(var) * math.sqrt(252.0)
-    else:
-        ann_vol = 0.0
+    ann_vol = _ann_volatility(seg_values)
+    sharpe = round(ann_return / ann_vol, 4) if ann_vol > 1e-9 else None
     return {
         "start_date": start_date,
         "end_date": end_date,
@@ -151,7 +198,22 @@ def _stage_stats(
         "ret": round(ret, 6),
         "ann_return": round(ann_return, 4),
         "ann_volatility": round(ann_vol, 4),
+        "sharpe": sharpe,
     }
+
+
+def _ann_volatility(values: list[float]) -> float:
+    """Annualized volatility of a value series' daily returns."""
+    rets = [
+        values[i] / values[i - 1] - 1.0
+        for i in range(1, len(values))
+        if values[i - 1] > 0
+    ]
+    if len(rets) < 2:
+        return 0.0
+    mean = sum(rets) / len(rets)
+    var = sum((r - mean) ** 2 for r in rets) / (len(rets) - 1)
+    return math.sqrt(var) * math.sqrt(252.0)
 
 
 def detect_stagnant_periods(
@@ -387,6 +449,7 @@ def run_simulation(
     weight_history: list[dict] = []
     rebalance_records: list[dict] = []
     last_reb_date = trading_days[0] if trading_days else ""
+    pending_target: dict[str, float] | None = None
 
     def _price(aid: str, day: str) -> float:
         return prices.get(aid, {}).get(day, 0.0)
@@ -417,13 +480,45 @@ def run_simulation(
 
     for day in trading_days:
         # T+N settlement: release sell proceeds that have cleared today
+        released_today = 0.0
         still_locked: list[tuple[str, float]] = []
         for rel, amt in locked_funds:
             if rel <= day:
                 cash += amt
+                released_today += amt
             else:
                 still_locked.append((rel, amt))
         locked_funds = still_locked
+
+        # 结算补仓：赎回款到账当天立即把上次调仓没买够的部分补齐
+        # （否则现金会闲置到下个调仓日，切换期出现长达数周的空窗）
+        if (
+            pending_target is not None
+            and released_today > eps
+            and day not in rebalance_set
+        ):
+            settle_trades = _settle_pending(
+                day, pending_target, holdings, buy_dates, cash, prices,
+                fee_terms, slippage, universe, eps,
+            )
+            for t in settle_trades:
+                cash -= t["amount"] + t["fee"]
+                total_cost += t["fee"]
+                total_turnover += t["amount"]
+            if settle_trades:
+                pv_now = cash + _invested(day) + _locked_total()
+                seg_values = [
+                    p["portfolio_value"] for p in nav_series if p["date"] > last_reb_date
+                ] + [pv_now]
+                cum_values = [p["portfolio_value"] for p in nav_series] + [pv_now]
+                rebalance_records.append({
+                    "date": day,
+                    "trades": settle_trades,
+                    "period_stats": _stage_stats(last_reb_date, day, seg_values),
+                    "cumulative_stats": _stage_stats(trading_days[0], day, cum_values),
+                    "kind": "settle",
+                })
+                last_reb_date = day
 
         invested = _invested(day)
 
@@ -517,8 +612,16 @@ def run_simulation(
                         "date": day,
                         "trades": trades,
                         "period_stats": period,
+                        "cumulative_stats": _stage_stats(
+                            trading_days[0], day,
+                            [p["portfolio_value"] for p in nav_series] + [portfolio_value],
+                        ),
+                        "kind": "rebalance",
                     })
                     last_reb_date = day
+                # 记录调仓意图：T+N 锁定导致当日买不满的部分，
+                # 由资金释放日的 settle 补仓完成（target 全零=清仓意图）
+                pending_target = dict(target) if target is not None else None
 
         # day-end: mark to market + daily fee deducted PRO-RATA from cash and
         # holdings (like fund NAV accrual). Deducting only from cash would drive
