@@ -17,6 +17,9 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+
+import numpy as np
+
 from datetime import date, timedelta
 from typing import Any
 
@@ -214,6 +217,87 @@ def _ann_volatility(values: list[float]) -> float:
     mean = sum(rets) / len(rets)
     var = sum((r - mean) ** 2 for r in rets) / (len(rets) - 1)
     return math.sqrt(var) * math.sqrt(252.0)
+
+
+def evaluate_custom_factors(
+    factor_points: dict[str, dict[str, float]],
+    nav_map: dict[str, float],
+    horizon: int = 21,
+) -> dict[str, dict]:
+    """Explanatory power of strategy-declared custom factors.
+
+    For each factor: correlation between the factor value on a decision date
+    and the PORTFOLIO forward ``horizon``-trading-day return (time-series IC —
+    the right lens for timing strategies). Reports Pearson IC, rank IC,
+    directional hit rate and sample size.
+    """
+    names: set[str] = set()
+    for fv in factor_points.values():
+        names.update(fv.keys())
+    nav_dates = sorted(nav_map)
+    idx = {d: i for i, d in enumerate(nav_dates)}
+    out: dict[str, dict] = {}
+    for fname in sorted(names):
+        pairs: list[tuple[float, float]] = []
+        for d, fv in factor_points.items():
+            i = idx.get(d)
+            if i is None or fname not in fv or i + 1 >= len(nav_dates):
+                continue
+            j = min(i + horizon, len(nav_dates) - 1)
+            fwd = nav_map[nav_dates[j]] / nav_map[nav_dates[i]] - 1.0
+            pairs.append((float(fv[fname]), fwd))
+        if len(pairs) < 4:
+            continue
+        xs = np.array([p[0] for p in pairs])
+        ys = np.array([p[1] for p in pairs])
+        if np.std(xs) < 1e-12 or np.std(ys) < 1e-12:
+            continue
+        ic = float(np.corrcoef(xs, ys)[0, 1])
+        rank_xs = np.argsort(np.argsort(xs))
+        rank_ys = np.argsort(np.argsort(ys))
+        rank_ic = float(np.corrcoef(rank_xs, rank_ys)[0, 1])
+        win = float(np.mean(np.sign(xs) == np.sign(ys)))
+        out[fname] = {
+            "ic_mean": round(ic, 4),
+            "rank_ic": round(rank_ic, 4),
+            "win_rate": round(win, 4),
+            "n_periods": len(pairs),
+            "horizon_days": horizon,
+        }
+    return out
+
+
+def asset_attribution(
+    prices: dict[str, dict[str, float]],
+    weight_history: list[dict],
+    i0: int,
+    i1: int,
+    names: dict[str, str] | None = None,
+) -> list[dict]:
+    """Per-asset return attribution over weight_history[i0..i1].
+
+    contribution_s = Σ_t w_s(t-1) * r_s(t) — daily-weight approximation of
+    each holding's share of the segment's portfolio return.
+    """
+    contrib: dict[str, float] = {}
+    for k in range(max(1, i0 + 1), min(i1, len(weight_history) - 1) + 1):
+        ws = weight_history[k - 1].get("weights") or {}
+        d_prev, d_cur = weight_history[k - 1]["date"], weight_history[k]["date"]
+        for sym, w in ws.items():
+            px0 = prices.get(sym, {}).get(d_prev, 0.0)
+            px1 = prices.get(sym, {}).get(d_cur, 0.0)
+            if px0 > 0 and px1 > 0:
+                contrib[sym] = contrib.get(sym, 0.0) + w * (px1 / px0 - 1.0)
+    items = [
+        {
+            "symbol": sym,
+            "name": (names or {}).get(sym, ""),
+            "contribution": round(v, 6),
+        }
+        for sym, v in contrib.items()
+    ]
+    items.sort(key=lambda x: -x["contribution"])
+    return items
 
 
 def detect_stagnant_periods(
@@ -450,6 +534,11 @@ def run_simulation(
     rebalance_records: list[dict] = []
     last_reb_date = trading_days[0] if trading_days else ""
     pending_target: dict[str, float] | None = None
+    custom_factor_points: dict[str, dict[str, float]] = {}
+    has_custom_factors = hasattr(strategy, "custom_factors")
+    asset_names = {
+        sym: (fee_terms.get(sym) or {}).get("name", "") for sym in universe
+    }
 
     def _price(aid: str, day: str) -> float:
         return prices.get(aid, {}).get(day, 0.0)
@@ -533,6 +622,15 @@ def run_simulation(
                 for aid, sh in holdings.items()
                 if _price(aid, day) > 0 and pv_now > 0
             }
+            if has_custom_factors:
+                try:
+                    cfvals = strategy.custom_factors(ctx, day)
+                    if cfvals:
+                        custom_factor_points[day] = {
+                            k: float(v) for k, v in cfvals.items() if isinstance(v, (int, float))
+                        }
+                except Exception:
+                    pass
             target = strategy.target_weights(ctx, day)
             if target is not None:
                 gross = sum(max(0.0, v) for v in target.values())
@@ -608,6 +706,13 @@ def run_simulation(
                         p["portfolio_value"] for p in nav_series if p["date"] > last_reb_date
                     ] + [portfolio_value]
                     period = _stage_stats(last_reb_date, day, seg_values)
+                    widx0 = next(
+                        (i for i, p in enumerate(weight_history) if p["date"] > last_reb_date),
+                        len(weight_history),
+                    )
+                    period["attribution"] = asset_attribution(
+                        prices, weight_history, widx0 - 1, len(weight_history) - 1, asset_names
+                    )[:6]
                     rebalance_records.append({
                         "date": day,
                         "trades": trades,
@@ -658,12 +763,16 @@ def run_simulation(
         })
 
     metrics = compute_metrics(nav_series, total_cost, total_turnover, initial_capital)
+    nav_map = {p["date"]: p["nav"] for p in nav_series}
     return {
         "nav_series": nav_series,
         "metrics": metrics,
         "weight_history": weight_history,
         "rebalance_records": rebalance_records,
         "stagnant_analysis": detect_stagnant_periods(nav_series, metrics["ann_return"]),
+        "custom_factor_analysis": evaluate_custom_factors(
+            custom_factor_points, nav_map
+        ),
         "factor_view": _factor_view(prices, weight_history),
         "risk_view": _risk_view(nav_series, weight_history, metrics),
     }

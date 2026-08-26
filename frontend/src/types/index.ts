@@ -381,6 +381,9 @@ export interface StrategyResponse {
   is_builtin: boolean
   folder?: string
   source_file?: string
+  activated_at?: string | null
+  version_note?: string | null
+  logic?: string | null
   factor_keys?: string[]
   latest_backtest?: {
     backtest_id: string
@@ -666,6 +669,7 @@ export interface BacktestResults {
   weight_history: WeightSnapshot[]
   rebalance_records: RebalanceRecord[]
   stagnant_analysis?: StagnantAnalysis
+  custom_factor_analysis?: Record<string, CustomFactorStat>
   factor_view: FactorView
   risk_view: RiskView
 }
@@ -709,6 +713,7 @@ export interface RebalancePeriodStats {
   ann_return: number
   ann_volatility: number
   sharpe?: number | null
+  attribution?: { symbol: string; name: string; contribution: number }[]
 }
 
 export interface Trade {
@@ -724,6 +729,14 @@ export interface StagnantAnalysis {
   windows: number[]
   hits: { window_days: number; start: string; end: string; ann_return: number }[]
   merged_periods: { start: string; end: string }[]
+}
+
+export interface CustomFactorStat {
+  ic_mean: number
+  rank_ic: number
+  win_rate: number
+  n_periods: number
+  horizon_days: number
 }
 
 export interface FactorView {

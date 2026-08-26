@@ -73,6 +73,8 @@ def _strategy_to_response(s, latest_backtest: dict | None = None) -> StrategyRes
         factor_keys=_factor_keys_from_str(s.factor_keys),
         source_file=s.source_file,
         activated_at=str(s.activated_at) if s.activated_at else None,
+        version_note=getattr(s, "version_note", None),
+        logic=getattr(s, "logic", None),
         latest_backtest=latest_backtest,
         created_at=str(s.created_at), updated_at=str(s.updated_at),
     )
@@ -135,6 +137,8 @@ async def import_strategy_endpoint(req: StrategyCreate, db: AsyncSession = Depen
         params_schema=req.params_schema, rebalance_freq=rebalance_freq,
         folder=req.folder or "", factor_keys=factor_keys,
         source_file=req.source_file,
+        version_note=doc_meta.get("version_note"),
+        logic=doc_meta.get("logic"),
     )
     return StrategyImportResult(strategy_id=strat.id, version=strat.version, status=status)
 
@@ -173,6 +177,8 @@ async def import_folder_endpoint(db: AsyncSession = Depends(get_db)):
                 db, name=name, code=code, description=description,
                 params_schema={}, rebalance_freq=rebalance_freq,
                 folder="", factor_keys=factor_keys, source_file=path.name,
+                version_note=doc_meta.get("version_note"),
+                logic=doc_meta.get("logic"),
             )
             imported.append({
                 "file": path.name,

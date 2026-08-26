@@ -53,10 +53,17 @@
 
       <!-- 净值曲线 (chart.js) + 买卖点标注 + 失效区间遮罩 -->
       <div class="bg-white rounded-lg shadow-sm p-4 mb-4">
-        <h3 class="text-sm font-medium mb-3">
-          净值曲线
-          <span class="text-xs text-text-muted font-normal">· 红↑=买入 绿↓=卖出 · 红色阴影=策略失效区间(窗口年化&lt;{{ stagnantThresholdPct }}) · 悬停查看详情</span>
-        </h3>
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="text-sm font-medium">
+            净值曲线
+            <span class="text-xs text-text-muted font-normal">· 红↑=买入 绿↓=卖出 · 红色阴影=策略失效区间(窗口年化&lt;{{ (stagnantMinAnn * 100).toFixed(1) }}%)</span>
+          </h3>
+          <div class="flex items-center gap-2">
+            <span class="text-xs text-text-muted">失效阈值</span>
+            <input type="range" min="0" max="20" step="0.5" :value="stagnantMinAnnPct" @input="stagnantMinAnnPct = parseFloat(($event.target as HTMLInputElement).value)" class="w-32" />
+            <span class="text-xs text-text-primary w-10">{{ stagnantMinAnnPct.toFixed(1) }}%</span>
+          </div>
+        </div>
         <div style="height: 340px">
           <Line v-if="navChartData" :data="navChartData" :options="navChartOpts" :plugins="[stagnantPlugin]" />
         </div>
@@ -79,6 +86,23 @@
         </div>
       </div>
 
+      <!-- 自建因子效果（策略 custom_factors 输出） -->
+      <div v-if="customFactorEntries.length" class="bg-white rounded-lg shadow-sm p-4 mb-4">
+        <h3 class="text-sm font-medium mb-1">自建因子效果</h3>
+        <p class="text-xs text-text-muted mb-3">因子值与组合未来 {{ customFactorEntries[0][1]?.horizon_days ?? 21 }} 交易日收益的时序相关性 · 胜率=方向判断正确比例</p>
+        <div class="grid grid-cols-4 gap-3">
+          <div v-for="[name, stat] in customFactorEntries" :key="name" class="border border-border-default rounded-lg p-3">
+            <div class="text-xs text-text-muted mb-1">{{ name }}</div>
+            <div class="space-y-0.5">
+              <div class="flex justify-between text-xs"><span class="text-text-muted">IC</span><span :class="Math.abs(stat.ic_mean) > 0.1 ? 'text-income-color' : 'text-text-muted'">{{ stat.ic_mean.toFixed(4) }}</span></div>
+              <div class="flex justify-between text-xs"><span class="text-text-muted">Rank IC</span><span>{{ stat.rank_ic.toFixed(4) }}</span></div>
+              <div class="flex justify-between text-xs"><span class="text-text-muted">胜率</span><span :class="stat.win_rate >= 0.55 ? 'text-income-color' : 'text-text-primary'">{{ (stat.win_rate * 100).toFixed(0) }}%</span></div>
+              <div class="flex justify-between text-xs"><span class="text-text-muted">样本</span><span>{{ stat.n_periods }} 期</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- 调仓记录 -->
       <div class="bg-white rounded-lg shadow-sm p-4">
         <h3 class="text-sm font-medium mb-3">调仓记录 <span class="text-xs text-text-muted font-normal">· 阶段=上次调仓至本次 · 累计=回测开始至本次 · settle=赎回款到账自动补买</span></h3>
@@ -87,7 +111,7 @@
             <tr>
               <th class="px-2 py-1.5 font-medium">日期</th>
               <th class="px-2 py-1.5 font-medium">交易</th>
-              <th class="px-2 py-1.5 font-medium" colspan="4" style="border-left: 1px solid rgba(0,0,0,0.08)">阶段（上次调仓至今）</th>
+              <th class="px-2 py-1.5 font-medium" colspan="5" style="border-left: 1px solid rgba(0,0,0,0.08)">阶段（上次调仓至今）</th>
               <th class="px-2 py-1.5 font-medium" colspan="4" style="border-left: 1px solid rgba(0,0,0,0.08)">累计（开测至今）</th>
             </tr>
             <tr class="bg-bg-tertiary/60">
@@ -96,6 +120,7 @@
               <th class="px-2 py-1 font-medium">年化</th>
               <th class="px-2 py-1 font-medium">波动</th>
               <th class="px-2 py-1 font-medium">夏普</th>
+              <th class="px-2 py-1 font-medium">收益归因</th>
               <th class="px-2 py-1 font-medium" style="border-left: 1px solid rgba(0,0,0,0.08)">盈亏</th>
               <th class="px-2 py-1 font-medium">年化</th>
               <th class="px-2 py-1 font-medium">波动</th>
@@ -120,8 +145,14 @@
                 <td class="px-2 py-1.5 whitespace-nowrap" :class="rec.period_stats.ann_return >= 0 ? 'text-income-color' : 'text-expense-color'">{{ fmtPct(rec.period_stats.ann_return) }}</td>
                 <td class="px-2 py-1.5 whitespace-nowrap">{{ fmtPct(rec.period_stats.ann_volatility) }}</td>
                 <td class="px-2 py-1.5 whitespace-nowrap">{{ rec.period_stats.sharpe != null ? rec.period_stats.sharpe.toFixed(2) : '—' }}</td>
+                <td class="px-2 py-1.5">
+                  <div v-for="a in (rec.period_stats.attribution || [])" :key="a.symbol" class="mb-0.5 whitespace-nowrap">
+                    <span :class="a.contribution >= 0 ? 'text-income-color' : 'text-expense-color'">{{ a.contribution >= 0 ? '+' : '' }}{{ (a.contribution * 100).toFixed(1) }}%</span>
+                    {{ a.name || a.symbol }}
+                  </div>
+                </td>
               </template>
-              <template v-else><td colspan="4" style="border-left: 1px solid rgba(0,0,0,0.06)">—</td></template>
+              <template v-else><td colspan="5" style="border-left: 1px solid rgba(0,0,0,0.06)">—</td></template>
               <template v-if="rec.cumulative_stats">
                 <td class="px-2 py-1.5 whitespace-nowrap" :class="rec.cumulative_stats.pnl >= 0 ? 'text-income-color' : 'text-expense-color'" style="border-left: 1px solid rgba(0,0,0,0.06)">¥{{ rec.cumulative_stats.pnl.toFixed(0) }}</td>
                 <td class="px-2 py-1.5 whitespace-nowrap" :class="rec.cumulative_stats.ann_return >= 0 ? 'text-income-color' : 'text-expense-color'">{{ fmtPct(rec.cumulative_stats.ann_return) }}</td>
@@ -131,7 +162,7 @@
               <template v-else><td colspan="4" style="border-left: 1px solid rgba(0,0,0,0.06)">—</td></template>
             </tr>
             <tr v-if="!backtest.results.rebalance_records.length">
-              <td colspan="10" class="px-2 py-2 text-center text-text-muted">无调仓记录</td>
+              <td colspan="12" class="px-2 py-2 text-center text-text-muted">无调仓记录</td>
             </tr>
           </tbody>
         </table>
@@ -155,7 +186,7 @@ import { useRouter, useRoute } from 'vue-router'
 import { Line } from 'vue-chartjs'
 import { Chart as ChartJS, LineElement, PointElement, CategoryScale, LinearScale, Tooltip, Legend, Filler } from 'chart.js'
 import { useApi } from '@/composables/useApi'
-import type { BacktestResponse } from '@/types'
+import type { BacktestResponse, CustomFactorStat } from '@/types'
 
 ChartJS.register(LineElement, PointElement, CategoryScale, LinearScale, Tooltip, Legend, Filler)
 
@@ -221,6 +252,46 @@ const navChartData = computed(() => {
   }
 })
 
+// 失效阈值滑动杆（前端实时扫描，无需重新回测）
+const stagnantMinAnnPct = ref(5.0)
+const stagnantMinAnn = computed(() => stagnantMinAnnPct.value / 100)
+
+function detectStagnantLocal(
+  navSeries: { date: string; nav: number }[],
+  overallAnn: number,
+  windows: number[] = [63, 126, 252],
+): { start: string; end: string }[] {
+  const n = navSeries.length
+  const thr = Math.max(stagnantMinAnn.value, (overallAnn || 0) / 2)
+  const mask = new Array(n).fill(false)
+  for (const w of windows) {
+    const step = Math.max(1, Math.floor(w / 6))
+    for (let i = w; i < n; i += step) {
+      const base = navSeries[i - w].nav
+      if (base <= 0) continue
+      const r = navSeries[i].nav / base - 1
+      const ann = r > -1 ? Math.pow(1 + r, 252 / w) - 1 : -1
+      if (ann < thr) {
+        for (let j = Math.max(0, i - w); j <= Math.min(n - 1, i); j++) mask[j] = true
+      }
+    }
+  }
+  const periods: { start: string; end: string }[] = []
+  let s: number | null = null
+  for (let j = 0; j < n; j++) {
+    if (mask[j] && s === null) s = j
+    else if (!mask[j] && s !== null) { periods.push({ start: navSeries[s].date, end: navSeries[j - 1].date }); s = null }
+  }
+  if (s !== null) periods.push({ start: navSeries[s].date, end: navSeries[n - 1].date })
+  return periods
+}
+
+const localStagnantPeriods = computed(() => {
+  const r = backtest.value?.results
+  if (!r?.nav_series?.length) return []
+  return detectStagnantLocal(r.nav_series, r.metrics.ann_return)
+})
+
 // 失效区间红色遮罩：merged_periods (date range) → x 轴像素矩形
 const stagnantPlugin = {
   id: 'stagnantBands',
@@ -240,18 +311,15 @@ const stagnantPlugin = {
   },
 }
 
-const stagnantThresholdPct = computed(() => {
-  const sa = backtest.value?.results?.stagnant_analysis
-  return sa ? `${(sa.threshold_ann * 100).toFixed(1)}%` : '阈值'
-})
+
 
 const navChartOpts = computed(() => {
   const r = backtest.value?.results
   const dateIdx: Record<string, number> = {}
   r?.nav_series?.forEach((p, i) => { dateIdx[p.date] = i })
-  const bands = (r?.stagnant_analysis?.merged_periods || [])
-    .map((p: { start: string; end: string }) => ({ startIdx: dateIdx[p.start], endIdx: dateIdx[p.end] }))
-    .filter((b: any) => b.startIdx != null && b.endIdx != null)
+  const bands = localStagnantPeriods.value
+    .map((p) => ({ startIdx: dateIdx[p.start], endIdx: dateIdx[p.end] }))
+    .filter((b) => b.startIdx != null && b.endIdx != null)
   return {
   responsive: true, maintainAspectRatio: false,
   interaction: { mode: 'index' as const, intersect: false },
@@ -287,6 +355,12 @@ const factorEvalMap = computed(() => {
     map[e.factor_key] = e
   }
   return map
+})
+
+const customFactorEntries = computed(() => {
+  const cfa = backtest.value?.results?.custom_factor_analysis
+  if (!cfa) return [] as [string, CustomFactorStat][]
+  return Object.entries(cfa) as [string, CustomFactorStat][]
 })
 
 function factorName(key: string): string {

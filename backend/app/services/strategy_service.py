@@ -70,6 +70,7 @@ async def import_strategy(
     params_schema: dict = {}, rebalance_freq: str = "monthly",
     folder: str = "", factor_keys: list[str] | None = None,
     source_file: str | None = None,
+    version_note: str | None = None, logic: str | None = None,
 ) -> tuple[Strategy, str]:
     """Import or update a strategy. If name exists, bump version. Returns (strategy, status)."""
     # factor_keys 存 Text 列必须 json.dumps（空列表存 None）
@@ -77,7 +78,7 @@ async def import_strategy(
 
     # Check for existing strategy with same name (get latest version)
     result = await db.execute(
-        select(Strategy).where(Strategy.name == name).order_by(desc(Strategy.version))
+        select(Strategy).where(Strategy.name == name).order_by(desc(Strategy.version)).limit(1)
     )
     existing = result.scalar_one_or_none()
 
@@ -88,6 +89,8 @@ async def import_strategy(
             version=new_version, params_schema=json.dumps(params_schema),
             rebalance_freq=rebalance_freq, is_builtin=False,
             folder=folder, factor_keys=factor_keys_json, source_file=source_file,
+            version_note=version_note or existing.version_note,
+            logic=logic or existing.logic,
         )
         db.add(strategy)
         await db.commit()
@@ -99,6 +102,7 @@ async def import_strategy(
             version=1, params_schema=json.dumps(params_schema),
             rebalance_freq=rebalance_freq, is_builtin=False,
             folder=folder, factor_keys=factor_keys_json, source_file=source_file,
+            version_note=version_note, logic=logic,
         )
         db.add(strategy)
         await db.commit()

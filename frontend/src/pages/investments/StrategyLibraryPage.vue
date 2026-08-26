@@ -48,6 +48,11 @@
             <tr v-for="s in sortedStrategies" :key="s.id" class="border-t border-border-default hover:bg-bg-secondary">
               <td class="px-3 py-2">
                 <div class="font-medium text-accent-primary">{{ s.name }}</div>
+                <div v-if="s.description" class="text-xs text-text-secondary mt-0.5 max-w-md">{{ s.description }}</div>
+                <button v-if="s.logic" @click.stop="logicExpanded = logicExpanded === s.id ? null : s.id"
+                  class="text-xs text-accent-primary hover:underline mt-0.5">{{ logicExpanded === s.id ? '收起逻辑' : '查看完整逻辑' }}</button>
+                <pre v-if="s.logic && logicExpanded === s.id"
+                  class="text-xs text-text-secondary bg-bg-tertiary rounded p-2 mt-1 max-w-xl whitespace-pre-wrap">{{ s.logic }}</pre>
                 <div v-if="s.factor_keys?.length" class="text-xs text-text-muted mt-0.5">因子: {{ s.factor_keys.join(', ') }}</div>
               </td>
               <td class="px-3 py-2 text-right text-xs" :class="metricClass(s.latest_backtest?.ann_return)">
@@ -58,7 +63,7 @@
                 {{ fmtPct(s.latest_backtest?.max_drawdown) }}
               </td>
               <td class="px-3 py-2 text-center text-xs">{{ s.rebalance_freq }}</td>
-              <td class="px-3 py-2 text-center text-xs text-text-muted">v{{ s.version }}</td>
+              <td class="px-3 py-2 text-center text-xs text-text-muted whitespace-nowrap">{{ s.version_note ? `v${s.version_note}` : `v${s.version}` }}</td>
               <td class="px-3 py-2 text-xs text-text-secondary">
                 <button @click.stop="startMove(s)" class="hover:text-accent-primary">{{ s.folder || '—' }}</button>
               </td>
@@ -177,6 +182,7 @@ watch(() => route.query.sub, (val) => {
 
 const strategies = ref<StrategyResponse[]>([])
 const activeStrategy = ref<ActiveStrategyResponse | null>(null)
+const logicExpanded = ref<string | null>(null)
 const loading = ref(false)
 const showImport = ref(false)
 const importing = ref(false)

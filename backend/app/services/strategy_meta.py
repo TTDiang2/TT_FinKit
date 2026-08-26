@@ -39,6 +39,7 @@ def parse_strategy_docstring(code: str) -> dict:
         "rebalance_freq": None,
         "factor_keys": None,
         "version_note": None,
+        "logic": None,
     }
     try:
         tree = ast.parse(code)
@@ -48,12 +49,17 @@ def parse_strategy_docstring(code: str) -> dict:
     if not doc:
         return meta
 
-    # 只取第一个 --- 分隔行之前的内容作为元数据头
-    header_lines = []
+    # 第一个 --- 分隔行之前是元数据头，之后是策略正文（详情页完整展示）
+    header_lines: list[str] = []
+    body_lines: list[str] = []
+    in_body = False
     for line in doc.splitlines():
-        if line.strip().startswith("---"):
-            break
-        header_lines.append(line)
+        if not in_body and line.strip().startswith("---"):
+            in_body = True
+            continue
+        (body_lines if in_body else header_lines).append(line)
+    if in_body:
+        meta["logic"] = "\n".join(body_lines).strip() or None
 
     for line in header_lines:
         m = re.match(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*?)\s*$", line)

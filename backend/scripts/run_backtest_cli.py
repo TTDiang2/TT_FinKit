@@ -115,12 +115,28 @@ def _main(argv: list[str] | None = None) -> int:
         f"cost={(m.get('total_cost') or 0):.0f}  "
         f"nav={navs[-1]['nav'] if navs else 0:.4f}\n"
     )
+    sa = result.get("stagnant_analysis") or {}
+    if sa.get("merged_periods"):
+        thr = (sa.get("threshold_ann") or 0) * 100
+        sys.stderr.write(f"stagnant windows (window-ann < {thr:.1f}%):\n")
+        for p in sa["merged_periods"]:
+            sys.stderr.write(f"  {p['start']} -> {p['end']}\n")
+    cfa = result.get("custom_factor_analysis") or {}
+    if cfa:
+        sys.stderr.write("custom factors:\n")
+        for fname, st in cfa.items():
+            sys.stderr.write(
+                f"  {fname}: ic={st['ic_mean']:+.4f} rank_ic={st['rank_ic']:+.4f} "
+                f"win={(st['win_rate'])*100:.0f}% n={st['n_periods']}\n"
+            )
     out = {
         "status": "ok",
         "metrics": m,
         "nav_series": navs,
         "weight_history": result.get("weight_history", []),
         "rebalance_records": result.get("rebalance_records", []),
+        "stagnant_analysis": result.get("stagnant_analysis"),
+        "custom_factor_analysis": result.get("custom_factor_analysis"),
         "rebalance_freq": args.freq,
         "params": params,
         "universe": universe,

@@ -26,5 +26,9 @@ class Strategy(Base):
     # Single-activation model: at most one strategy has this set (latest wins).
     # The signal engine runs THIS strategy when generating live signals.
     activated_at = Column(DateTime, nullable=True)
+    # Semantic version declared by the strategy author via docstring VERSION_NOTE.
+    version_note = Column(String, nullable=True)
+    # Full docstring body after '---' (strategy logic, shown on the detail page).
+    logic = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)

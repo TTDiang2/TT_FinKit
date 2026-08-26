@@ -73,6 +73,9 @@ async def run_lightweight_migrations(conn: AsyncConnection) -> None:
 
     # strategies: single-activation for the live signal engine
     await _add_column_if_missing(conn, "strategies", "activated_at", "DATETIME")
+    # strategies: author-declared semantic version + full docstring logic body
+    await _add_column_if_missing(conn, "strategies", "version_note", "VARCHAR")
+    await _add_column_if_missing(conn, "strategies", "logic", "TEXT")
 
     # accounts: reconciliation mode (direct vs composite bank-statement mapping)
     await _add_column_if_missing(conn, "accounts", "bank_statement_mode", "VARCHAR DEFAULT 'direct' NOT NULL")

@@ -152,16 +152,13 @@ class AssetRotationStrategy(Strategy):
         "momentum_floor": {"type": "float", "default": 0.0, "min": -1.0, "max": 0.5},
     }
 
-    def target_weights(self, ctx: StrategyContext, date: str) -> dict[str, float] | None:
-        # 从池中筛出白名单里真实存在的大类标的（symbol 键）
+    def _momentum(self, ctx: StrategyContext, date: str) -> dict[str, float]:
+        """Per-candidate momentum over the lookback window (symbol -> return)."""
         pool_symbols = {a["symbol"] for a in ctx.pool}
         symbols = [
             s.strip() for s in self.params["symbols"].split(",") if s.strip()
         ]
         candidates = [s for s in symbols if s in pool_symbols]
-        if not candidates:
-            return None
-
         lookback = self.params["lookback_days"]
         momentum: dict[str, float] = {}
         for sym in candidates:
@@ -175,6 +172,27 @@ class AssetRotationStrategy(Strategy):
             latest = series[window[-1]]
             if base and base > 0:
                 momentum[sym] = latest / base - 1.0
+        return momentum
+
+    def custom_factors(self, ctx: StrategyContext, date: str) -> dict[str, float] | None:
+        """自建因子：把策略内部信号显式输出，供回测面板评估解释力。"""
+        mom = self._momentum(ctx, date)
+        if not mom:
+            return None
+        vals = list(mom.values())
+        top = max(vals)
+        breadth = sum(1 for v in vals if v > 0) / len(vals)
+        held = {s: w for s, w in (ctx.current_weights or {}).items() if w > 1e-6}
+        held_mom = [mom[s] for s in held if s in mom]
+        return {
+            "top1_momentum": top,
+            "avg_momentum": sum(vals) / len(vals),
+            "breadth_pos": breadth,
+            "held_momentum": sum(held_mom) / len(held_mom) if held_mom else 0.0,
+        }
+
+    def target_weights(self, ctx: StrategyContext, date: str) -> dict[str, float] | None:
+        momentum = self._momentum(ctx, date)
         if not momentum:
             return None
 
