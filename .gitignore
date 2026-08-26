@@ -9,7 +9,6 @@ __pycache__/
 
 # Node / Frontend
 node_modules/
-frontend/dist/
 npm-debug.log*
 yarn-debug.log*
 pnpm-debug.log*
