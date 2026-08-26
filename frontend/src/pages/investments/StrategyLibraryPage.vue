@@ -64,7 +64,8 @@
               </td>
               <td class="px-3 py-2 text-right text-xs text-text-muted">{{ fmtDate(s.created_at) }}</td>
               <td class="px-3 py-2 text-right">
-                <button v-if="!s.is_builtin" @click="activateStrategy(s)" class="px-2 py-1 text-xs rounded bg-accent-primary text-white hover:bg-accent-hover">激活</button>
+                <button v-if="!s.is_builtin && activeStrategy?.strategy_id !== s.id" @click="activateStrategy(s)" class="px-2 py-1 text-xs rounded bg-accent-primary text-white hover:bg-accent-hover">激活</button>
+                <span v-if="activeStrategy?.strategy_id === s.id" class="px-2 py-1 text-xs rounded bg-income-bg text-income-color font-medium">● 已激活</span>
               </td>
             </tr>
             <tr v-if="!loading && sortedStrategies.length === 0">

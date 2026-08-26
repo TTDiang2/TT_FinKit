@@ -13,7 +13,10 @@ from app.utils.crypto import decrypt_field
 import iFinDPy
 
 DB = r"finkit.db"
-USER_ID = "4481a5f7-6e5a-483e-972f-edcfa0f288df"  # TTDiang@outlook.com
+# 本地验证脚本：取第一个用户，不硬编码真实用户身份
+USER_ID = sqlite3.connect(DB).execute(
+    "SELECT id FROM users ORDER BY created_at LIMIT 1"
+).fetchone()[0]
 
 # ---------- 读凭证 ----------
 conn = sqlite3.connect(DB)

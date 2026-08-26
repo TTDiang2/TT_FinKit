@@ -71,6 +71,9 @@ async def run_lightweight_migrations(conn: AsyncConnection) -> None:
     # user_settings: Phase 6 monitor alert thresholds (JSON blob, §4.9)
     await _add_column_if_missing(conn, "user_settings", "monitor_thresholds", "TEXT")
 
+    # strategies: single-activation for the live signal engine
+    await _add_column_if_missing(conn, "strategies", "activated_at", "DATETIME")
+
     # accounts: reconciliation mode (direct vs composite bank-statement mapping)
     await _add_column_if_missing(conn, "accounts", "bank_statement_mode", "VARCHAR DEFAULT 'direct' NOT NULL")
     # accounts: free-form reconciliation formula (JSON); backfill preset by legacy mode

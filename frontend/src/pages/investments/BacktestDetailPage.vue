@@ -51,11 +51,14 @@
         </div>
       </div>
 
-      <!-- 净值曲线 (chart.js) + 买卖点标注 -->
+      <!-- 净值曲线 (chart.js) + 买卖点标注 + 失效区间遮罩 -->
       <div class="bg-white rounded-lg shadow-sm p-4 mb-4">
-        <h3 class="text-sm font-medium mb-3">净值曲线 <span class="text-xs text-text-muted font-normal">· 绿↑=买入 红↓=卖出 · 悬停查看详情</span></h3>
+        <h3 class="text-sm font-medium mb-3">
+          净值曲线
+          <span class="text-xs text-text-muted font-normal">· 红↑=买入 绿↓=卖出 · 红色阴影=策略失效区间(窗口年化&lt;{{ stagnantThresholdPct }}) · 悬停查看详情</span>
+        </h3>
         <div style="height: 340px">
-          <Line v-if="navChartData" :data="navChartData" :options="navChartOpts" />
+          <Line v-if="navChartData" :data="navChartData" :options="navChartOpts" :plugins="[stagnantPlugin]" />
         </div>
       </div>
 
@@ -78,26 +81,37 @@
 
       <!-- 调仓记录 -->
       <div class="bg-white rounded-lg shadow-sm p-4">
-        <h3 class="text-sm font-medium mb-3">调仓记录</h3>
+        <h3 class="text-sm font-medium mb-3">调仓记录 <span class="text-xs text-text-muted font-normal">· 阶段统计=上次调仓至本次调仓的表现</span></h3>
         <table class="w-full text-xs">
           <thead class="bg-bg-tertiary text-left">
             <tr>
               <th class="px-2 py-1.5 font-medium">日期</th>
               <th class="px-2 py-1.5 font-medium">交易</th>
+              <th class="px-2 py-1.5 font-medium">阶段盈亏</th>
+              <th class="px-2 py-1.5 font-medium">阶段年化</th>
+              <th class="px-2 py-1.5 font-medium">阶段波动</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="rec in backtest.results.rebalance_records" :key="rec.date" class="border-t border-border-default">
-              <td class="px-2 py-1.5">{{ rec.date }}</td>
+            <tr v-for="rec in backtest.results.rebalance_records" :key="rec.date" class="border-t border-border-default align-top">
+              <td class="px-2 py-1.5 whitespace-nowrap">{{ rec.date }}</td>
               <td class="px-2 py-1.5">
-                <span v-for="t in rec.trades" :key="t.symbol" class="mr-2">
-                  <span :class="t.side === 'buy' ? 'text-income-color' : 'text-expense-color'">{{ t.side === 'buy' ? '买' : '卖' }}</span>
-                  {{ t.symbol }} ¥{{ t.amount.toFixed(0) }}
-                </span>
+                <div v-for="t in rec.trades" :key="t.symbol + t.side" class="mb-0.5">
+                  <span :class="t.side === 'buy' ? 'text-expense-color' : 'text-income-color'" class="font-medium">{{ t.side === 'buy' ? '买' : '卖' }}</span>
+                  {{ t.name || t.symbol }}<span class="text-text-muted">({{ t.symbol }})</span>
+                  ¥{{ t.amount.toFixed(0) }}
+                </div>
               </td>
+              <td class="px-2 py-1.5 whitespace-nowrap" :class="(rec.period_stats?.pnl ?? 0) >= 0 ? 'text-income-color' : 'text-expense-color'">
+                {{ rec.period_stats ? `¥${rec.period_stats.pnl.toFixed(0)}` : '—' }}
+              </td>
+              <td class="px-2 py-1.5 whitespace-nowrap" :class="(rec.period_stats?.ann_return ?? 0) >= 0 ? 'text-income-color' : 'text-expense-color'">
+                {{ rec.period_stats?.ann_return != null ? fmtPct(rec.period_stats.ann_return) : '—' }}
+              </td>
+              <td class="px-2 py-1.5 whitespace-nowrap">{{ rec.period_stats?.ann_volatility != null ? fmtPct(rec.period_stats.ann_volatility) : '—' }}</td>
             </tr>
             <tr v-if="!backtest.results.rebalance_records.length">
-              <td colspan="2" class="px-2 py-2 text-center text-text-muted">无调仓记录</td>
+              <td colspan="5" class="px-2 py-2 text-center text-text-muted">无调仓记录</td>
             </tr>
           </tbody>
         </table>
@@ -155,8 +169,8 @@ const navChartData = computed(() => {
     const nav = r.nav_series[idx].nav
     const buys = rec.trades.filter(t => t.side === 'buy')
     const sells = rec.trades.filter(t => t.side === 'sell')
-    if (buys.length) { buyData[idx] = nav; buyMeta[idx] = buys.map(t => `${t.symbol} ¥${t.amount.toFixed(0)}`).join(', ') }
-    if (sells.length) { sellData[idx] = nav; sellMeta[idx] = sells.map(t => `${t.symbol} ¥${t.amount.toFixed(0)}`).join(', ') }
+    if (buys.length) { buyData[idx] = nav; buyMeta[idx] = buys.map(t => `${t.name || t.symbol} ¥${t.amount.toFixed(0)}`).join(', ') }
+    if (sells.length) { sellData[idx] = nav; sellMeta[idx] = sells.map(t => `${t.name || t.symbol} ¥${t.amount.toFixed(0)}`).join(', ') }
   }
   return {
     labels,
@@ -170,7 +184,7 @@ const navChartData = computed(() => {
       {
         label: '买入',
         data: buyData,
-        borderColor: 'transparent', backgroundColor: '#10b981',
+        borderColor: 'transparent', backgroundColor: '#ef4444',
         pointStyle: 'triangle', pointRadius: 5, pointHoverRadius: 8,
         showLine: false,
         _meta: buyMeta,
@@ -178,7 +192,7 @@ const navChartData = computed(() => {
       {
         label: '卖出',
         data: sellData,
-        borderColor: 'transparent', backgroundColor: '#ef4444',
+        borderColor: 'transparent', backgroundColor: '#10b981',
         pointStyle: 'triangle', pointRotation: 180, pointRadius: 5, pointHoverRadius: 8,
         showLine: false,
         _meta: sellMeta,
@@ -187,11 +201,43 @@ const navChartData = computed(() => {
   }
 })
 
-const navChartOpts = {
+// 失效区间红色遮罩：merged_periods (date range) → x 轴像素矩形
+const stagnantPlugin = {
+  id: 'stagnantBands',
+  afterDatasetsDraw(chart: any) {
+    const bands = chart.options.plugins.stagnantBands?.bands as { startIdx: number; endIdx: number }[] | undefined
+    if (!bands?.length) return
+    const { ctx, chartArea, scales } = chart
+    const xs = scales.x
+    ctx.save()
+    ctx.fillStyle = 'rgba(239,68,68,0.10)'
+    for (const b of bands) {
+      const x0 = xs.getPixelForValue(b.startIdx)
+      const x1 = xs.getPixelForValue(b.endIdx)
+      ctx.fillRect(Math.min(x0, x1), chartArea.top, Math.abs(x1 - x0), chartArea.bottom - chartArea.top)
+    }
+    ctx.restore()
+  },
+}
+
+const stagnantThresholdPct = computed(() => {
+  const sa = backtest.value?.results?.stagnant_analysis
+  return sa ? `${(sa.threshold_ann * 100).toFixed(1)}%` : '阈值'
+})
+
+const navChartOpts = computed(() => {
+  const r = backtest.value?.results
+  const dateIdx: Record<string, number> = {}
+  r?.nav_series?.forEach((p, i) => { dateIdx[p.date] = i })
+  const bands = (r?.stagnant_analysis?.merged_periods || [])
+    .map((p: { start: string; end: string }) => ({ startIdx: dateIdx[p.start], endIdx: dateIdx[p.end] }))
+    .filter((b: any) => b.startIdx != null && b.endIdx != null)
+  return {
   responsive: true, maintainAspectRatio: false,
   interaction: { mode: 'index' as const, intersect: false },
   plugins: {
     legend: { labels: { boxWidth: 12, font: { size: 10 } } },
+    stagnantBands: { bands },
     tooltip: {
       callbacks: {
         label: (ctx: any) => {
@@ -210,7 +256,8 @@ const navChartOpts = {
     x: { ticks: { maxTicksLimit: 12, font: { size: 10 }, maxRotation: 0, autoSkipPadding: 20 }, grid: { display: false } },
     y: { ticks: { font: { size: 10 }, callback: (v: any) => Number(v).toFixed(3) }, grid: { color: 'rgba(0,0,0,0.05)' } },
   },
-}
+  }
+})
 
 // Factor evaluation lookup
 const factorEvalMap = computed(() => {

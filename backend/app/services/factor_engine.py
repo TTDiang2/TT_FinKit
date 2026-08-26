@@ -37,25 +37,28 @@ def _month_ends(dates: list[str]) -> list[str]:
 
 
 def _vif_max(factors_matrix: np.ndarray) -> float:
-    """Max variance inflation factor across columns: VIF_j = 1/(1-R2_j) where
-    R2_j regresses factor j on the remaining factors (with intercept)."""
+    """Max variance inflation factor across columns.
+
+    Uses the identity VIF_j = diag(inv(corr(X)))_j — one matrix inversion
+    replaces k per-column regressions (57-factor windows were the hot spot).
+    A singular correlation matrix (constant/collinear column) means infinite VIF.
+    """
     n, k = factors_matrix.shape
     if k < 2:
         return 1.0
-    worst = 1.0
-    for j in range(k):
-        y = factors_matrix[:, j]
-        others = np.column_stack([np.ones(n), np.delete(factors_matrix, j, axis=1)])
-        coef, *_ = np.linalg.lstsq(others, y, rcond=None)
-        resid = y - others @ coef
-        tss = float(((y - y.mean()) ** 2).sum())
-        if tss <= 0:
-            return float("inf")            # constant factor column: perfectly collinear
-        r2_j = 1.0 - float(resid @ resid) / tss
-        if r2_j >= 1.0 - 1e-12:
-            return float("inf")
-        worst = max(worst, 1.0 / (1.0 - r2_j))
-    return worst
+    std = factors_matrix.std(axis=0)
+    if np.any(std <= 0):
+        return float("inf")            # constant factor column: perfectly collinear
+    xs = (factors_matrix - factors_matrix.mean(axis=0)) / std
+    corr = (xs.T @ xs) / n
+    try:
+        inv = np.linalg.inv(corr)
+    except np.linalg.LinAlgError:
+        return float("inf")
+    diag = np.diag(inv)
+    if np.any(diag <= 0):
+        return float("inf")
+    return float(np.max(diag))
 
 
 def compute_exposure(
@@ -77,7 +80,12 @@ def compute_exposure(
 
     asset_map = dict(asset_returns)
     factor_maps = {fid: dict(factor_returns[fid]) for fid in factor_ids}
-    common_dates = sorted(set(asset_map) & set().union(*(set(m) for m in factor_maps.values())))
+    # true INNER JOIN across asset + every factor: a date missing from any
+    # single factor must drop out, otherwise fm[d] raises KeyError
+    common_set = set(asset_map)
+    for m in factor_maps.values():
+        common_set &= set(m)
+    common_dates = sorted(common_set)
 
     min_samples = int(window_days * MIN_SAMPLE_RATIO)
     if len(common_dates) < min_samples:
@@ -137,17 +145,20 @@ async def recompute_exposures(
     full: bool = False,
     window_days: int = DEFAULT_WINDOW_DAYS,
     ridge_alpha: float = DEFAULT_RIDGE_ALPHA,
+    asset_symbols: list[str] | None = None,
 ) -> dict:
-    """Recompute monthly factor exposures for every pooled research asset.
+    """Recompute monthly factor exposures for pooled research assets.
 
     mmf assets regress against is_market factors only (ADR-10).  ``full=True``
     recomputes every attainable month-end as_of in the covered history; the
     default only fills the latest month (daily refresh auto-fills on the first
-    run of a month).  Upsert keyed on (asset, as_of, factor).
+    run of a month).  ``asset_symbols`` restricts the run to specific symbols
+    (None = every pooled asset).  Upsert keyed on (asset, as_of, factor).
     """
-    assets = (await db.execute(
-        select(ResearchAsset).where(ResearchAsset.user_id == user_id, ResearchAsset.status == "pooled")
-    )).scalars().all()
+    q = select(ResearchAsset).where(ResearchAsset.user_id == user_id, ResearchAsset.status == "pooled")
+    if asset_symbols:
+        q = q.where(ResearchAsset.symbol.in_(asset_symbols))
+    assets = (await db.execute(q)).scalars().all()
     factors = (await db.execute(select(Factor).where(Factor.active.is_(True)))).scalars().all()
     if not assets or not factors:
         return {"assets": 0, "factors": len(factors), "months": 0, "regressions": 0, "skipped": []}
@@ -166,6 +177,17 @@ async def recompute_exposures(
     written = 0
     months_done = set()
     skipped: list[dict] = []
+
+    # 一次加载该用户全部现有暴露行，避免每 (asset, month, factor) 一条 SELECT
+    # 的 N+1 地狱 —— 全量回填时那是上万次往返、请求必然超时
+    exp_rows = (await db.execute(
+        select(FactorExposure)
+        .join(ResearchAsset, FactorExposure.asset_id == ResearchAsset.id)
+        .where(ResearchAsset.user_id == user_id)
+    )).scalars().all()
+    existing_map: dict[tuple[str, str, str], FactorExposure] = {
+        (e.asset_id, e.as_of_date, e.factor_id): e for e in exp_rows
+    }
 
     for asset in assets:
         price_rows = (await db.execute(
@@ -191,25 +213,43 @@ async def recompute_exposures(
             continue
 
         factor_maps = {fid: dict(s) for fid, s in use_factors.items()}
-        common_dates = sorted(set(asset_map) & set().union(*(set(m) for m in factor_maps.values())))
-        if not common_dates:
-            skipped.append({"symbol": asset.symbol, "name": asset.name, "reason": "与因子无共同交易日"})
+        sample_floor = int(window_days * MIN_SAMPLE_RATIO)
+        # 贪心因子选择：覆盖天数多的因子先纳入；纳入某因子会使
+        # (资产∩已选因子) 交集跌破最小样本时跳过该稀疏因子，
+        # 避免"一个坏因子掏空整个交集"（全量 intersection 的副作用）
+        common_set = set(asset_map)
+        selected: dict[str, dict[str, float]] = {}
+        for fid in sorted(factor_maps, key=lambda f: -len(factor_maps[f])):
+            fm = factor_maps[fid]
+            if not fm:
+                continue
+            trial = common_set & set(fm)
+            if not selected or len(trial) >= sample_floor:
+                common_set = trial
+                selected[fid] = fm
+        factor_maps = selected
+        use_factor_ids = set(selected.keys())
+        common_dates = sorted(common_set)
+        if len(common_dates) < sample_floor or not factor_maps:
+            skipped.append({"symbol": asset.symbol, "name": asset.name,
+                            "reason": f"与因子共同交易日不足{sample_floor}"})
             continue
         # month-end as_of candidates whose trailing window can still meet the sample floor
+        cd_index = {d: i for i, d in enumerate(common_dates)}
         as_of_candidates = []
         for me in _month_ends(common_dates):
-            idx = common_dates.index(me)
-            if idx + 1 >= int(window_days * MIN_SAMPLE_RATIO):
+            idx = cd_index.get(me)
+            if idx is not None and idx + 1 >= sample_floor:
                 as_of_candidates.append((me, idx + 1))
         if not as_of_candidates:
-            skipped.append({"symbol": asset.symbol, "name": asset.name, "reason": f"共同交易日不足{int(window_days * MIN_SAMPLE_RATIO)}（历史太短）"})
+            skipped.append({"symbol": asset.symbol, "name": asset.name, "reason": f"共同交易日不足{sample_floor}（历史太短）"})
             continue
         if not full:
             as_of_candidates = as_of_candidates[-1:]
 
         params_snapshot = json.dumps({
             "window_days": window_days, "ridge_alpha": ridge_alpha,
-            "factor_ids": sorted(use_factors.keys()),
+            "factor_ids": sorted(use_factor_ids),
         })
         for me, n_avail in as_of_candidates:
             window_slice = common_dates[max(0, n_avail - window_days):n_avail]
@@ -220,14 +260,9 @@ async def recompute_exposures(
                 continue
             months_done.add((asset.id, me))
             for fid in res["betas"]:
-                existing = (await db.execute(
-                    select(FactorExposure).where(
-                        FactorExposure.asset_id == asset.id,
-                        FactorExposure.as_of_date == me,
-                        FactorExposure.factor_id == fid,
-                    )
-                )).scalar_one_or_none()
-                if existing:
+                key = (asset.id, me, fid)
+                existing = existing_map.get(key)
+                if existing is not None:
                     existing.beta = res["betas"][fid]
                     existing.t_stat = res["t_stats"][fid]
                     existing.r2 = res["r2"]
@@ -235,11 +270,13 @@ async def recompute_exposures(
                     existing.window_days = res["n_samples"]
                     existing.params = params_snapshot
                 else:
-                    db.add(FactorExposure(
+                    new_row = FactorExposure(
                         asset_id=asset.id, as_of_date=me, factor_id=fid,
                         beta=res["betas"][fid], t_stat=res["t_stats"][fid], r2=res["r2"],
                         method=res["method"], window_days=res["n_samples"], params=params_snapshot,
-                    ))
+                    )
+                    db.add(new_row)
+                    existing_map[key] = new_row
                 written += 1
     await db.commit()
     return {"assets": len(assets), "factors": len(factors), "months": len(months_done),

@@ -142,12 +142,13 @@ class AssetRotationStrategy(Strategy):
     买入动量最强的 top_k 个标的并等权配置。若候选不足或价格不足则维持现状。
     """
     name = "大类资产动量轮动"
-    description = "月度按过去 N 个交易日涨幅选最强 K 个大类资产等权持有（动量轮动）"
+    description = "月度按过去 N 个交易日涨幅选最强 K 个等权持有；缓冲带减少换手"
     rebalance_freq = "monthly"
     params_schema = {
         "symbols": {"type": "str", "default": "000217,000667,002910,006432,378546"},
         "lookback_days": {"type": "int", "default": 180, "min": 20, "max": 500},
         "top_k": {"type": "int", "default": 3, "min": 1, "max": 6},
+        "buffer": {"type": "int", "default": 1, "min": 0, "max": 3},
     }
 
     def target_weights(self, ctx: StrategyContext, date: str) -> dict[str, float] | None:
@@ -176,9 +177,21 @@ class AssetRotationStrategy(Strategy):
         if not momentum:
             return None
 
-        top = sorted(momentum, key=momentum.get, reverse=True)[: self.params["top_k"]]
-        w = 1.0 / len(top)
-        return {sym: w for sym in top}
+        ranked = sorted(momentum, key=momentum.get, reverse=True)
+        rank = {sym: i for i, sym in enumerate(ranked)}
+        k = self.params["top_k"]
+        buffer_n = self.params.get("buffer", 0)
+
+        # 缓冲带：top_k 直接入选；已持有且仍在 top_(k+buffer) 内的保留，
+        # 避免排名边缘反复进出（降低换手与 T+N 摩擦成本）
+        keep = set(ranked[:k])
+        for sym, w in (ctx.current_weights or {}).items():
+            if w > 1e-6 and sym in rank and rank[sym] < k + buffer_n:
+                keep.add(sym)
+        if not keep:
+            return None
+        w_each = 1.0 / len(keep)
+        return {sym: w_each for sym in keep}
 
 
 BUILTIN_STRATEGIES = [

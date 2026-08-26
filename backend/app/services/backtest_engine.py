@@ -123,6 +123,89 @@ def _max_drawdown(navs: list[float]) -> float:
     return mdd
 
 
+def _stage_stats(
+    start_date: str, end_date: str, seg_values: list[float]
+) -> dict:
+    """Performance of one rebalance-to-next-rebalance segment."""
+    if len(seg_values) < 2 or seg_values[0] <= 0:
+        return {"pnl": 0.0, "ret": 0.0}
+    pnl = seg_values[-1] - seg_values[0]
+    ret = seg_values[-1] / seg_values[0] - 1.0
+    days = max(1, (date.fromisoformat(end_date) - date.fromisoformat(start_date)).days)
+    ann_return = (1.0 + ret) ** (365.0 / days) - 1.0 if ret > -1 else -1.0
+    rets = [
+        seg_values[i] / seg_values[i - 1] - 1.0
+        for i in range(1, len(seg_values))
+        if seg_values[i - 1] > 0
+    ]
+    if len(rets) > 1:
+        mean = sum(rets) / len(rets)
+        var = sum((r - mean) ** 2 for r in rets) / (len(rets) - 1)
+        ann_vol = math.sqrt(var) * math.sqrt(252.0)
+    else:
+        ann_vol = 0.0
+    return {
+        "start_date": start_date,
+        "end_date": end_date,
+        "pnl": round(pnl, 2),
+        "ret": round(ret, 6),
+        "ann_return": round(ann_return, 4),
+        "ann_volatility": round(ann_vol, 4),
+    }
+
+
+def detect_stagnant_periods(
+    nav_series: list[dict],
+    overall_ann: float,
+    windows: tuple[int, ...] = (63, 126, 252),
+    min_ann: float = 0.05,
+) -> dict:
+    """Rolling-window scan for stretches where the strategy underperforms.
+
+    A window [i-w, i] is 'stagnant' when its annualized return is below
+    ``max(min_ann, overall_ann/2)``. Returns per-window hits plus the merged
+    calendar periods (union across windows) for UI shading.
+    """
+    n = len(nav_series)
+    thr = max(min_ann, (overall_ann or 0.0) / 2.0)
+    mask = [False] * n
+    hits: list[dict] = []
+    for w in windows:
+        step = max(1, w // 6)
+        i = w
+        while i < n:
+            base = nav_series[i - w]["nav"]
+            if base > 0:
+                r = nav_series[i]["nav"] / base - 1.0
+                ann = (1.0 + r) ** (252.0 / w) - 1.0 if r > -1.0 else -1.0
+                if ann < thr:
+                    hits.append({
+                        "window_days": w,
+                        "start": nav_series[i - w]["date"],
+                        "end": nav_series[i]["date"],
+                        "ann_return": round(ann, 4),
+                    })
+                    for j in range(max(0, i - w), min(n, i + 1)):
+                        mask[j] = True
+            i += step
+    merged: list[dict] = []
+    s: int | None = None
+    for j, f in enumerate(mask):
+        if f and s is None:
+            s = j
+        elif not f and s is not None:
+            merged.append({"start": nav_series[s]["date"], "end": nav_series[j - 1]["date"]})
+            s = None
+    if s is not None:
+        merged.append({"start": nav_series[s]["date"], "end": nav_series[-1]["date"]})
+    return {
+        "threshold_ann": round(thr, 4),
+        "windows": list(windows),
+        "hits": hits[:120],
+        "merged_periods": merged,
+    }
+
+
 def compute_metrics(
     nav_series: list[dict], total_cost: float = 0.0, turnover: float = 0.0,
     initial_capital: float = INITIAL_CAPITAL,
@@ -303,6 +386,7 @@ def run_simulation(
     nav_series: list[dict] = []
     weight_history: list[dict] = []
     rebalance_records: list[dict] = []
+    last_reb_date = trading_days[0] if trading_days else ""
 
     def _price(aid: str, day: str) -> float:
         return prices.get(aid, {}).get(day, 0.0)
@@ -346,6 +430,14 @@ def run_simulation(
         trades: list[dict] = []
         if day in rebalance_set:
             ctx.now = day
+            # 注入当前实际权重（按当日价），供策略做缓冲带等持仓感知决策
+            invested_now = _invested(day)
+            pv_now = cash + invested_now + _locked_total()
+            ctx.current_weights = {
+                aid: (sh * _price(aid, day)) / pv_now
+                for aid, sh in holdings.items()
+                if _price(aid, day) > 0 and pv_now > 0
+            }
             target = strategy.target_weights(ctx, day)
             if target is not None:
                 gross = sum(max(0.0, v) for v in target.values())
@@ -379,7 +471,9 @@ def run_simulation(
                         total_cost += fee
                         total_turnover += diff
                         trades.append({
-                            "symbol": aid, "side": "buy",
+                            "symbol": aid,
+                            "name": (fee_terms.get(aid, {}) or {}).get("name", ""),
+                            "side": "buy",
                             "amount": round(diff, 4), "fee": round(fee, 4),
                         })
                     elif diff < -eps:
@@ -408,11 +502,23 @@ def run_simulation(
                         total_cost += fee
                         total_turnover += amount
                         trades.append({
-                            "symbol": aid, "side": "sell",
+                            "symbol": aid,
+                            "name": (fee_terms.get(aid, {}) or {}).get("name", ""),
+                            "side": "sell",
                             "amount": round(amount, 4), "fee": round(fee, 4),
                         })
                 if trades:
-                    rebalance_records.append({"date": day, "trades": trades})
+                    seg_dates = [p["date"] for p in nav_series if p["date"] > last_reb_date]
+                    seg_values = [
+                        p["portfolio_value"] for p in nav_series if p["date"] > last_reb_date
+                    ] + [portfolio_value]
+                    period = _stage_stats(last_reb_date, day, seg_values)
+                    rebalance_records.append({
+                        "date": day,
+                        "trades": trades,
+                        "period_stats": period,
+                    })
+                    last_reb_date = day
 
         # day-end: mark to market + daily fee deducted PRO-RATA from cash and
         # holdings (like fund NAV accrual). Deducting only from cash would drive
@@ -454,6 +560,7 @@ def run_simulation(
         "metrics": metrics,
         "weight_history": weight_history,
         "rebalance_records": rebalance_records,
+        "stagnant_analysis": detect_stagnant_periods(nav_series, metrics["ann_return"]),
         "factor_view": _factor_view(prices, weight_history),
         "risk_view": _risk_view(nav_series, weight_history, metrics),
     }
@@ -502,6 +609,7 @@ def load_price_data(
             "name": a["name"], "type": a["asset_type"] or "fund",
         })
         fee_terms[a["symbol"]] = {
+            "name": a["name"],
             # DB stores fees as PERCENTAGE numbers (e.g. 0.5 = 0.5%/year);
             # the engine uses decimal rates, so divide by 100.
             "purchase_fee": float(a["purchase_fee"] or 0.0) / 100.0,

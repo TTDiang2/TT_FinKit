@@ -15,6 +15,7 @@ from ..services.strategy_service import (
 from ..services.strategy_meta import parse_strategy_docstring
 from ..models.backtest import Backtest
 from ..models.strategy import Strategy
+import datetime
 import json
 
 router = APIRouter(prefix="/api/strategies", tags=["strategies"])
@@ -71,6 +72,7 @@ def _strategy_to_response(s, latest_backtest: dict | None = None) -> StrategyRes
         folder=s.folder or "",
         factor_keys=_factor_keys_from_str(s.factor_keys),
         source_file=s.source_file,
+        activated_at=str(s.activated_at) if s.activated_at else None,
         latest_backtest=latest_backtest,
         created_at=str(s.created_at), updated_at=str(s.updated_at),
     )
@@ -183,28 +185,40 @@ async def import_folder_endpoint(db: AsyncSession = Depends(get_db)):
     return {"imported": imported, "errors": errors}
 
 
-# In-memory active strategy (per-user in production would go to user_settings table)
-_active_strategies: dict[str, ActiveStrategySet] = {}
-
 @router.post("/active")
 async def set_active_strategy(req: ActiveStrategySet, db: AsyncSession = Depends(get_db)):
-    """Set the active strategy for the current user."""
+    """Activate a strategy (persisted; single-active — the previous one is cleared).
+
+    The live signal engine (POST /api/signals/run) runs THIS strategy.
+    """
     strat = await get_strategy(db, req.strategy_id, req.version)
     if not strat:
         raise HTTPException(status_code=404, detail="Strategy not found")
-    _active_strategies["default"] = req
+    await db.execute(update(Strategy).values(activated_at=None))
+    strat.activated_at = datetime.datetime.utcnow()
+    await db.commit()
+    return {"status": "ok"}
+
+@router.delete("/active")
+async def clear_active_strategy(db: AsyncSession = Depends(get_db)):
+    """Deactivate whatever strategy is currently active."""
+    await db.execute(update(Strategy).values(activated_at=None))
+    await db.commit()
     return {"status": "ok"}
 
 @router.get("/active", response_model=ActiveStrategyResponse | None)
 async def get_active_strategy(db: AsyncSession = Depends(get_db)):
-    active = _active_strategies.get("default")
-    if not active:
-        return None
-    strat = await get_strategy(db, active.strategy_id, active.version)
+    result = await db.execute(
+        select(Strategy)
+        .where(Strategy.activated_at.isnot(None))
+        .order_by(Strategy.activated_at.desc())
+        .limit(1)
+    )
+    strat = result.scalar_one_or_none()
     if not strat:
         return None
     return ActiveStrategyResponse(
-        strategy_id=strat.id, version=strat.version, params=active.params,
+        strategy_id=strat.id, version=strat.version, params={},
         name=strat.name, description=strat.description,
         rebalance_freq=strat.rebalance_freq,
     )

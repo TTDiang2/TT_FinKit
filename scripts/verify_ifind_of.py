@@ -18,8 +18,18 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 from app.utils.crypto import decrypt_field
 from app.services import ifind_client
 
-USER_ID = "4481a5f7-6e5a-483e-972f-edcfa0f288df"  # TTDiang@outlook.com
 DB_PATH = os.path.join(os.path.dirname(__file__), "..", "backend", "finkit.db")
+
+
+def _first_user_id() -> str:
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        return conn.execute("SELECT id FROM users ORDER BY created_at LIMIT 1").fetchone()[0]
+    finally:
+        conn.close()
+
+
+USER_ID = _first_user_id()
 
 
 def read_creds():

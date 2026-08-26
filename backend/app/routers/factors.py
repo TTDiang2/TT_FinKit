@@ -260,11 +260,14 @@ async def exposure_history(
 async def recompute_exposures_endpoint(
     full: bool = Query(False),
     window_days: int = Query(252, ge=21, le=1260,
-                            description="OLS 回归滚动窗口 (trading days) — 默认 252 ≈ 1 年"),
+                            description="OLS 回归窗口长度 (trading days)。默认 252 ≈ 1 年"),
+    asset_symbols: str = Query("", description="逗号分隔的标的 symbol；空 = 全部入池标的"),
     user_id: str = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await recompute_exposures(db, user_id, full=full, window_days=window_days)
+    symbols = [s.strip() for s in asset_symbols.split(",") if s.strip()] or None
+    result = await recompute_exposures(db, user_id, full=full, window_days=window_days,
+                                       asset_symbols=symbols)
     # chain factor evaluation (IC/ICIR) — pure numpy, fast after exposures exist
     from ..services.factor_evaluation import evaluate_all_factors
     try:

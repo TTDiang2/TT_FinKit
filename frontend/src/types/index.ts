@@ -665,6 +665,7 @@ export interface BacktestResults {
   metrics: BacktestMetrics
   weight_history: WeightSnapshot[]
   rebalance_records: RebalanceRecord[]
+  stagnant_analysis?: StagnantAnalysis
   factor_view: FactorView
   risk_view: RiskView
 }
@@ -695,13 +696,31 @@ export interface WeightSnapshot {
 export interface RebalanceRecord {
   date: string
   trades: Trade[]
+  period_stats?: RebalancePeriodStats
+}
+
+export interface RebalancePeriodStats {
+  start_date: string
+  end_date: string
+  pnl: number
+  ret: number
+  ann_return: number
+  ann_volatility: number
 }
 
 export interface Trade {
   symbol: string  // asset symbol (e.g. "000217"), NOT the internal UUID
+  name?: string   // asset display name (e.g. "华安黄金ETF联接C")
   side: 'buy' | 'sell'
   amount: number
   fee: number
+}
+
+export interface StagnantAnalysis {
+  threshold_ann: number
+  windows: number[]
+  hits: { window_days: number; start: string; end: string; ann_return: number }[]
+  merged_periods: { start: string; end: string }[]
 }
 
 export interface FactorView {

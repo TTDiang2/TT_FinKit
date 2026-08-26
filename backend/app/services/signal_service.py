@@ -6,9 +6,17 @@ from app.models.signal import Signal
 from app.models.strategy import Strategy
 
 async def get_active_strategy(db: AsyncSession):
-    """Get the currently active strategy from the strategies table (active_strategy row)."""
-    # Reuse the pattern from strategies router: read from strategies table, get latest version
-    result = await db.execute(select(Strategy).order_by(Strategy.created_at.desc()).limit(1))
+    """The strategy the user activated (latest activated_at wins).
+
+    Falls back to None when nothing is activated — the caller returns a 404
+    telling the user to activate a strategy first.
+    """
+    result = await db.execute(
+        select(Strategy)
+        .where(Strategy.activated_at.isnot(None))
+        .order_by(Strategy.activated_at.desc())
+        .limit(1)
+    )
     return result.scalar_one_or_none()
 
 async def get_latest_signal(db: AsyncSession) -> Signal | None:

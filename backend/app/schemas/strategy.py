@@ -29,6 +29,7 @@ class StrategyResponse(BaseModel):
     folder: str = ""
     factor_keys: list[str] = []
     source_file: Optional[str] = None
+    activated_at: Optional[str] = None
     latest_backtest: Optional[dict] = None
     created_at: str
     updated_at: str

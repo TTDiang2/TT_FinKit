@@ -9,7 +9,7 @@ from app.utils.crypto import decrypt_field
 from app.services import ifind_client, migration_calc
 
 DB = r"finkit.db"
-UID = "4481a5f7-6e5a-483e-972f-edcfa0f288df"
+UID = "<USER_ID>"
 
 conn = sqlite3.connect(DB)
 user, pwd_enc = conn.execute(

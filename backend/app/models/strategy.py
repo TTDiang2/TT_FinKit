@@ -23,5 +23,8 @@ class Strategy(Base):
     factor_keys = Column(Text, nullable=True)
     # Filename the strategy was imported from (when imported via file picker / folder scan)
     source_file = Column(String, nullable=True)
+    # Single-activation model: at most one strategy has this set (latest wins).
+    # The signal engine runs THIS strategy when generating live signals.
+    activated_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
