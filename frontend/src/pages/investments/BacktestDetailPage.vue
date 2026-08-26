@@ -259,7 +259,7 @@ const stagnantMinAnn = computed(() => stagnantMinAnnPct.value / 100)
 function detectStagnantLocal(
   navSeries: { date: string; nav: number }[],
   overallAnn: number,
-  windows: number[] = [63, 126, 252],
+  windows: number[] = [126, 252],
 ): { start: string; end: string }[] {
   const n = navSeries.length
   const thr = Math.max(stagnantMinAnn.value, (overallAnn || 0) / 2)

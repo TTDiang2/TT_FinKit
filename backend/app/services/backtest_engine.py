@@ -303,14 +303,15 @@ def asset_attribution(
 def detect_stagnant_periods(
     nav_series: list[dict],
     overall_ann: float,
-    windows: tuple[int, ...] = (63, 126, 252),
+    windows: tuple[int, ...] = (126, 252),
     min_ann: float = 0.05,
 ) -> dict:
     """Rolling-window scan for stretches where the strategy underperforms.
 
     A window [i-w, i] is 'stagnant' when its annualized return is below
-    ``max(min_ann, overall_ann/2)``. Returns per-window hits plus the merged
-    calendar periods (union across windows) for UI shading.
+    ``max(min_ann, overall_ann/2)``. Defaults to half-year + full-year
+    windows only — quarterly windows flag even healthy strategies.
+    Returns per-window hits plus the merged calendar periods for UI shading.
     """
     n = len(nav_series)
     thr = max(min_ann, (overall_ann or 0.0) / 2.0)
@@ -782,6 +783,48 @@ def run_simulation(
 # Data loading (runs inside the subprocess, stdlib sqlite3 only)
 # ---------------------------------------------------------------------------
 
+def _declared_factor_keys(strategy_code: str) -> list[str]:
+    """Factor keys a strategy declares via its docstring ``factor_keys:`` line."""
+    import ast
+    try:
+        tree = ast.parse(strategy_code)
+        doc = ast.get_docstring(tree, clean=False) or ""
+    except SyntaxError:
+        return []
+    for line in doc.splitlines():
+        if line.strip().lower().startswith("factor_keys"):
+            _, _, raw = line.partition(":")
+            raw = raw.strip().strip("[]")
+            return [k.strip().strip("\"'") for k in raw.split(",") if k.strip()]
+    return []
+
+
+def _load_factor_values(db_path: str, factor_keys: list[str]) -> dict[str, dict[str, float]]:
+    """Load declared factors' daily series so ctx.factor_values is populated.
+
+    Empty when the strategy declares no factor_keys (keeps subprocess input
+    small — 67-factor full history would be megabytes of JSON for nothing).
+    """
+    if not factor_keys:
+        return {}
+    conn = sqlite3.connect(db_path)
+    try:
+        placeholders = ",".join("?" for _ in factor_keys)
+        rows = conn.execute(
+            "SELECT f.key, v.date, v.value FROM factor_values v "
+            "JOIN factors f ON f.id = v.factor_id "
+            f"WHERE f.key IN ({placeholders}) AND v.kind = 'return' ORDER BY v.date",
+            factor_keys,
+        ).fetchall()
+    finally:
+        conn.close()
+    out: dict[str, dict[str, float]] = {k: {} for k in factor_keys}
+    for key, d, v in rows:
+        if d and v is not None:
+            out[key][d] = float(v)
+    return out
+
+
 def load_price_data(
     db_path: str,
     universe: list[str],
@@ -979,6 +1022,7 @@ def _run_backtest_sync(
 
     Same temp-JSON IPC pattern as ``finkit_strategy.runner``.
     """
+    factor_keys = _declared_factor_keys(strategy_code)
     input_data = {
         "strategy_code": strategy_code,
         "params": params,
@@ -988,6 +1032,7 @@ def _run_backtest_sync(
         "rebalance_freq": rebalance_freq,
         "db_path": db_path,
         "cost_config": cost_config or {},
+        "factor_values": _load_factor_values(db_path, factor_keys),
     }
 
     with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False, encoding='utf-8') as f:

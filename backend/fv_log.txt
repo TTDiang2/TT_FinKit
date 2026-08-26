@@ -1,0 +1,6 @@
+FINAL default (floor=-2%): ann=17.39% sharpe=1.337 mdd=-15.60% cost=11784 GATES=PASS
+  stagnant(1): ['2021-09-01~2025-08-28']
+  customIC: rate_tilt_gold:+0.168/w47%  top1_momentum:+0.125/w66%  held_momentum:+0.114/w63%
+FINAL floor=-5%: ann=17.39% sharpe=1.337 mdd=-15.60% cost=11784 GATES=PASS
+  stagnant(1): ['2021-09-01~2025-08-28']
+  customIC: rate_tilt_gold:+0.168/w47%  top1_momentum:+0.125/w66%  held_momentum:+0.114/w63%

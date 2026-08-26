@@ -569,12 +569,12 @@ class TestAssetRotation:
     def test_rotation_picks_highest_momentum(self):
         from finkit_strategy.builtin_strategies import AssetRotationStrategy
 
-        # 3 个标的：A 涨、B 平、C 跌 -> 动量 A > B > C
+        # 3 标的模拟 A 强涨 B 缓涨 C 跌 -> 综合 A > B > C
         days = [f"2026-0{m}-15" for m in range(1, 8)]
-        # A 持续涨到 1.2，C 跌到 0.8
+        # A 强趋势到 1.2，C 下跌 0.8
         prices = {
             "A": {d: 1.0 + 0.02 * i for i, d in enumerate(days)},
-            "B": {d: 1.0 for d in days},
+            "B": {d: 1.0 + 0.005 * i for i, d in enumerate(days)},
             "C": {d: 1.0 - 0.02 * i for i, d in enumerate(days)},
         }
         ctx = StrategyContext(
@@ -585,14 +585,14 @@ class TestAssetRotation:
             params={},
         )
         s = AssetRotationStrategy()
-        s.params = {"symbols": "A,B,C", "lookback_days": 60, "top_k": 1}
+        s.params = {"symbols": "A,B,C", "top_k": 1}
         w = s.target_weights(ctx, days[-1])
         assert w is not None and list(w.keys()) == ["A"], f"expected pick A, got {w}"
         assert list(w.values())[0] == 1.0
 
-        # top_k=2 -> A 和 B 等权
+        # top_k=2 -> A 与 B 等权
         s2 = AssetRotationStrategy()
-        s2.params = {"symbols": "A,B,C", "lookback_days": 60, "top_k": 2}
+        s2.params = {"symbols": "A,B,C", "top_k": 2}
         w2 = s2.target_weights(ctx, days[-1])
         assert w2 is not None and set(w2.keys()) == {"A", "B"}, f"expected A,B, got {w2}"
         assert abs(list(w2.values())[0] - 0.5) < 1e-9
@@ -600,7 +600,7 @@ class TestAssetRotation:
     def test_rotation_ignores_symbols_not_in_pool(self):
         from finkit_strategy.builtin_strategies import AssetRotationStrategy
 
-        days = ["2026-06-15", "2026-07-15"]
+        days = [f"2026-0{m}-15" for m in range(1, 9)]
         prices = {"A": {d: 1.0 + 0.05 * i for i, d in enumerate(days)}}
         ctx = StrategyContext(
             pool=[{"id": "a", "symbol": "A"}],
@@ -608,7 +608,7 @@ class TestAssetRotation:
         )
         s = AssetRotationStrategy()
         # 白名单含不存在的 D，应被忽略，仍选中 A
-        s.params = {"symbols": "A,D", "lookback_days": 30, "top_k": 1}
+        s.params = {"symbols": "A,D", "top_k": 1}
         w = s.target_weights(ctx, days[-1])
         assert w is not None and list(w.keys()) == ["A"]
 
@@ -642,7 +642,7 @@ class TestAssetRotation:
         )
         from finkit_strategy.builtin_strategies import AssetRotationStrategy
         s = AssetRotationStrategy()
-        s.params = {"symbols": "A,B,C", "lookback_days": 180, "top_k": 2}
+        s.params = {"symbols": "A,B,C", "top_k": 2, "momentum_floor": -0.02}
         result = run_simulation(
             strategy=s, ctx=ctx, trading_days=trading_days, rebalance_dates=rebalance_dates,
             prices=prices,
