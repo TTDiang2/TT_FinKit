@@ -115,6 +115,19 @@ def _main(argv: list[str] | None = None) -> int:
         f"cost={(m.get('total_cost') or 0):.0f}  "
         f"nav={navs[-1]['nav'] if navs else 0:.4f}\n"
     )
+    sys.stderr.write(
+        f"  win_rate={(m.get('win_rate') or 0)*100:.1f}%  "
+        f"pl_ratio={m.get('profit_loss_ratio') or '-'}  "
+        f"mdd_duration={m.get('mdd_duration_days') or '-'}d  "
+        f"beta={m.get('beta') if m.get('beta') is not None else '-'}  "
+        f"alpha_ann={(m.get('alpha_ann') or 0)*100 if m.get('alpha_ann') is not None else '-'}  "
+        f"info_ratio={m.get('info_ratio') if m.get('info_ratio') is not None else '-'}  "
+        f"benchmark_ann={(m.get('benchmark_ann_return') or 0)*100 if m.get('benchmark_ann_return') is not None else '-'}\n"
+    )
+    pfe = result.get("portfolio_factor_exposures") or []
+    if pfe:
+        top = ", ".join(f"{e['factor']}:{e['exposure']:+.2f}" for e in pfe[:5])
+        sys.stderr.write(f"  factor_exposure: {top}\n")
     sa = result.get("stagnant_analysis") or {}
     if sa.get("merged_periods"):
         thr = (sa.get("threshold_ann") or 0) * 100
@@ -137,6 +150,8 @@ def _main(argv: list[str] | None = None) -> int:
         "rebalance_records": result.get("rebalance_records", []),
         "stagnant_analysis": result.get("stagnant_analysis"),
         "custom_factor_analysis": result.get("custom_factor_analysis"),
+        "benchmark": result.get("benchmark"),
+        "portfolio_factor_exposures": result.get("portfolio_factor_exposures"),
         "rebalance_freq": args.freq,
         "params": params,
         "universe": universe,

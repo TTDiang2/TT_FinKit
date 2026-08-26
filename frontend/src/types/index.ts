@@ -670,6 +670,8 @@ export interface BacktestResults {
   rebalance_records: RebalanceRecord[]
   stagnant_analysis?: StagnantAnalysis
   custom_factor_analysis?: Record<string, CustomFactorStat>
+  benchmark?: BenchmarkSeries | null
+  portfolio_factor_exposures?: PortfolioFactorExposure[]
   factor_view: FactorView
   risk_view: RiskView
 }
@@ -690,6 +692,24 @@ export interface BacktestMetrics {
   total_cost: number
   total_cost_ratio: number
   turnover_annual: number
+  win_rate?: number
+  profit_loss_ratio?: number | null
+  mdd_duration_days?: number
+  beta?: number | null
+  alpha_ann?: number | null
+  info_ratio?: number | null
+  benchmark_ann_return?: number | null
+}
+
+export interface BenchmarkSeries {
+  name: string
+  key: string
+  series: { date: string; nav: number }[]
+}
+
+export interface PortfolioFactorExposure {
+  factor: string
+  exposure: number
 }
 
 export interface WeightSnapshot {

@@ -51,23 +51,57 @@
         </div>
       </div>
 
-      <!-- 净值曲线 (chart.js) + 买卖点标注 + 失效区间遮罩 -->
+      <!-- 交易统计与基准对比 -->
+      <div class="grid grid-cols-4 gap-4 mb-6">
+        <div class="bg-white rounded-lg shadow-sm p-4">
+          <div class="text-xs text-text-muted mb-1">胜率（日）</div>
+          <div class="text-xl font-semibold text-text-primary">{{ backtest.results.metrics.win_rate != null ? (backtest.results.metrics.win_rate * 100).toFixed(1) + '%' : '—' }}</div>
+        </div>
+        <div class="bg-white rounded-lg shadow-sm p-4">
+          <div class="text-xs text-text-muted mb-1">盈亏比</div>
+          <div class="text-xl font-semibold text-text-primary">{{ backtest.results.metrics.profit_loss_ratio ?? '—' }}</div>
+        </div>
+        <div class="bg-white rounded-lg shadow-sm p-4">
+          <div class="text-xs text-text-muted mb-1">最长水下期</div>
+          <div class="text-xl font-semibold text-text-primary">{{ backtest.results.metrics.mdd_duration_days != null ? backtest.results.metrics.mdd_duration_days + ' 交易日' : '—' }}</div>
+        </div>
+        <div class="bg-white rounded-lg shadow-sm p-4">
+          <div class="text-xs text-text-muted mb-1">Beta / 年化Alpha</div>
+          <div class="text-xl font-semibold text-text-primary">
+            {{ backtest.results.metrics.beta ?? '—' }} / {{ backtest.results.metrics.alpha_ann != null ? (backtest.results.metrics.alpha_ann * 100).toFixed(1) + '%' : '—' }}
+          </div>
+          <div class="text-xs text-text-muted mt-1">vs {{ backtest.results.benchmark?.name || '沪深300' }}（基准年化 {{ backtest.results.metrics.benchmark_ann_return != null ? (backtest.results.metrics.benchmark_ann_return * 100).toFixed(1) + '%' : '—' }}）</div>
+        </div>
+      </div>
+      <div v-if="backtest.results.metrics.info_ratio != null" class="mb-6 -mt-2 text-xs text-text-muted text-right">信息比率（vs 基准）：{{ backtest.results.metrics.info_ratio }}</div>
+
+      <!-- 净值曲线 (chart.js) + 买卖点标注 + 失效/回撤遮罩 + 基准 -->
       <div class="bg-white rounded-lg shadow-sm p-4 mb-4">
-        <div class="flex items-center justify-between mb-3">
+        <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
           <h3 class="text-sm font-medium">
             净值曲线
-            <span class="text-xs text-text-muted font-normal">· 红↑=买入 绿↓=卖出 · 红色阴影=策略失效区间(窗口年化&lt;{{ (stagnantMinAnn * 100).toFixed(1) }}%)</span>
+            <span class="text-xs text-text-muted font-normal">· 红↑=买入 绿↓=卖出 · 红阴影=失效区(&lt;{{ (stagnantMinAnn * 100).toFixed(1) }}%年化) · 橙阴影=深回撤(&gt;{{ (ddThresholdPct).toFixed(0) }}%) · 蓝线={{ backtest.results.benchmark?.name || '基准' }}</span>
           </h3>
-          <div class="flex items-center gap-2">
-            <span class="text-xs text-text-muted">失效阈值</span>
-            <input type="range" min="0" max="20" step="0.5" :value="stagnantMinAnnPct" @input="stagnantMinAnnPct = parseFloat(($event.target as HTMLInputElement).value)" class="w-32" />
-            <span class="text-xs text-text-primary w-10">{{ stagnantMinAnnPct.toFixed(1) }}%</span>
+          <div class="flex items-center gap-4">
+            <div class="flex items-center gap-2">
+              <span class="text-xs text-text-muted">失效阈值</span>
+              <input type="range" min="0" max="20" step="0.5" :value="stagnantMinAnnPct" @input="stagnantMinAnnPct = parseFloat(($event.target as HTMLInputElement).value)" class="w-28" />
+              <span class="text-xs text-text-primary w-10">{{ stagnantMinAnnPct.toFixed(1) }}%</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <span class="text-xs text-text-muted">回撤阈值</span>
+              <input type="range" min="1" max="30" step="1" :value="ddThresholdPct" @input="ddThresholdPct = parseFloat(($event.target as HTMLInputElement).value)" class="w-24" />
+              <span class="text-xs text-text-primary w-8">{{ ddThresholdPct.toFixed(0) }}%</span>
+            </div>
           </div>
         </div>
         <div style="height: 340px">
-          <Line v-if="navChartData" :data="navChartData" :options="navChartOpts" :plugins="[stagnantPlugin]" />
+          <Line v-if="navChartData" :data="navChartData" :options="navChartOpts" :plugins="[stagnantPlugin, drawdownPlugin]" />
         </div>
       </div>
+
+      <!-- 分析图表区 -->
+      <BacktestCharts :backtest="backtest" />
 
       <!-- 因子效果 -->
       <div v-if="backtest.factor_keys?.length" class="bg-white rounded-lg shadow-sm p-4 mb-4">
@@ -190,6 +224,7 @@ import { useRouter, useRoute } from 'vue-router'
 import { Line } from 'vue-chartjs'
 import { Chart as ChartJS, LineElement, PointElement, CategoryScale, LinearScale, Tooltip, Legend, Filler } from 'chart.js'
 import { useApi } from '@/composables/useApi'
+import BacktestCharts from './BacktestCharts.vue'
 import type { BacktestResponse, CustomFactorStat } from '@/types'
 
 ChartJS.register(LineElement, PointElement, CategoryScale, LinearScale, Tooltip, Legend, Filler)
@@ -204,12 +239,25 @@ function goBack() {
   router.push('/investments/strategies?sub=backtest')
 }
 
-// NAV chart data: line + buy/sell scatter overlay
+// NAV chart data: line + benchmark + buy/sell scatter overlay
 const navChartData = computed(() => {
   const r = backtest.value?.results
   if (!r?.nav_series?.length) return null
   const labels = r.nav_series.map(p => p.date)
   const navData = r.nav_series.map(p => p.nav)
+
+  // benchmark aligned by date (null where missing)
+  const benchData: (number | null)[] = labels.map(() => null)
+  if (r.benchmark?.series?.length) {
+    const bmap = new Map(r.benchmark.series.map(p => [p.date, p.nav]))
+    // renormalize benchmark to portfolio's first nav for visual comparability
+    const firstB = r.benchmark.series[0].nav || 1
+    const scale = navData[0] / firstB
+    labels.forEach((d, i) => {
+      const b = bmap.get(d)
+      if (b != null) benchData[i] = b * scale
+    })
+  }
 
   // Build buy/sell marker arrays aligned to nav_series labels (null = no trade that day)
   const dateIdx: Record<string, number> = {}
@@ -227,33 +275,41 @@ const navChartData = computed(() => {
     if (buys.length) { buyData[idx] = nav; buyMeta[idx] = buys.map(t => `${t.name || t.symbol} ¥${t.amount.toFixed(0)}`).join(', ') }
     if (sells.length) { sellData[idx] = nav; sellMeta[idx] = sells.map(t => `${t.name || t.symbol} ¥${t.amount.toFixed(0)}`).join(', ') }
   }
-  return {
-    labels,
-    datasets: [
-      {
-        label: '净值',
-        data: navData,
-        borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.08)',
-        borderWidth: 1.5, tension: 0.25, pointRadius: 0, fill: true,
-      },
-      {
-        label: '买入',
-        data: buyData,
-        borderColor: 'transparent', backgroundColor: '#ef4444',
-        pointStyle: 'triangle', pointRadius: 5, pointHoverRadius: 8,
-        showLine: false,
-        _meta: buyMeta,
-      },
-      {
-        label: '卖出',
-        data: sellData,
-        borderColor: 'transparent', backgroundColor: '#10b981',
-        pointStyle: 'triangle', pointRotation: 180, pointRadius: 5, pointHoverRadius: 8,
-        showLine: false,
-        _meta: sellMeta,
-      },
-    ],
+  const datasets: any[] = [
+    {
+      label: '净值',
+      data: navData,
+      borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.08)',
+      borderWidth: 1.5, tension: 0.25, pointRadius: 0, fill: true,
+    },
+  ]
+  if (benchData.some(v => v != null)) {
+    datasets.push({
+      label: r.benchmark?.name || '基准',
+      data: benchData,
+      borderColor: '#94a3b8', borderWidth: 1, borderDash: [5, 3],
+      pointRadius: 0, fill: false, tension: 0.25,
+    })
   }
+  datasets.push(
+    {
+      label: '买入',
+      data: buyData,
+      borderColor: 'transparent', backgroundColor: '#F44336',
+      pointStyle: 'triangle', pointRadius: 5, pointHoverRadius: 8,
+      showLine: false,
+      _meta: buyMeta,
+    },
+    {
+      label: '卖出',
+      data: sellData,
+      borderColor: 'transparent', backgroundColor: '#4CAF50',
+      pointStyle: 'triangle', pointRotation: 180, pointRadius: 5, pointHoverRadius: 8,
+      showLine: false,
+      _meta: sellMeta,
+    },
+  )
+  return { labels, datasets }
 })
 
 // 失效阈值滑动杆（前端实时扫描，无需重新回测）
@@ -296,6 +352,47 @@ const localStagnantPeriods = computed(() => {
   return detectStagnantLocal(r.nav_series, r.metrics.ann_return)
 })
 
+// ---- 回撤遮罩：从峰值回撤超过阈值的"水下期"（经典 underwater 可视化）----
+const ddThresholdPct = ref(10)
+const drawdownBands = computed(() => {
+  const r = backtest.value?.results
+  const ns = r?.nav_series
+  if (!ns?.length) return []
+  const thr = ddThresholdPct.value / 100
+  const flags = ns.map(() => false)
+  let peak = ns[0].nav
+  for (let i = 0; i < ns.length; i++) {
+    if (ns[i].nav > peak) peak = ns[i].nav
+    if (peak > 0 && ns[i].nav / peak - 1 < -thr) flags[i] = true
+  }
+  const bands: { startIdx: number; endIdx: number }[] = []
+  let s: number | null = null
+  for (let j = 0; j < flags.length; j++) {
+    if (flags[j] && s === null) s = j
+    else if (!flags[j] && s !== null) { bands.push({ startIdx: s, endIdx: j - 1 }); s = null }
+  }
+  if (s !== null) bands.push({ startIdx: s, endIdx: flags.length - 1 })
+  return bands
+})
+
+const drawdownPlugin = {
+  id: 'drawdownBands',
+  afterDatasetsDraw(chart: any) {
+    const bands = chart.options.plugins.drawdownBands?.bands
+    if (!bands?.length) return
+    const { ctx, chartArea, scales } = chart
+    const xs = scales.x
+    ctx.save()
+    ctx.fillStyle = 'rgba(245,158,11,0.15)'
+    for (const b of bands) {
+      const x0 = xs.getPixelForValue(b.startIdx)
+      const x1 = xs.getPixelForValue(b.endIdx)
+      ctx.fillRect(Math.min(x0, x1), chartArea.top, Math.abs(x1 - x0), chartArea.bottom - chartArea.top)
+    }
+    ctx.restore()
+  },
+}
+
 // 失效区间红色遮罩：merged_periods (date range) → x 轴像素矩形
 const stagnantPlugin = {
   id: 'stagnantBands',
@@ -330,6 +427,7 @@ const navChartOpts = computed(() => {
   plugins: {
     legend: { labels: { boxWidth: 12, font: { size: 10 } } },
     stagnantBands: { bands },
+    drawdownBands: { bands: drawdownBands.value },
     tooltip: {
       callbacks: {
         label: (ctx: any) => {

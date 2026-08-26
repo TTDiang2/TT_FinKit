@@ -871,6 +871,107 @@ def _load_factor_values(db_path: str, factor_keys: list[str]) -> dict[str, dict[
     return out
 
 
+def load_benchmark_series(db_path: str, start: str, end: str) -> dict | None:
+    """CSI300 nav series over [start, end], sourced from the `equity` factor.
+
+    Returns None when the factor has no data in range (benchmark-dependent
+    stats are then simply omitted).
+    """
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT v.date, v.value FROM factor_values v "
+            "JOIN factors f ON f.id = v.factor_id "
+            "WHERE f.key = 'equity' AND v.kind = 'return' "
+            "AND v.date >= ? AND v.date <= ? ORDER BY v.date",
+            (start, end),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return None
+    finally:
+        conn.close()
+    if len(rows) < 30:
+        return None
+    nav = 1.0
+    series = []
+    for d, v in rows:
+        if v is None:
+            continue
+        nav *= (1.0 + float(v))
+        series.append({"date": d, "nav": round(nav, 6)})
+    return {"name": "沪深300", "key": "equity", "series": series}
+
+
+def extended_stats(nav_series: list[dict], bench: dict | None, rf_ann: float = 0.02) -> dict:
+    """Win rate / P-L ratio / underwater duration / CAPM alpha, beta, IR."""
+    navs = [p["nav"] for p in nav_series]
+    rets = [navs[i] / navs[i - 1] - 1.0 for i in range(1, len(navs)) if navs[i - 1] > 0]
+    out: dict = {}
+    if len(rets) >= 10:
+        gains = [r for r in rets if r > 0]
+        losses = [r for r in rets if r < 0]
+        out["win_rate"] = round(len(gains) / len(rets), 4)
+        avg_g = sum(gains) / len(gains) if gains else 0.0
+        avg_l = abs(sum(losses) / len(losses)) if losses else 0.0
+        out["profit_loss_ratio"] = round(avg_g / avg_l, 3) if avg_l > 0 else None
+    # longest underwater span (days since last running peak)
+    peak = navs[0]
+    peak_idx = 0
+    worst_underwater = 0
+    for i, v in enumerate(navs):
+        if v >= peak:
+            peak = v
+            peak_idx = i
+        else:
+            worst_underwater = max(worst_underwater, i - peak_idx)
+    out["mdd_duration_days"] = worst_underwater
+
+    if bench and bench.get("series"):
+        bmap = {p["date"]: p["nav"] for p in bench["series"]}
+        bnavs = [bmap[p["date"]] for p in nav_series if p["date"] in bmap]
+        if len(bnavs) >= 30:
+            brets = [bnavs[i] / bnavs[i - 1] - 1.0 for i in range(1, len(bnavs)) if bnavs[i - 1] > 0]
+            prets = rets[-len(brets):] if len(rets) >= len(brets) else rets
+            n = min(len(prets), len(brets))
+            prets, brets = prets[:n], brets[:n]
+            mu_p, mu_b = sum(prets) / n, sum(brets) / n
+            var_p = sum((r - mu_p) ** 2 for r in prets) / n
+            var_b = sum((r - mu_b) ** 2 for r in brets) / n
+            cov = sum((prets[i] - mu_p) * (brets[i] - mu_b) for i in range(n)) / n
+            beta = cov / var_b if var_b > 0 else None
+            ann_p = (1.0 + mu_p) ** 252 - 1.0
+            ann_b = (1.0 + mu_b) ** 252 - 1.0
+            out["benchmark_ann_return"] = round(ann_b, 4)
+            if beta is not None:
+                out["beta"] = round(beta, 3)
+                out["alpha_ann"] = round(ann_p - rf_ann - beta * (ann_b - rf_ann), 4)
+            diff = [prets[i] - brets[i] for i in range(n)]
+            mu_d = sum(diff) / n
+            var_d = sum((r - mu_d) ** 2 for r in diff) / n
+            if var_d > 0:
+                out["info_ratio"] = round(mu_d / (var_d ** 0.5) * (252 ** 0.5), 3)
+    return out
+
+
+def portfolio_exposures_summary(
+    weight_history: list[dict], exposures: dict[str, dict[str, float]]
+) -> list[dict]:
+    """Time-averaged portfolio factor exposure: {factor: Σ_i mean_w_i × β_i,f}."""
+    w_sum: dict[str, float] = {}
+    n = len(weight_history) or 1
+    for p in weight_history:
+        for s, w in (p.get("weights") or {}).items():
+            w_sum[s] = w_sum.get(s, 0.0) + w
+    wbar = {s: v / n for s, v in w_sum.items()}
+    agg: dict[str, float] = {}
+    for sym, w in wbar.items():
+        for fkey, beta in (exposures.get(sym) or {}).items():
+            agg[fkey] = agg.get(fkey, 0.0) + w * beta
+    items = [{"factor": k, "exposure": round(v, 4)} for k, v in agg.items()]
+    items.sort(key=lambda x: -abs(x["exposure"]))
+    return items[:12]
+
+
 def _load_factor_exposures(db_path: str) -> dict[str, dict[str, float]]:
     """Latest factor exposure per pooled asset: {symbol: {factor_key: beta}}.
 
@@ -995,6 +1096,7 @@ import sys, json, traceback
 from finkit_strategy.base import Strategy, StrategyContext
 from app.services.backtest_engine import (
     generate_rebalance_dates, run_simulation, load_price_data,
+    load_benchmark_series, extended_stats, portfolio_exposures_summary,
     DEFAULT_REDEEM_RULES,
 )
 
@@ -1050,6 +1152,12 @@ try:
         redeem_rules=redeem_rules,
         initial_capital=initial_capital,
         slippage=slippage,
+    )
+    bench = load_benchmark_series(data["db_path"], trading_days[0], trading_days[-1])
+    out["benchmark"] = bench
+    out["metrics"].update(extended_stats(out["nav_series"], bench))
+    out["portfolio_factor_exposures"] = portfolio_exposures_summary(
+        out["weight_history"], getattr(ctx, "factor_exposures", {}) or {}
     )
     out["status"] = "ok"
     out["error"] = None
