@@ -5,11 +5,21 @@ rem ============================================================
 rem  FinKit multi-PC data sync via private GitHub repository
 rem
 rem  Usage:
-rem    sync_db.bat push     - upload local backend\finkit.db (default)
-rem    sync_db.bat pull     - download latest finkit.db from data repo
-rem    sync_db.bat restore  - restore local db from a backup snapshot
+rem    sync_db.bat            - interactive menu (double-click friendly)
+rem    sync_db.bat push       - upload local db + strategies (default)
+rem    sync_db.bat pull       - download latest data from data repo
+rem    sync_db.bat restore    - restore local db from a backup snapshot
+rem
+rem  What gets synced:
+rem    - backend\finkit.db   (ALL app data: accounts, transactions,
+rem      investments, research assets/pool, factors, strategies,
+rem      backtests, signals, user settings ...)
+rem    - strategies\*.py     (strategy files, they live OUTSIDE the db)
 rem
 rem  Safety:
+rem    - SQLite WAL is checkpointed before every copy so no recent
+rem      writes are left behind in -wal files.
+rem    - Warns if the backend is still running (inconsistent snapshot).
 rem    - Local db is auto-backed up (backups\*.bak) before every
 rem      pull and before conflict resolution.
 rem    - Push conflict (remote has newer commits): you choose
@@ -22,15 +32,36 @@ set "ROOT=%ROOT:~0,-1%"
 set "DATA_REPO_URL=https://github.com/TTDiang2/TT_FinKit_Data.git"
 set "DATA_DIR=%ROOT%\..\TT_FinKit_Data"
 set "LOCAL_DB=%ROOT%\backend\finkit.db"
+set "STRATEGIES_DIR=%ROOT%\strategies"
 set "BACKUP_DIR=%DATA_DIR%\backups"
 set "REMOTE_BRANCH=main"
 
-rem ---- resolve mode ----
-set "MODE=push"
-if /i "%~1"=="pull" set "MODE=pull"
-if /i "%~1"=="push" set "MODE=push"
-if /i "%~1"=="restore" set "MODE=restore"
+rem ---- resolve mode: command-line arg, or interactive menu on double-click ----
+set "MODE=%~1"
+if /i "%MODE%"=="push" goto :mode_chosen
+if /i "%MODE%"=="pull" goto :mode_chosen
+if /i "%MODE%"=="restore" goto :mode_chosen
 
+:menu
+cls
+title FinKit Data Sync
+echo.
+echo   ==========================================
+echo    FinKit Data Sync  (db + strategies)
+echo   ==========================================
+echo.
+echo    [1] PUSH    upload local data to private repo
+echo    [2] PULL    download private repo data to this PC
+echo    [3] RESTORE restore db from a local backup
+echo    [Q] quit
+echo.
+choice /c 123q /n /t 30 /d q /m "   Choose (1/2/3, auto-quit in 30s): "
+if errorlevel 4 exit /b 0
+if errorlevel 3 ( set "MODE=restore" & goto :mode_chosen )
+if errorlevel 2 ( set "MODE=pull" & goto :mode_chosen )
+set "MODE=push"
+
+:mode_chosen
 echo Mode: %MODE%
 echo Data repo: %DATA_REPO_URL%
 echo Data dir: %DATA_DIR%
@@ -53,6 +84,21 @@ if not exist "%BACKUP_DIR%" mkdir "%BACKUP_DIR%"
 if not exist "%DATA_DIR%\.gitignore" (
     (echo backups/) > "%DATA_DIR%\.gitignore"
 )
+
+rem ---- warn if backend is running (db may be mid-write) ----
+for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "try { (Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | Where-Object { $_.CommandLine -match 'run\.py|uvicorn' } | Measure-Object).Count } catch { 0 }"`) do set "BACKEND_RUNNING=%%i"
+if not "%BACKEND_RUNNING%"=="0" (
+    echo [WARNING] FinKit backend appears to be RUNNING.
+    echo   Data written recently may still be in the SQLite WAL file, and the
+    echo   copied db snapshot can be inconsistent. Best: stop the backend first.
+    echo   Continuing anyway in 10 seconds ...
+    timeout /t 10 /nobreak >nul
+)
+
+rem ---- flush SQLite WAL into the main db file before copying ----
+echo [PREP] Flushing SQLite WAL (ensuring all data is inside finkit.db) ...
+python -c "import sqlite3; c = sqlite3.connect(r'%LOCAL_DB%'); c.execute('PRAGMA wal_checkpoint(TRUNCATE)'); c.close()" >nul 2>&1
+if errorlevel 1 echo   [WARN] WAL checkpoint skipped (python or db not available).
 
 if /i "%MODE%"=="pull" goto :do_pull
 if /i "%MODE%"=="restore" goto :do_restore
@@ -91,10 +137,11 @@ goto :conflict_keep_local
 :conflict_keep_local
 echo [2/4] Keeping local - resetting data repo to remote state ...
 git -C "%DATA_DIR%" reset --hard origin/%REMOTE_BRANCH% >nul 2>&1
-echo [3/4] Copying local database ...
+echo [3/4] Copying local database + strategies ...
 copy /Y "%LOCAL_DB%" "%DATA_DIR%\finkit.db" >nul
+call :sync_strategies_to_datarepo
 echo [4/4] Force pushing local database ...
-git -C "%DATA_DIR%" add finkit.db
+git -C "%DATA_DIR%" add finkit.db strategies
 git -C "%DATA_DIR%" commit -m "sync: local db wins" >nul 2>&1
 git -C "%DATA_DIR%" push --force-with-lease origin %REMOTE_BRANCH%
 if errorlevel 1 (
@@ -111,8 +158,9 @@ exit /b 0
 :conflict_keep_remote
 echo [2/4] Keeping remote - resetting data repo ...
 git -C "%DATA_DIR%" reset --hard origin/%REMOTE_BRANCH% >nul 2>&1
-echo [3/4] Copying remote database into local backend ...
+echo [3/4] Copying remote database + strategies into local ...
 copy /Y "%DATA_DIR%\finkit.db" "%LOCAL_DB%" >nul
+call :sync_strategies_from_datarepo
 echo [4/4] Done.
 echo.
 echo Local database replaced by remote version.
@@ -121,16 +169,17 @@ pause
 exit /b 0
 
 :push_clean
-echo [2/4] Copying local database into data repo ...
+echo [2/4] Copying local database + strategies into data repo ...
 copy /Y "%LOCAL_DB%" "%DATA_DIR%\finkit.db" >nul
 if errorlevel 1 (
     echo [ERROR] Cannot copy %LOCAL_DB%. Does it exist?
     pause
     exit /b 1
 )
+call :sync_strategies_to_datarepo
 echo [3/4] Committing ...
-git -C "%DATA_DIR%" add finkit.db
-git -C "%DATA_DIR%" commit -m "sync: finkit.db" >nul 2>&1
+git -C "%DATA_DIR%" add finkit.db strategies
+git -C "%DATA_DIR%" commit -m "sync: finkit.db + strategies" >nul 2>&1
 echo [4/4] Pushing ...
 git -C "%DATA_DIR%" push origin %REMOTE_BRANCH%
 if errorlevel 1 (
@@ -156,11 +205,13 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
-echo [3/3] Copying database into local backend ...
+echo [3/3] Copying database + strategies into local ...
 copy /Y "%DATA_DIR%\finkit.db" "%LOCAL_DB%" >nul
+call :sync_strategies_from_datarepo
 echo.
 echo Done. Database restored from private repo.
 echo Previous local db backed up in %BACKUP_DIR%.
+echo [NOTE] Restart the FinKit backend so it reopens the updated database.
 pause
 exit /b 0
 
@@ -184,6 +235,23 @@ pause
 exit /b 0
 
 rem ============ HELPERS ============
+
+:sync_strategies_to_datarepo
+rem copy local strategies/*.py into the data repo (they live OUTSIDE finkit.db)
+if not exist "%STRATEGIES_DIR%" exit /b 0
+if not exist "%DATA_DIR%\strategies" mkdir "%DATA_DIR%\strategies"
+copy /Y "%STRATEGIES_DIR%\*.py" "%DATA_DIR%\strategies\" >nul 2>&1
+echo   synced: strategies\*.py -^> data repo
+exit /b 0
+
+:sync_strategies_from_datarepo
+rem restore strategies/*.py from the data repo into the main workspace
+if not exist "%DATA_DIR%\strategies" exit /b 0
+if not exist "%STRATEGIES_DIR%" mkdir "%STRATEGIES_DIR%"
+copy /Y "%DATA_DIR%\strategies\*.py" "%STRATEGIES_DIR%\" >nul 2>&1
+echo   synced: data repo strategies -^> %STRATEGIES_DIR%
+exit /b 0
+
 :backup_local
 if not exist "%LOCAL_DB%" (
     echo [SKIP] No local database to back up.
