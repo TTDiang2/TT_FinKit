@@ -267,6 +267,46 @@ def evaluate_custom_factors(
     return out
 
 
+def factor_attribution(
+    weight_history: list[dict],
+    exposures: dict[str, dict[str, float]],
+    factor_values: dict[str, dict[str, float]],
+    i0: int,
+    i1: int,
+) -> list[dict]:
+    """Factor contribution over a segment: Σ_i mean_w_i × β_i,f × R_f.
+
+    β uses the latest exposure snapshot (treated as constant within the
+    segment); R_f is the factor's compounded return across segment dates.
+    """
+    seg = weight_history[max(0, i0):min(len(weight_history) - 1, i1) + 1]
+    if not seg:
+        return []
+    w_sum: dict[str, float] = {}
+    for p in seg:
+        for s, w in (p.get("weights") or {}).items():
+            w_sum[s] = w_sum.get(s, 0.0) + w
+    n = len(seg)
+    wbar = {s: w / n for s, w in w_sum.items()}
+    d0, d1 = seg[0]["date"], seg[-1]["date"]
+    out: list[dict] = []
+    for fkey, series in (factor_values or {}).items():
+        vals = [v for d, v in sorted(series.items()) if d0 <= d <= d1]
+        if len(vals) < 2:
+            continue
+        cum = 1.0
+        for v in vals:
+            cum *= (1.0 + v)
+        cum -= 1.0
+        beta_sum = sum(
+            wbar.get(sym, 0.0) * (exposures.get(sym, {}) or {}).get(fkey, 0.0)
+            for sym in wbar
+        )
+        out.append({"factor": fkey, "contribution": round(beta_sum * cum, 6)})
+    out.sort(key=lambda x: -x["contribution"])
+    return out[:6]
+
+
 def asset_attribution(
     prices: dict[str, dict[str, float]],
     weight_history: list[dict],
@@ -714,6 +754,12 @@ def run_simulation(
                     period["attribution"] = asset_attribution(
                         prices, weight_history, widx0 - 1, len(weight_history) - 1, asset_names
                     )[:6]
+                    period["factor_attribution"] = factor_attribution(
+                        weight_history,
+                        getattr(ctx, "factor_exposures", {}) or {},
+                        getattr(ctx, "factor_values", {}) or {},
+                        widx0 - 1, len(weight_history) - 1,
+                    )
                     rebalance_records.append({
                         "date": day,
                         "trades": trades,
@@ -822,6 +868,38 @@ def _load_factor_values(db_path: str, factor_keys: list[str]) -> dict[str, dict[
     for key, d, v in rows:
         if d and v is not None:
             out[key][d] = float(v)
+    return out
+
+
+def _load_factor_exposures(db_path: str) -> dict[str, dict[str, float]]:
+    """Latest factor exposure per pooled asset: {symbol: {factor_key: beta}}.
+
+    Returns {} when the table doesn't exist (minimal test fixtures) or is empty.
+    """
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT ra.symbol, f.key, ae.beta FROM factor_exposures ae "
+            "JOIN factors f ON f.id = ae.factor_id "
+            "JOIN research_assets ra ON ra.id = ae.asset_id "
+            "WHERE ae.as_of_date = (SELECT MAX(as_of_date) FROM factor_exposures "
+            "WHERE asset_id = ae.asset_id)"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        conn.close()
+    out: dict[str, dict[str, float]] = {}
+    for sym, key, beta in rows:
+        if not key or beta is None:
+            continue
+        out.setdefault(sym, {})[key] = float(beta)
+    return out
+    out: dict[str, dict[str, float]] = {}
+    for sym, key, beta in rows:
+        if not key or beta is None:
+            continue
+        out.setdefault(sym, {})[key] = float(beta)
     return out
 
 
@@ -1033,6 +1111,7 @@ def _run_backtest_sync(
         "db_path": db_path,
         "cost_config": cost_config or {},
         "factor_values": _load_factor_values(db_path, factor_keys),
+        "factor_exposures": _load_factor_exposures(db_path),
     }
 
     with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False, encoding='utf-8') as f:

@@ -714,6 +714,7 @@ export interface RebalancePeriodStats {
   ann_volatility: number
   sharpe?: number | null
   attribution?: { symbol: string; name: string; contribution: number }[]
+  factor_attribution?: { factor: string; contribution: number }[]
 }
 
 export interface Trade {

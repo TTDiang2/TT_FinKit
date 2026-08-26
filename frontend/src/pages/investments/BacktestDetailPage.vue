@@ -135,7 +135,7 @@
               </td>
               <td class="px-2 py-1.5">
                 <div v-for="t in rec.trades" :key="t.symbol + t.side" class="mb-0.5">
-                  <span :class="t.side === 'buy' ? 'text-expense-color' : 'text-income-color'" class="font-medium">{{ t.side === 'buy' ? '买' : '卖' }}</span>
+                  <span :class="t.side === 'buy' ? 'text-income-color' : 'text-expense-color'" class="font-medium">{{ t.side === 'buy' ? '买' : '卖' }}</span>
                   {{ t.name || t.symbol }}<span class="text-text-muted">({{ t.symbol }})</span>
                   ¥{{ t.amount.toFixed(0) }}
                 </div>
@@ -149,6 +149,10 @@
                   <div v-for="a in (rec.period_stats.attribution || [])" :key="a.symbol" class="mb-0.5 whitespace-nowrap">
                     <span :class="a.contribution >= 0 ? 'text-income-color' : 'text-expense-color'">{{ a.contribution >= 0 ? '+' : '' }}{{ (a.contribution * 100).toFixed(1) }}%</span>
                     {{ a.name || a.symbol }}
+                  </div>
+                  <div v-for="fa in (rec.period_stats.factor_attribution || [])" :key="'f' + fa.factor" class="mb-0.5 whitespace-nowrap text-text-secondary">
+                    <span :class="fa.contribution >= 0 ? 'text-income-color' : 'text-expense-color'">{{ fa.contribution >= 0 ? '+' : '' }}{{ (fa.contribution * 100).toFixed(2) }}%</span>
+                    <span class="text-text-muted">β·</span>{{ fa.factor }}
                   </div>
                 </td>
               </template>
@@ -262,7 +266,7 @@ function detectStagnantLocal(
   windows: number[] = [126, 252],
 ): { start: string; end: string }[] {
   const n = navSeries.length
-  const thr = Math.max(stagnantMinAnn.value, (overallAnn || 0) / 2)
+  const thr = Math.max(stagnantMinAnn.value, 0.01)
   const mask = new Array(n).fill(false)
   for (const w of windows) {
     const step = Math.max(1, Math.floor(w / 6))
