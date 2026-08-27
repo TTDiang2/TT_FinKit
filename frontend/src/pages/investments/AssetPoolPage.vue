@@ -1214,9 +1214,23 @@ function pollPriceStatus(assetId: string, remaining: number) {
 async function syncOne(a: AssetRow) {
   a._syncing = true
   try {
-    const res = await api.post(`/research/assets/${a.id}/sync`)
-    const r = res.data as SyncResult
-    show(`同步成功：${r.rows} 行（${r.begin} ~ ${r.end}，${r.source}）`, 'success')
+    // 场外基金：净值 + 档案（费率/T+N/限购，来自天天基金）并行刷新
+    const isFund = a.exchange === 'FUND_CN' && a.asset_type === 'fund'
+    const [priceRes, profRes] = await Promise.all([
+      api.post(`/research/assets/${a.id}/sync`),
+      isFund
+        ? api.post('/research/assets/batch-refresh-profiles', { ids: [a.id] }).catch(() => null)
+        : Promise.resolve(null),
+    ])
+    const r = priceRes.data as SyncResult
+    let msg = `同步成功：${r.rows} 行（${r.begin} ~ ${r.end}，${r.source}）`
+    if (profRes) {
+      const pr = (profRes.data as { changed_fields?: string[]; status: string }[])[0]
+      if (pr?.status === 'updated' && pr.changed_fields?.length) msg += ` · 档案已更新 ${pr.changed_fields.length} 项`
+      else if (pr?.status === 'failed') msg += ' · 档案刷新失败'
+      else msg += ' · 档案无变化'
+    }
+    show(msg, profRes && (profRes.data as { status: string }[])[0]?.status === 'failed' ? 'warning' : 'success')
     await load()
   } catch (e) {
     show(errDetail(e), 'error')
