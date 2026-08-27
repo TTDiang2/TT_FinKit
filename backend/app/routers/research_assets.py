@@ -240,7 +240,7 @@ async def assets_selector(
     }
 
 
-@router.get("", response_model=List[ResearchAssetResponse])
+@router.get("", response_model=None)
 async def list_assets(
     status: Optional[str] = Query(None),
     category: Optional[str] = Query(None),
