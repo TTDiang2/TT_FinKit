@@ -110,17 +110,32 @@ def _seg(html: str, start_marker: str, end_markers: tuple[str, ...]) -> str:
     return rest[: min(ends)] if ends else rest
 
 
+def _fee_section(html: str, titles: tuple[str, ...], anchors: tuple[str, ...]) -> str:
+    """定位费率小节：title 需在 300 字符内跟 anchors 之一；多处命中取最后一处
+    （侧栏导航在页首，真实小节总在其后）。"""
+    for title in titles:
+        chosen = -1
+        for m in re.finditer(re.escape(title), html):
+            rest = html[m.end():m.end() + 300]
+            if any(a in rest for a in anchors):
+                chosen = m.start()
+        if chosen >= 0:
+            ends = tuple(e for e in ("class='sgfltip", '<div class="bo', "shwarn", "友情提示"))
+            return _seg(html[chosen:], title, ends)
+    return ""
+
+
 def parse_fee_html(html: str) -> dict:
     """jjfl 页面 → 结构化费率。
 
-    基础费率: ``管理费率</td><td>1.20%（每年）`` 模式。
-    申购费: 取"前端"首档(小于100万)的天天基金优惠费率（无优惠则原费率）。
-    赎回费: 前端表按 ``小于N天→{days:N}`` / 纯``大于等于N天``行→兜底
-    ``days=None`` 组装成引擎档位；区间中间档取其上界。
+    兼容两类版式：A 类「申购费率（前端）/（后端）」strike 优惠价；
+    C 类无前后端标题、申购表为 ``适用金额 … 0.00%``。
+    赎回行 ``大于等于X天，小于Y天`` 取上界 Y 档，尾部 ``大于等于N天`` 为兜底。
+    附带解析「卖出确认日 T+N」→ redeem_t_days。
     """
     out: dict = {
         "mgmt_fee": None, "custody_fee": None, "sales_service_fee": None,
-        "purchase_fee": None, "redeem_rules": [],
+        "purchase_fee": None, "redeem_rules": [], "redeem_t_days": None,
     }
     for key, pat in _JJFL_PATTERNS.items():
         m = re.search(pat, html)
@@ -130,7 +145,11 @@ def parse_fee_html(html: str) -> dict:
             except ValueError:
                 pass
 
-    buy_seg = _seg(html, "申购费率（前端）", ("申购费率（后端）", "赎回费率", '<div class="boxitem'))
+    buy_seg = _fee_section(
+        html,
+        ("申购费率（前端）", "申购费率"),
+        ("<strike", "适用金额"),
+    )
     m = re.search(
         r"<strike[^>]*>([\d.]+)\s*%</strike>(?:\s*(?:&nbsp;|<[^>]+>|\|)*?(?:([\d.]+)\s*%))?",
         buy_seg,
@@ -144,7 +163,11 @@ def parse_fee_html(html: str) -> dict:
     elif m and m.group(1):
         out["purchase_fee"] = float(m.group(1))       # 无优惠时原费率
 
-    redeem_seg = _seg(html, "赎回费率（前端）", ("赎回费率（后端）", 'shwarn', '<div class="box">'))
+    redeem_seg = _fee_section(
+        html,
+        ("赎回费率（前端）", "赎回费率"),
+        ("适用期限", "小于"),
+    )
     tiers: list[dict] = []
     for row_m in re.finditer(r"<tr><td[^>]*>(.*?)</td><td[^>]*>(.*?)</td></tr>", redeem_seg, re.S):
         label_raw = re.sub(r"<[^>]+>|\s+", "", row_m.group(1))
@@ -152,6 +175,10 @@ def parse_fee_html(html: str) -> dict:
         if not fee_m:
             continue
         fee = float(fee_m.group(1))
+        range_m = re.search(r"大于等于(\d+)天\s*[,，]\s*小于(\d+)天", label_raw)
+        if range_m:
+            tiers.append({"days": int(range_m.group(2)), "fee_rate": fee})
+            continue
         uppers = [int(x) for x in re.findall(r"小于(\d+)天", label_raw)]
         if uppers:
             tiers.append({"days": min(uppers), "fee_rate": fee})
@@ -161,7 +188,7 @@ def parse_fee_html(html: str) -> dict:
     fallback = [t for t in tiers if t["days"] is None]
     rules = with_days[:3]
     if fallback:
-        rules.append(fallback[0])
+        rules.append(fallback[-1])
     seen_days: set[int | None] = set()
     valid_rules: list[dict] = []
     for t in rules:
@@ -174,13 +201,23 @@ def parse_fee_html(html: str) -> dict:
         for i in range(len(valid_rules) - 1)
     )
     out["redeem_rules"] = valid_rules if (valid_rules and ok_order) else []
+
+    t_m = re.search(r"卖出确认日[^<]*?<[^>]*>\s*T\+(\d+)", html)
+    if not t_m:
+        t_m = re.search(r"卖出确认日[^\d]*T\+(\d+)", re.sub(r"<[^>]+>", "", html))
+    if t_m:
+        try:
+            out["redeem_t_days"] = int(t_m.group(1))
+        except ValueError:
+            pass
     return out
 
 
 def fetch_fee_profile(code: str) -> dict:
-    """拉取并解析单只基金费率页；网络失败返回全空结构。"""
+    """拉取并解析单只基金费率页；失败重试一次，仍失败返回全空结构。"""
     import requests
-    try:
+
+    def _once():
         r = requests.get(
             _JJFL_URL.format(code=code),
             headers={"User-Agent": _BROWSER_UA, "Referer": "https://fundf10.eastmoney.com/"},
@@ -188,8 +225,19 @@ def fetch_fee_profile(code: str) -> dict:
         )
         r.raise_for_status()
         return parse_fee_html(r.text)
-    except Exception:  # noqa: BLE001 — 费率为增强信息，失败不阻断导入
-        return {k: None for k in ("mgmt_fee", "custody_fee", "sales_service_fee", "purchase_fee")} | {"redeem_rules": []}
+
+    empty = {k: None for k in ("mgmt_fee", "custody_fee", "sales_service_fee", "purchase_fee", "redeem_t_days")} | {"redeem_rules": []}
+    for attempt in (0, 1):
+        try:
+            data = _once()
+            if any(data.get(k) is not None for k in
+                   ("mgmt_fee", "custody_fee", "purchase_fee")) or data["redeem_rules"]:
+                return data
+            empty = data          # 解析成功但全空：留作最后一次的结果
+        except Exception:  # noqa: BLE001 — 费率为增强信息，失败不阻断导入
+            if attempt == 1:
+                return empty
+    return empty
 
 
 # --------------------------------------------------------------------------- #
@@ -317,7 +365,7 @@ def apply_profile(asset, profile: dict, fees: dict, holdings_payload: dict | Non
     changed: list[str] = []
 
     def set_field(field, new_val):
-        old = getattr(asset, field)
+        old = getattr(asset, field, None)
         if new_val is not None and new_val != old:
             setattr(asset, field, new_val)
             changed.append(field)
@@ -332,6 +380,10 @@ def apply_profile(asset, profile: dict, fees: dict, holdings_payload: dict | Non
         if v is None and profile:
             v = profile.get(field)
         set_field(field, v)
+
+    # T+N 只在缺失时补（用户手改优先，站点口径是“确认日”近似值）
+    if getattr(asset, "redeem_t_days", None) is None and fees:
+        set_field("redeem_t_days", fees.get("redeem_t_days"))
 
     tiers = (fees or {}).get("redeem_rules") or []
     if tiers:

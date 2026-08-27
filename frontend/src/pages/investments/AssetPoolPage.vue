@@ -22,6 +22,9 @@
         <button @click="openBatchModal" class="px-4 py-2 text-sm rounded-md border border-border-default text-text-secondary hover:bg-bg-tertiary flex items-center gap-1">
           <ListChecks :size="14" /> 批量管理
         </button>
+        <button @click="openGroupsModal" class="px-4 py-2 text-sm rounded-md border border-border-default text-text-secondary hover:bg-bg-tertiary flex items-center gap-1">
+          <FolderOpen :size="14" /> 标的组合{{ groups.length ? ` (${groups.length})` : '' }}
+        </button>
         <button @click="openAddModal" class="px-4 py-2 text-sm rounded-md bg-accent-primary text-white hover:bg-accent-hover flex items-center gap-1">
           <Plus :size="14" /> 添加自选
         </button>
@@ -133,6 +136,8 @@
               <span v-if="a.purchase_status && a.purchase_status !== '开放申购'"
                 :title="`申购状态：${a.purchase_status}（天天基金）`"
                 class="px-1.5 py-0.5 text-xs rounded-md bg-expense-bg text-expense-color font-medium">{{ a.purchase_status }}</span>
+              <span v-if="a.purchase_limit != null" :title="`日累计申购限额 ${a.purchase_limit} 元（天天基金）`"
+                class="px-1.5 py-0.5 text-xs rounded-md bg-expense-bg text-expense-color font-medium">{{ limitShort(a.purchase_limit) }}</span>
               <button v-if="a.category" @click="categoryFilter = a.category" class="px-2 py-0.5 text-xs rounded-md bg-bg-tertiary hover:bg-bg-secondary">{{ a.category }}</button>
               <span v-if="!a.category && !a.fund_kind && !a.asset_class && !a.region && !(a.auto_tags && a.auto_tags.length)" class="text-text-muted">—</span>
               <div v-if="a.fund_kind || a.asset_class || a.region || (a.auto_tags && a.auto_tags.length)" class="flex flex-wrap gap-1 mt-0.5">
@@ -489,9 +494,52 @@
           </button>
         </div>
         <div v-if="refreshSummary" class="text-xs text-text-muted whitespace-pre-line max-h-40 overflow-y-auto border-t border-border-default pt-2">{{ refreshSummary }}</div>
+
+        <!-- 加入组合 -->
+        <div class="flex items-center gap-2 border-t border-border-default pt-3">
+          <span class="text-sm font-medium shrink-0">加入组合</span>
+          <select v-model="batchGroupPick" :disabled="!!batchNewGroupName.trim()" class="px-2 py-1.5 text-xs border border-border-default rounded-md disabled:opacity-40">
+            <option value="">选择已有组合…</option>
+            <option v-for="g in groups" :key="g.id" :value="g.id">{{ g.name }}（{{ g.asset_ids.length }}）</option>
+          </select>
+          <span class="text-xs text-text-muted">或</span>
+          <input v-model="batchNewGroupName" placeholder="新建组合名，如 全宽基指数" class="px-2 py-1.5 text-xs border border-border-default rounded-md w-44"
+                 @input="batchNewGroupName && (batchGroupPick = '')" />
+          <button @click="addSelectedToGroup" :disabled="batchBusy || !selectedIds.size"
+            class="px-3 py-1.5 rounded-md bg-accent-primary text-white text-xs hover:bg-accent-hover disabled:opacity-40">把选中的 {{ selectedIds.size }} 只加入</button>
+        </div>
       </div>
       <template #footer>
         <button @click="showBatchModal = false" class="px-4 py-2 text-text-secondary">关闭</button>
+      </template>
+    </BaseModal>
+
+    <!-- 组合管理 -->
+    <BaseModal v-if="showGroupsModal" title="标的组合" width="max-w-xl" @close="showGroupsModal = false">
+      <div class="space-y-3">
+        <div class="text-xs text-text-muted">给入池标的按主题归组（全宽基 / 全地域 / 大类资产…）。后续策略可只在某个组合的资产池里构筑。成员变更走「批量管理 → 加入组合」。</div>
+        <div class="flex items-center gap-2">
+          <input v-model="newGroupName" placeholder="新组合名称" class="px-3 py-2 text-sm border border-border-default rounded-md flex-1"
+                 @keyup.enter="submitNewGroup" />
+          <input v-model="newGroupNote" placeholder="备注（可选）" class="px-3 py-2 text-sm border border-border-default rounded-md w-40"
+                 @keyup.enter="submitNewGroup" />
+          <button @click="submitNewGroup" :disabled="!newGroupName.trim()"
+            class="px-4 py-2 text-sm rounded-md bg-accent-primary text-white hover:bg-accent-hover disabled:opacity-50 flex items-center gap-1"><Plus :size="14" /> 创建</button>
+        </div>
+        <div class="border border-border-default rounded-md divide-y divide-border-default max-h-72 overflow-y-auto">
+          <div v-for="g in groups" :key="g.id" class="flex items-center gap-3 px-3 py-2">
+            <div class="flex-1 min-w-0">
+              <div class="text-sm font-medium truncate">{{ g.name }}</div>
+              <div class="text-xs text-text-muted">{{ g.asset_ids.length }} 个成员{{ g.note ? ` · ${g.note}` : '' }}</div>
+            </div>
+            <button @click="renameGroup(g)" class="p-1.5 text-text-secondary hover:text-accent-primary" title="重命名"><Edit2 :size="14" /></button>
+            <button @click="removeGroup(g)" class="p-1.5 text-text-muted hover:text-expense-color" title="删除组合"><Trash2 :size="14" /></button>
+          </div>
+          <div v-if="!groups.length" class="px-3 py-8 text-center text-sm text-text-muted">还没有组合，上方创建一个</div>
+        </div>
+      </div>
+      <template #footer>
+        <button @click="showGroupsModal = false" class="px-4 py-2 text-text-secondary">关闭</button>
       </template>
     </BaseModal>
 
@@ -709,14 +757,14 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
-import { Plus, RefreshCw, Search, X, Eye, PackagePlus, Trash2, Edit2, ChevronUp, ChevronDown, ChevronsUpDown, Sparkles, Download, ListChecks } from 'lucide-vue-next'
+import { Plus, RefreshCw, Search, X, Eye, PackagePlus, Trash2, Edit2, ChevronUp, ChevronDown, ChevronsUpDown, Sparkles, Download, ListChecks, FolderOpen } from 'lucide-vue-next'
 import { Line } from 'vue-chartjs'
 import { Chart as ChartJS, LineElement, PointElement, CategoryScale, LinearScale, Tooltip, Legend, Filler } from 'chart.js'
 import { useApi } from '@/composables/useApi'
 import { useToast } from '@/composables/useToast'
 import BaseModal from '@/components/common/BaseModal.vue'
 import AssetStatsTab from './AssetStatsTab.vue'
-import type { ResearchAsset, ResearchPricePoint, SyncResult, AssetPriceStatus } from '@/types'
+import type { ResearchAsset, ResearchPricePoint, SyncResult, AssetPriceStatus, ResearchGroup } from '@/types'
 
 ChartJS.register(LineElement, PointElement, CategoryScale, LinearScale, Tooltip, Legend, Filler)
 
@@ -863,6 +911,10 @@ function limitText(v: number | null | undefined): string {
   if (v == null) return '不限'
   return v >= 10000 ? `${(v / 10000).toFixed(v % 10000 === 0 ? 0 : 1)}万` : `${v}`
 }
+function limitShort(v: number | null | undefined): string {
+  if (v == null) return ''
+  return v >= 10000 ? `限${(v / 10000).toFixed(v % 10000 === 0 ? 0 : 1)}万` : `限${+v.toFixed(2)}`
+}
 function shortNote(note: string): string {
   if (!note) return '—'
   return note.length > 14 ? note.slice(0, 14) + '…' : note
@@ -921,6 +973,7 @@ async function load() {
     assets.value = []
   } finally {
     loading.value = false
+    loadCounts()
   }
 }
 
@@ -1013,6 +1066,88 @@ const batchFiltered = computed(() => {
     return true
   })
 })
+
+// ---- 标的组合：自定义命名池，后续策略可按组合圈定 universe ----
+const groups = ref<ResearchGroup[]>([])
+const showGroupsModal = ref(false)
+const newGroupName = ref('')
+const newGroupNote = ref('')
+const batchGroupPick = ref('')
+const batchNewGroupName = ref('')
+
+async function loadGroups() {
+  try {
+    const r = await api.get('/research/groups')
+    groups.value = r.data as ResearchGroup[]
+  } catch { groups.value = [] }
+}
+
+function openGroupsModal() {
+  loadGroups()
+  showGroupsModal.value = true
+}
+
+async function createGroup(name: string, note = '', assetIds: string[] = []): Promise<ResearchGroup | null> {
+  try {
+    const r = await api.post('/research/groups', { name: name.trim(), note, asset_ids: assetIds })
+    await loadGroups()
+    show(`已创建组合「${(r.data as ResearchGroup).name}」`, 'success')
+    return r.data as ResearchGroup
+  } catch (e) {
+    show(errDetail(e), 'error')
+    return null
+  }
+}
+
+async function submitNewGroup() {
+  const name = newGroupName.value.trim()
+  if (!name) { show('组合名称不能为空', 'error'); return }
+  const g = await createGroup(name, newGroupNote.value.trim())
+  if (g) { newGroupName.value = ''; newGroupNote.value = '' }
+}
+
+async function renameGroup(g: ResearchGroup) {
+  const name = window.prompt('重命名组合', g.name)?.trim()
+  if (!name || name === g.name) return
+  try {
+    await api.put(`/research/groups/${g.id}`, { name })
+    await loadGroups()
+  } catch (e) { show(errDetail(e), 'error') }
+}
+
+async function removeGroup(g: ResearchGroup) {
+  if (!window.confirm(`删除组合「${g.name}」？（${g.asset_ids.length} 个成员，不影响标的本身）`)) return
+  try {
+    await api.delete(`/research/groups/${g.id}`)
+    await loadGroups()
+  } catch (e) { show(errDetail(e), 'error') }
+}
+
+async function addSelectedToGroup() {
+  const ids = [...selectedIds.value]
+  if (!ids.length) { show('先在下方勾选标的', 'error'); return }
+  const nn = batchNewGroupName.value.trim()
+  try {
+    let g: ResearchGroup | undefined
+    if (nn) {
+      g = await createGroup(nn, '', ids) ?? undefined
+    } else if (batchGroupPick.value) {
+      g = groups.value.find(x => x.id === batchGroupPick.value)
+      if (!g) return
+      const merged = Array.from(new Set([...g.asset_ids, ...ids]))
+      const r = await api.put(`/research/groups/${g.id}`, { asset_ids: merged })
+      g = r.data as ResearchGroup
+      show(`已加入组合「${g.name}」（共 ${(g.asset_ids || []).length} 个成员）`, 'success')
+      await loadGroups()
+    } else {
+      show('选择已有组合，或填写新组合名', 'error')
+      return
+    }
+    if (!nn && g) void g
+    batchNewGroupName.value = ''
+    batchGroupPick.value = ''
+  } catch (e) { show(errDetail(e), 'error') }
+}
 
 function openBatchModal() {
   selectedIds.value = new Set()

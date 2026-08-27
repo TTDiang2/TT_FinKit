@@ -30,6 +30,10 @@
         <button @click="selectTop10" class="px-2 py-0.5 text-xs rounded border border-border-default text-text-secondary hover:bg-bg-tertiary">夏普Top10</button>
         <button @click="selectAllFiltered" class="px-2 py-0.5 text-xs rounded border border-border-default text-text-secondary hover:bg-bg-tertiary">全选当前筛选</button>
         <button @click="clearSelection" class="px-2 py-0.5 text-xs rounded border border-border-default text-text-secondary hover:bg-bg-tertiary">清空</button>
+        <select v-model="groupPick" @change="applyGroupPick" class="px-2 py-0.5 text-xs border border-border-default rounded-md ml-2">
+          <option value="">按组合选择…</option>
+          <option v-for="g in groups" :key="g.id" :value="g.id">{{ g.name }}（{{ g.asset_ids.length }}）</option>
+        </select>
         <span class="text-xs text-text-muted ml-auto">按夏普1Y降序 · 仅展示有数据标的</span>
       </div>
       <div class="max-h-40 overflow-y-auto border border-border-default rounded-md">
@@ -254,6 +258,18 @@ function toggleSelect(id: string) {
 function selectTop10() {
   const top = filteredSelector.value.filter(a => a.has_data && a.sharpe_1y != null).slice(0, 10)
   selectedIds.value = new Set(top.map(a => a.id))
+}
+
+interface GroupItem { id: string; name: string; asset_ids: string[] }
+const groups = ref<GroupItem[]>([])
+const groupPick = ref('')
+
+function applyGroupPick() {
+  const g = groups.value.find(x => x.id === groupPick.value)
+  if (!g) return
+  const memberSet = new Set(g.asset_ids)
+  selectedIds.value = new Set(
+    filteredSelector.value.filter(a => memberSet.has(a.id)).map(a => a.id))
 }
 
 function selectAllFiltered() {
@@ -541,6 +557,10 @@ async function loadAssets() {
     selectorItems.value = (res.data as { items: SelectorItem[] }).items
     selectTop10()
   } catch { selectorItems.value = [] }
+  try {
+    const g = await api.get('/research/groups')
+    groups.value = g.data as GroupItem[]
+  } catch { groups.value = [] }
 }
 
 // watch filters → reload snapshot

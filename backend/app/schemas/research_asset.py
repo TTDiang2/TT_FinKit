@@ -257,3 +257,21 @@ class ProfileRefreshResult(BaseModel):
     changed_fields: List[str] = []
     tags_rebuilt: bool = False
     error: Optional[str] = None
+
+class ResearchGroupCreate(BaseModel):
+    name: str
+    note: str = ""
+    asset_ids: List[str] = []
+
+
+class ResearchGroupUpdate(BaseModel):
+    name: Optional[str] = None
+    note: Optional[str] = None
+    asset_ids: Optional[List[str]] = None   # None=不动，[]/列表=整体替换
+
+
+class ResearchGroupResponse(BaseModel):
+    id: str
+    name: str
+    note: str
+    asset_ids: List[str] = []

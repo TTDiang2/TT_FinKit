@@ -860,3 +860,10 @@ export interface MonitorSettings {
   exposure_drift: number
   drawdown_alert_pct: number
 }
+
+export interface ResearchGroup {
+  id: string
+  name: string
+  note: string
+  asset_ids: string[]
+}
