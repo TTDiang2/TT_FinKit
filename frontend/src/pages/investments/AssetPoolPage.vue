@@ -56,6 +56,8 @@
         <option value="">全部地区</option>
         <option v-for="v in regionOptions" :key="v" :value="v">{{ v }}</option>
       </select>
+      <button v-if="limitFilter" @click="limitFilter = false"
+        class="px-2 py-1 text-xs rounded-md bg-income-bg text-income-color flex items-center gap-1">仅看限购 <X :size="12" /></button>
       <div class="text-xs text-text-muted ml-auto">研究标的池 · 入池后自动拉取全量历史净值，为因子暴露 / 回测提供数据地基</div>
     </div>
 
@@ -135,9 +137,10 @@
             <td class="px-3 py-2 min-w-[110px]">
               <span v-if="a.purchase_status && a.purchase_status !== '开放申购'"
                 :title="`申购状态：${a.purchase_status}（天天基金）`"
-                class="px-1.5 py-0.5 text-xs rounded-md bg-expense-bg text-expense-color font-medium">{{ a.purchase_status }}</span>
-              <span v-if="a.purchase_limit != null" :title="`日累计申购限额 ${a.purchase_limit} 元（天天基金）`"
-                class="px-1.5 py-0.5 text-xs rounded-md bg-expense-bg text-expense-color font-medium">{{ limitShort(a.purchase_limit) }}</span>
+                class="px-1.5 py-0.5 text-xs rounded-md bg-income-bg text-income-color font-medium">{{ a.purchase_status }}</span>
+              <span v-if="limitShort(a.purchase_limit)" @click="limitFilter = !limitFilter"
+                :title="`日累计申购限额 ${a.purchase_limit} 元（天天基金）· 点击${limitFilter ? '取消' : ''}筛选限购标的`"
+                :class="['px-1.5 py-0.5 text-xs rounded-md font-medium cursor-pointer', limitFilter ? 'bg-accent-primary text-white' : 'bg-income-bg text-income-color hover:bg-bg-secondary']">{{ limitShort(a.purchase_limit) }}</span>
               <button v-if="a.category" @click="categoryFilter = a.category" class="px-2 py-0.5 text-xs rounded-md bg-bg-tertiary hover:bg-bg-secondary">{{ a.category }}</button>
               <span v-if="!a.category && !a.fund_kind && !a.asset_class && !a.region && !(a.auto_tags && a.auto_tags.length)" class="text-text-muted">—</span>
               <div v-if="a.fund_kind || a.asset_class || a.region || (a.auto_tags && a.auto_tags.length)" class="flex flex-wrap gap-1 mt-0.5">
@@ -784,6 +787,7 @@ const kindFilter = ref('')
 const classFilter = ref('')
 const regionFilter = ref('')
 const themeTagFilter = ref('')
+const limitFilter = ref(false)
 const page = ref(1)
 const pageSize = ref(50)
 const total = ref(0)
@@ -887,10 +891,11 @@ function sortVal(a: AssetRow, key: SortKey): number | string | null | undefined 
   }
 }
 
-// 服务端已按 tab+筛选+分页返回当前页；此处仅做页内排序与主题标签页内过滤
+// 服务端已按 tab+筛选+分页返回当前页；此处仅做页内排序与主题标签/限购页内过滤
 const filteredAssets = computed(() => {
   const list = assets.value.filter(a =>
-    !(themeTagFilter.value && !(a.auto_tags || []).includes(themeTagFilter.value)))
+    !(themeTagFilter.value && !(a.auto_tags || []).includes(themeTagFilter.value)) &&
+    !(limitFilter.value && (a.purchase_limit == null || a.purchase_limit >= 100000)))
   return [...list].sort((x, y) => {
     const vx = sortVal(x, sortKey.value)
     const vy = sortVal(y, sortKey.value)
@@ -912,7 +917,7 @@ function limitText(v: number | null | undefined): string {
   return v >= 10000 ? `${(v / 10000).toFixed(v % 10000 === 0 ? 0 : 1)}万` : `${v}`
 }
 function limitShort(v: number | null | undefined): string {
-  if (v == null) return ''
+  if (v == null || v >= 100000) return ''   // ≥10万 ≈ 不限，不标
   return v >= 10000 ? `限${(v / 10000).toFixed(v % 10000 === 0 ? 0 : 1)}万` : `限${+v.toFixed(2)}`
 }
 function shortNote(note: string): string {
