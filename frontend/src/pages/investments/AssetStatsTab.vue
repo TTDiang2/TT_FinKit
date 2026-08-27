@@ -20,7 +20,32 @@
           {{ p.label }}
         </button>
       </div>
-      <div class="text-xs text-text-muted ml-auto">{{ filteredAssets.length }} 个标的有数据（共同交易日对齐）</div>
+      <div class="text-xs text-text-muted ml-auto">{{ selectedSymbols.length }} 个标的已选（共 {{ filteredSelector.length }} 可选）</div>
+    </div>
+
+    <!-- 标的选择面板 -->
+    <div class="bg-white rounded-lg shadow-sm p-3 mb-4">
+      <div class="flex items-center gap-2 mb-2">
+        <span class="text-sm font-medium">标的选择</span>
+        <button @click="selectTop10" class="px-2 py-0.5 text-xs rounded border border-border-default text-text-secondary hover:bg-bg-tertiary">夏普Top10</button>
+        <button @click="selectAllFiltered" class="px-2 py-0.5 text-xs rounded border border-border-default text-text-secondary hover:bg-bg-tertiary">全选当前筛选</button>
+        <button @click="clearSelection" class="px-2 py-0.5 text-xs rounded border border-border-default text-text-secondary hover:bg-bg-tertiary">清空</button>
+        <span class="text-xs text-text-muted ml-auto">按夏普1Y降序 · 仅展示有数据标的</span>
+      </div>
+      <div class="max-h-40 overflow-y-auto border border-border-default rounded-md">
+        <div v-if="!filteredSelector.length" class="py-6 text-center text-sm text-text-muted">无可用标的</div>
+        <label v-for="a in filteredSelector" :key="a.id"
+          :class="['flex items-center gap-2 px-3 py-1.5 text-xs cursor-pointer hover:bg-bg-tertiary border-b border-border-light last:border-0',
+            !a.has_data && 'opacity-40']">
+          <input type="checkbox" :checked="selectedIds.has(a.id)" @change="toggleSelect(a.id)" class="accent-accent-primary" />
+          <span class="font-mono w-20 shrink-0">{{ a.symbol }}</span>
+          <span class="flex-1 truncate">{{ a.name }}</span>
+          <span class="text-text-muted w-20 text-right">{{ a.category || '—' }}</span>
+          <span :class="['w-16 text-right font-mono', (a.sharpe_1y ?? 0) >= 0 ? 'text-income-color' : 'text-expense-color']">
+            {{ a.sharpe_1y != null ? a.sharpe_1y.toFixed(2) : '—' }}
+          </span>
+        </label>
+      </div>
     </div>
 
     <div v-if="loading" class="text-sm text-text-muted py-12 text-center">统计计算中…</div>
@@ -116,7 +141,6 @@ import { ref, computed, defineComponent, h, watch } from 'vue'
 import { Line, Bar, Scatter } from 'vue-chartjs'
 import { Chart as ChartJS, LineElement, PointElement, BarElement, CategoryScale, LinearScale, Tooltip, Legend, Filler } from 'chart.js'
 import { useApi } from '@/composables/useApi'
-import type { ResearchAsset } from '@/types'
 
 ChartJS.register(LineElement, PointElement, BarElement, CategoryScale, LinearScale, Tooltip, Legend, Filler)
 
@@ -166,22 +190,33 @@ interface Snapshot {
 
 const snapshot = ref<Snapshot | null>(null)
 const loading = ref(false)
-const allAssets = ref<ResearchAsset[]>([])
 
-const categories = computed(() => [...new Set(allAssets.value.map(a => a.category).filter(Boolean))] as string[])
+interface SelectorItem {
+  id: string; symbol: string; name: string; status: string; category: string;
+  fund_kind: string; asset_class: string; region: string; is_money_market: boolean;
+  has_data: boolean; sharpe_1y: number | null;
+}
+const selectorItems = ref<SelectorItem[]>([])
+const selectedIds = ref<Set<string>>(new Set())
 
-// Client-side filter → server re-query (keeps correlation/frontier consistent)
-const filteredSymbols = computed(() => {
-  return allAssets.value
-    .filter(a => (!categoryFilter.value || a.category === categoryFilter.value)
-      && (statusFilter.value === 'all' || a.status === statusFilter.value))
-    .map(a => a.symbol)
+const categories = computed(() => [...new Set(selectorItems.value.map(a => a.category).filter(Boolean))] as string[])
+
+// 选中标的的 symbol 列表（驱动后端聚合）
+const selectedSymbols = computed(() =>
+  selectorItems.value.filter(a => selectedIds.value.has(a.id)).map(a => a.symbol))
+
+// 过滤面板用：在 selector 列表内按 category/status 筛选 + 按夏普1Y降序
+const filteredSelector = computed(() => {
+  const list = selectorItems.value.filter(a =>
+    (!categoryFilter.value || a.category === categoryFilter.value) &&
+    (statusFilter.value === 'all' || a.status === statusFilter.value))
+  return [...list].sort((a, b) => (b.sharpe_1y ?? -99) - (a.sharpe_1y ?? -99))
 })
 
-// Assets with ANY data (nav or returns) — assets with no history are excluded
-// so charts don't go empty when "全部" includes freshly-added watchlist items.
+// Assets in snapshot that are also selected (驱动图表)
 const filteredAssets = computed(() =>
-  (snapshot.value?.assets ?? []).filter(a => filteredSymbols.value.includes(a.symbol))
+  (snapshot.value?.assets ?? [])
+    .filter(a => selectedSymbols.value.includes(a.symbol))
     .filter(a => Object.keys(a.nav_normalized).length > 0 || Object.keys(a.returns).length > 0))
 
 // Assets eligible for risk charts (has enough data + not money-market/flat)
@@ -190,10 +225,16 @@ const riskEligibleAssets = computed(() => filteredAssets.value.filter(a => a.eli
 const windowYears = computed(() => (periodDays.value / 365).toFixed(1))
 
 async function load() {
+  if (!selectedSymbols.value.length) {
+    snapshot.value = null
+    return
+  }
   loading.value = true
   try {
-    const params: Record<string, unknown> = { days: periodDays.value }
-    if (filteredSymbols.value.length) params.assets = filteredSymbols.value.join(',')
+    const params: Record<string, unknown> = {
+      days: periodDays.value,
+      assets: selectedSymbols.value.join(','),
+    }
     const res = await api.get('/research/stats/snapshot', { params })
     snapshot.value = res.data
   } catch (e) {
@@ -202,6 +243,25 @@ async function load() {
   } finally {
     loading.value = false
   }
+}
+
+function toggleSelect(id: string) {
+  const s = new Set(selectedIds.value)
+  if (s.has(id)) s.delete(id); else s.add(id)
+  selectedIds.value = s
+}
+
+function selectTop10() {
+  const top = filteredSelector.value.filter(a => a.has_data && a.sharpe_1y != null).slice(0, 10)
+  selectedIds.value = new Set(top.map(a => a.id))
+}
+
+function selectAllFiltered() {
+  selectedIds.value = new Set(filteredSelector.value.map(a => a.id))
+}
+
+function clearSelection() {
+  selectedIds.value = new Set()
 }
 
 async function changePeriod(days: number) {
@@ -474,16 +534,19 @@ const feeBarOpts = {
   },
 }
 
-// Load asset list once for filter options
+// 轻量加载标的列表（无价格载荷），默认选 Top10 夏普1Y
 async function loadAssets() {
   try {
-    const res = await api.get('/research/assets')
-    allAssets.value = res.data
-  } catch { allAssets.value = [] }
+    const res = await api.get('/research/assets/selector')
+    selectorItems.value = (res.data as { items: SelectorItem[] }).items
+    selectTop10()
+  } catch { selectorItems.value = [] }
 }
 
-// watch filters → reload snapshot (server recomputes correlation/frontier consistently)
+// watch filters → reload snapshot
 watch([categoryFilter, statusFilter], () => { load() })
+// 选择变化 → 重新聚合
+watch(selectedIds, () => { load() })
 
 // init
 loadAssets().then(load)

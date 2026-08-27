@@ -2,6 +2,7 @@ from typing import List, Optional
 
 import asyncio
 import json
+import math
 from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -183,22 +184,102 @@ async def _sync_asset_prices_task(asset_id: str, user_id: str) -> None:
             print(f"[research_assets] _sync_asset_prices_task {asset_id} FAILED: {type(e).__name__}: {e}", flush=True)
 
 
+@router.get("/selector")
+async def assets_selector(
+    user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """轻量标的选择器列表（统计页）：无价格载荷，附 has_data 与 1Y 夏普
+    （仅对已有行情数据的标的计算）。"""
+    rows = (await db.execute(
+        select(
+            ResearchAsset.id, ResearchAsset.symbol, ResearchAsset.name,
+            ResearchAsset.status, ResearchAsset.category,
+            ResearchAsset.fund_kind, ResearchAsset.asset_class, ResearchAsset.region,
+            ResearchAsset.exchange, ResearchAsset.is_money_market,
+        ).where(ResearchAsset.user_id == user_id).order_by(ResearchAsset.created_at)
+    )).all()
+
+    sharpe_1y: dict[str, float] = {}
+    has_data: set[str] = set()
+    if rows:
+        cutoff = (date.today() - timedelta(days=400)).isoformat()
+        price_rows = (await db.execute(
+            select(ResearchAssetPrice.asset_id, ResearchAssetPrice.date, ResearchAssetPrice.close)
+            .where(
+                ResearchAssetPrice.asset_id.in_([r.id for r in rows]),
+                ResearchAssetPrice.date >= cutoff,
+            )
+            .order_by(ResearchAssetPrice.asset_id, ResearchAssetPrice.date)
+        )).all()
+        by_asset: dict[str, list[float]] = {}
+        for aid, _d, close in price_rows:
+            by_asset.setdefault(aid, []).append(close)
+        rf_daily = 0.02 / 252
+        for aid, closes in by_asset.items():
+            if len(closes) < 60:
+                continue
+            rets = [closes[i] / closes[i - 1] - 1.0 for i in range(1, len(closes)) if closes[i - 1] > 0]
+            if len(rets) < 60:
+                continue
+            m = sum(rets) / len(rets)
+            sd = math.sqrt(sum((x - m) ** 2 for x in rets) / (len(rets) - 1))
+            has_data.add(aid)
+            if sd > 1e-9:
+                sharpe_1y[aid] = round((m - rf_daily) / sd * math.sqrt(252), 3)
+    return {
+        "items": [
+            {
+                "id": r.id, "symbol": r.symbol, "name": r.name, "status": r.status,
+                "category": r.category or "", "fund_kind": r.fund_kind or "",
+                "asset_class": r.asset_class or "", "region": r.region or "",
+                "exchange": r.exchange or "", "is_money_market": bool(r.is_money_market),
+                "has_data": r.id in has_data, "sharpe_1y": sharpe_1y.get(r.id),
+            } for r in rows
+        ]
+    }
+
+
 @router.get("", response_model=List[ResearchAssetResponse])
 async def list_assets(
     status: Optional[str] = Query(None),
     category: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
+    fund_kind: Optional[str] = Query(None),
+    asset_class: Optional[str] = Query(None),
+    region: Optional[str] = Query(None),
+    page: int = Query(0, ge=0),
+    page_size: int = Query(50, ge=1, le=200),
     user_id: str = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ):
+    """标的列表。page>=1 时返回分页信封 {items,total,page,pages}（大库必需）；
+    不传则维持旧的全量数组行为。指标只对本页标的计算——曾经的超时根因是
+    全库 N+1 全历史价格查询。"""
     q = select(ResearchAsset).where(ResearchAsset.user_id == user_id)
     if status:
         q = q.where(ResearchAsset.status == status)
     if category:
         q = q.where(ResearchAsset.category == category)
+    if fund_kind:
+        q = q.where(ResearchAsset.fund_kind == fund_kind)
+    if asset_class:
+        q = q.where(ResearchAsset.asset_class == asset_class)
+    if region:
+        q = q.where(ResearchAsset.region == region)
     if search:
         like = f"%{search}%"
         q = q.where((ResearchAsset.name.like(like)) | (ResearchAsset.symbol.like(like)))
+
+    if page >= 1:
+        total = (await db.execute(select(func.count()).select_from(q.subquery()))).scalar_one()
+        rows = (await db.execute(
+            q.order_by(ResearchAsset.created_at).offset((page - 1) * page_size).limit(page_size)
+        )).scalars().all()
+        items = [await _respond(db, a) for a in rows]
+        return {"items": items, "total": total, "page": page,
+                "pages": max(1, math.ceil(total / page_size))}
+
     assets = (await db.execute(q.order_by(ResearchAsset.created_at))).scalars().all()
     return [await _respond(db, a) for a in assets]
 

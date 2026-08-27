@@ -196,6 +196,30 @@
       </div>
     </div>
 
+    <!-- 分页器 -->
+    <div v-if="pages > 1" class="flex items-center justify-between mt-4 px-2">
+      <div class="text-sm text-text-secondary">
+        共 {{ total }} 条 · 第 {{ page }} / {{ pages }} 页 · 每页
+        <select v-model="pageSize" class="px-2 py-1 text-sm border border-border-default rounded-md ml-1"
+                @change="page = 1; load()">
+          <option value="25">25</option>
+          <option value="50">50</option>
+          <option value="100">100</option>
+        </select>
+      </div>
+      <div class="flex items-center gap-1">
+        <button @click="page--" :disabled="page <= 1" class="px-3 py-1 text-sm border border-border-default rounded-md disabled:opacity-50 disabled:cursor-not-allowed hover:bg-bg-tertiary">上一页</button>
+        <template v-for="p in visiblePages" :key="p">
+          <button v-if="p === '...'" class="px-3 py-1 text-sm text-text-muted cursor-default">…</button>
+          <button v-else @click="page = p"
+            :class="['px-3 py-1 text-sm rounded-md border', page === p ? 'bg-accent-primary text-white border-accent-primary' : 'border-border-default hover:bg-bg-tertiary']">
+            {{ p }}
+          </button>
+        </template>
+        <button @click="page++" :disabled="page >= pages" class="px-3 py-1 text-sm border border-border-default rounded-md disabled:opacity-50 disabled:cursor-not-allowed hover:bg-bg-tertiary">下一页</button>
+      </div>
+    </div>
+
     <BaseModal v-if="showAddModal" title="添加自选" @close="showAddModal = false">
       <div class="space-y-3">
         <div class="grid grid-cols-2 gap-3">
@@ -684,7 +708,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { Plus, RefreshCw, Search, X, Eye, PackagePlus, Trash2, Edit2, ChevronUp, ChevronDown, ChevronsUpDown, Sparkles, Download, ListChecks } from 'lucide-vue-next'
 import { Line } from 'vue-chartjs'
 import { Chart as ChartJS, LineElement, PointElement, CategoryScale, LinearScale, Tooltip, Legend, Filler } from 'chart.js'
@@ -712,15 +736,52 @@ const kindFilter = ref('')
 const classFilter = ref('')
 const regionFilter = ref('')
 const themeTagFilter = ref('')
+const page = ref(1)
+const pageSize = ref(50)
+const total = ref(0)
+const pages = ref(1)
 const loading = ref(false)
 const refreshing = ref(false)
 
-const watchCount = computed(() => assets.value.filter(a => a.status === 'watchlist').length)
-const pooledCount = computed(() => assets.value.filter(a => a.status === 'pooled').length)
+const watchCount = ref(0)
+const pooledCount = ref(0)
+
+async function loadCounts() {
+  try {
+    const w = await api.get('/research/assets', { params: { page: 1, page_size: 1, status: 'watchlist' } })
+    const p = await api.get('/research/assets', { params: { page: 1, page_size: 1, status: 'pooled' } })
+    watchCount.value = (w.data as { total: number }).total
+    pooledCount.value = (p.data as { total: number }).total
+  } catch { /* 计数失败不打扰 */ }
+}
+
+let searchTimer: ReturnType<typeof setTimeout> | null = null
+watch([activeTab, categoryFilter, kindFilter, classFilter, regionFilter], () => {
+  page.value = 1
+  load()
+})
+watch(search, () => {
+  if (searchTimer) clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => { page.value = 1; load() }, 300)
+})
+watch([page, pageSize], () => { load() })
 const categories = computed(() => [...new Set(assets.value.map(a => a.category).filter(Boolean))] as string[])
 const kindOptions = computed(() => [...new Set(assets.value.map(a => a.fund_kind).filter(Boolean))] as string[])
 const classOptions = computed(() => [...new Set(assets.value.map(a => a.asset_class).filter(Boolean))] as string[])
 const regionOptions = computed(() => [...new Set(assets.value.map(a => a.region).filter(Boolean))] as string[])
+
+// 分页器可见页码（最多显示 7 个：首尾各 1 + 当前附近 3）
+const visiblePages = computed((): (number | '...')[] => {
+  const pagesCount = pages.value
+  const cur = page.value
+  if (pagesCount <= 7) return Array.from({ length: pagesCount }, (_, i) => i + 1)
+  const res: (number | '...')[] = [1]
+  if (cur > 3) res.push('...')
+  for (let i = Math.max(2, cur - 1); i <= Math.min(pagesCount - 1, cur + 1); i++) res.push(i)
+  if (cur < pagesCount - 2) res.push('...')
+  res.push(pagesCount)
+  return res
+})
 
 // ---- sorting ----
 type SortKey = 'name' | 'category' | 'latest_close' | 'ret_1m' | 'ret_1y' | 'ann_volatility' | 'sharpe' | 'sharpe_1y' | 'max_drawdown' | 'points'
@@ -751,18 +812,10 @@ function sortVal(a: AssetRow, key: SortKey): number | string | null | undefined 
   }
 }
 
+// 服务端已按 tab+筛选+分页返回当前页；此处仅做页内排序与主题标签页内过滤
 const filteredAssets = computed(() => {
-  const kw = search.value.trim().toLowerCase()
-  const list = assets.value.filter(a => {
-    if (a.status !== activeTab.value) return false
-    if (categoryFilter.value && a.category !== categoryFilter.value) return false
-    if (kindFilter.value && a.fund_kind !== kindFilter.value) return false
-    if (classFilter.value && a.asset_class !== classFilter.value) return false
-    if (regionFilter.value && a.region !== regionFilter.value) return false
-    if (themeTagFilter.value && !(a.auto_tags || []).includes(themeTagFilter.value)) return false
-    if (kw && !(a.name.toLowerCase().includes(kw) || a.symbol.toLowerCase().includes(kw))) return false
-    return true
-  })
+  const list = assets.value.filter(a =>
+    !(themeTagFilter.value && !(a.auto_tags || []).includes(themeTagFilter.value)))
   return [...list].sort((x, y) => {
     const vx = sortVal(x, sortKey.value)
     const vy = sortVal(y, sortKey.value)
@@ -823,10 +876,22 @@ function errDetail(e: unknown): string {
 async function load() {
   loading.value = true
   try {
-    const res = await api.get('/research/assets')
-    assets.value = res.data as ResearchAsset[]
+    const params: Record<string, unknown> = {
+      page: page.value, page_size: pageSize.value, status: activeTab.value,
+    }
+    if (categoryFilter.value) params.category = categoryFilter.value
+    if (kindFilter.value) params.fund_kind = kindFilter.value
+    if (classFilter.value) params.asset_class = classFilter.value
+    if (regionFilter.value) params.region = regionFilter.value
+    if (search.value.trim()) params.search = search.value.trim()
+    const res = await api.get('/research/assets', { params })
+    const env = res.data as { items: ResearchAsset[]; total: number; pages: number }
+    assets.value = env.items as AssetRow[]
+    total.value = env.total
+    pages.value = env.pages
   } catch (e) {
     show(errDetail(e), 'error')
+    assets.value = []
   } finally {
     loading.value = false
   }
@@ -1389,6 +1454,6 @@ function fmtDate(v?: string): string {
   return v ? v.slice(0, 10) : '—'
 }
 
-onMounted(load)
+onMounted(() => { load(); loadCounts() })
 onUnmounted(() => { if (pollTimer) clearTimeout(pollTimer) })
 </script>
