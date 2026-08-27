@@ -93,6 +93,14 @@ async def run_lightweight_migrations(conn: AsyncConnection) -> None:
     # transactions: 交易地点/附言（银行流水原始字段）
     await _add_column_if_missing(conn, "transactions", "location", "VARCHAR DEFAULT '' NOT NULL")
 
+    # research_assets: purchase quota + multi-dimension auto classification
+    await _add_column_if_missing(conn, "research_assets", "purchase_limit", "FLOAT")
+    await _add_column_if_missing(conn, "research_assets", "fund_kind", "VARCHAR DEFAULT '' NOT NULL")
+    await _add_column_if_missing(conn, "research_assets", "asset_class", "VARCHAR DEFAULT '' NOT NULL")
+    await _add_column_if_missing(conn, "research_assets", "region", "VARCHAR DEFAULT '' NOT NULL")
+    await _add_column_if_missing(conn, "research_assets", "auto_tags", "TEXT DEFAULT '[]' NOT NULL")
+    await _add_column_if_missing(conn, "research_assets", "profile_synced_at", "DATETIME")
+
     # investment_transactions: per-transaction fee (cost, counts into diluted cost basis)
     await _add_column_if_missing(conn, "investment_transactions", "fee", "FLOAT DEFAULT 0 NOT NULL")
 

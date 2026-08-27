@@ -2,7 +2,7 @@ from typing import List, Optional
 
 import asyncio
 import json
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, func, delete
@@ -20,9 +20,14 @@ from ..schemas.research_asset import (
     ResearchPricePoint,
     SyncResult,
     RedeemRule,
+    WatchlistImportRequest,
+    WatchlistImportItem,
+    BatchPoolRequest,
+    BatchRefreshProfilesRequest,
+    ProfileRefreshResult,
 )
 from ..middleware.auth import get_current_user_id
-from ..services import ifind_client
+from ..services import ifind_client, asset_holdings, fund_profile
 from ..services.asset_price_store import (
     sync_asset_prices,
     refresh_all_pooled,
@@ -127,6 +132,12 @@ async def _respond(db: AsyncSession, asset: ResearchAsset) -> ResearchAssetRespo
         data_quality=asset.data_quality or "",
         is_money_market=bool(asset.is_money_market),
         notes=asset.notes,
+        purchase_limit=asset.purchase_limit,
+        fund_kind=asset.fund_kind or "",
+        asset_class=asset.asset_class or "",
+        region=asset.region or "",
+        auto_tags=fund_profile.read_auto_tags(asset.auto_tags),
+        profile_synced_at=str(asset.profile_synced_at) if asset.profile_synced_at else None,
         indicators=compute_asset_indicators(asset, list(prices)),
     )
 
@@ -240,6 +251,16 @@ async def create_asset(
         category=req.category,
         is_money_market=bool(is_money_market),
         notes=req.notes,
+        purchase_limit=req.purchase_limit,
+        mgmt_fee=req.mgmt_fee,
+        custody_fee=req.custody_fee,
+        purchase_fee=req.purchase_fee,
+        sales_service_fee=req.sales_service_fee,
+        redeem_rules=_rules_to_json(req.redeem_rules),
+        redeem_fee_note=req.redeem_fee_note or _rules_to_note(req.redeem_rules),
+        min_purchase=req.min_purchase,
+        redeem_t_days=req.redeem_t_days,
+        liquidity_note=req.liquidity_note,
     )
     db.add(asset)
     await db.commit()
@@ -267,6 +288,157 @@ async def delete_asset(
 
 # Static paths must be registered BEFORE /{asset_id} routes — FastAPI matches
 # in declaration order and would otherwise treat "price-status" as an asset id.
+
+
+@router.post("/import-from-em", response_model=List[WatchlistImportItem])
+async def import_watchlist_from_eastmoney(
+    req: WatchlistImportRequest,
+    user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """天天基金批量导入自选：代码列表 → 自动拉名称/类型/限额/费率并打标。"""
+    symbols = [s.strip() for s in req.symbols if s.strip()]
+    if not symbols:
+        raise HTTPException(status_code=400, detail="symbols 不能为空")
+    if len(symbols) > 100:
+        raise HTTPException(status_code=400, detail="单次最多导入 100 个标的")
+
+    existing = {
+        r[0] for r in (
+            await db.execute(
+                select(ResearchAsset.symbol).where(
+                    ResearchAsset.user_id == user_id,
+                    ResearchAsset.symbol.in_(symbols),
+                )
+            )
+        ).all()
+    }
+
+    table = await asyncio.to_thread(fund_profile.get_purchase_table)
+    out: list[WatchlistImportItem] = []
+    for sym in symbols:
+        row = table.get(sym)
+        if not row:
+            out.append(WatchlistImportItem(symbol=sym, status="failed", error="天天基金无此基金代码"))
+            continue
+        if sym in existing:
+            out.append(WatchlistImportItem(
+                symbol=sym, name=row["name"], status="exists",
+                fund_type=row["fund_type"], daily_limit=row["daily_limit"],
+            ))
+            continue
+        try:
+            fees = await asyncio.to_thread(fund_profile.fetch_fee_page, sym)
+            tags = fund_profile.derive_tags(row["name"], row["fund_type"])
+            asset = ResearchAsset(
+                user_id=user_id,
+                symbol=sym,
+                exchange="FUND_CN",
+                name=row["name"] or sym,
+                asset_type="fund",
+                purchase_limit=row["daily_limit"],
+                min_purchase=row["min_buy"],
+                mgmt_fee=fees.get("mgmt_fee"),
+                custody_fee=fees.get("custody_fee"),
+                sales_service_fee=fees.get("sales_service_fee"),
+                liquidity_note=row["purchase_status"] or "",
+                fund_kind=tags["fund_kind"],
+                asset_class=tags["asset_class"],
+                region=tags["region"],
+                auto_tags=json.dumps(tags["auto_tags"], ensure_ascii=False),
+                profile_synced_at=datetime.utcnow(),
+            )
+            db.add(asset)
+            await db.commit()
+            await db.refresh(asset)
+            existing.add(sym)
+            asyncio.create_task(_sync_asset_prices_task(asset.id, user_id))
+            out.append(WatchlistImportItem(
+                symbol=sym, name=asset.name, status="added",
+                fund_type=row["fund_type"], daily_limit=row["daily_limit"],
+            ))
+        except Exception as e:  # noqa: BLE001 — 单只失败不阻断批次
+            await db.rollback()
+            out.append(WatchlistImportItem(symbol=sym, status="failed", error=f"{type(e).__name__}: {e}"))
+    return out
+
+
+@router.post("/batch-pool", response_model=List[ResearchAssetResponse])
+async def batch_pool_assets(
+    req: BatchPoolRequest,
+    user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """自选批量入池：沿用导入阶段已存的费率/限额，状态→pooled 并触发全量行情同步。"""
+    if not req.ids:
+        raise HTTPException(status_code=400, detail="ids 不能为空")
+    q = select(ResearchAsset).where(
+        ResearchAsset.user_id == user_id, ResearchAsset.id.in_(req.ids)
+    )
+    assets = (await db.execute(q)).scalars().all()
+    pooled: list[ResearchAsset] = []
+    for a in assets:
+        if a.status != "pooled":
+            a.status = "pooled"
+            pooled.append(a)
+    await db.commit()
+    for a in pooled:
+        await db.refresh(a)
+        asyncio.create_task(_pool_sync_task(a.id, user_id))
+    return [await _respond(db, a) for a in assets]
+
+
+@router.post("/batch-refresh-profiles", response_model=List[ProfileRefreshResult])
+async def batch_refresh_profiles(
+    req: BatchRefreshProfilesRequest,
+    user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """批量更新档案（费率/限购额/申购状态）并重算标签 — 数据源天天基金。"""
+    q = select(ResearchAsset).where(ResearchAsset.user_id == user_id)
+    if req.ids:
+        q = q.where(ResearchAsset.id.in_(req.ids))
+    else:
+        q = q.where(ResearchAsset.exchange == "FUND_CN", ResearchAsset.asset_type == "fund")
+    assets = (await db.execute(q.order_by(ResearchAsset.created_at))).scalars().all()
+    if len(assets) > 60:
+        assets = assets[:60]
+
+    table = await asyncio.to_thread(fund_profile.get_purchase_table)
+    results: list[ProfileRefreshResult] = []
+    for a in assets:
+        row = table.get(a.symbol)
+        if not row:
+            results.append(ProfileRefreshResult(
+                asset_id=a.id, symbol=a.symbol, name=a.name,
+                status="skipped", error="天天基金无此代码",
+            ))
+            continue
+        try:
+            fees = await asyncio.to_thread(fund_profile.fetch_fee_page, a.symbol)
+            holdings_payload: dict = {}
+            tags_rebuilt = False
+            try:
+                holdings_payload = await asset_holdings.refresh_holdings(db, a)
+                tags_rebuilt = True
+            except Exception:  # noqa: BLE001 — 持仓失败只降级打标精度
+                pass
+            changed = fund_profile.apply_profile(a, row, fees, holdings_payload or None)
+            await db.commit()
+            results.append(ProfileRefreshResult(
+                asset_id=a.id, symbol=a.symbol, name=a.name,
+                status="updated" if changed else "partial",
+                changed_fields=sorted(set(changed)), tags_rebuilt=tags_rebuilt,
+            ))
+        except Exception as e:  # noqa: BLE001
+            await db.rollback()
+            results.append(ProfileRefreshResult(
+                asset_id=a.id, symbol=a.symbol, name=a.name,
+                status="failed", error=f"{type(e).__name__}: {e}",
+            ))
+    return results
+
+
 @router.post("/refresh-prices", response_model=List[SyncResult])
 async def refresh_prices(
     user_id: str = Depends(get_current_user_id),

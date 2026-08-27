@@ -38,6 +38,14 @@ class ResearchAsset(Base):
     is_money_market = Column(Boolean, default=False)
     notes = Column(Text, nullable=True)
 
+    # Purchase quota + multi-dimension auto classification (from eastmoney profile)
+    purchase_limit = Column(Float, nullable=True)         # 日申购限额(元); None=未设置/不限
+    fund_kind = Column(String, default="")                # ETF/ETF联接/LOF/FOF/指数跟踪/指数增强/主动管理/货币
+    asset_class = Column(String, default="")              # 偏股/偏债/混合/商品-黄金/另类/货币
+    region = Column(String, default="")                   # 境内/QDII-美国/QDII-香港/QDII-新兴市场/QDII-全球/QDII-其他
+    auto_tags = Column(Text, default="[]")                # JSON list — 持仓推断主题标签 e.g. ["重仓黄金","科技"]
+    profile_synced_at = Column(DateTime, nullable=True)   # 最近一次天天基金 profile 拉取时间
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

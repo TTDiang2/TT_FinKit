@@ -463,6 +463,12 @@ export interface ResearchAsset {
   data_quality: string;
   is_money_market: boolean;
   notes: string | null;
+  purchase_limit: number | null;
+  fund_kind: string;
+  asset_class: string;
+  region: string;
+  auto_tags: string[];
+  profile_synced_at: string | null;
   indicators: ResearchAssetIndicators;
 }
 

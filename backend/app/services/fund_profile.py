@@ -1,0 +1,260 @@
+"""Eastmoney (天天基金) fund profile fetcher + rule-based auto tagging.
+
+三个来源：
+1. ``ak.fund_purchase_em()`` 全表一次拉回（缓存 6h）→ 名称/类型/申购状态/
+   赎回状态/购买起点/日累计限额。批量导入与批量更新的主数据源。
+2. ``fundf10.eastmoney.com/jjfl_{code}.html`` → 管理费/托管费/销售服务费
+   （HTML 正则，字段缺失容错返回 None）。
+3. 持仓（十大重仓 + 资产配置）复用 ``asset_holdings`` 的 akshare 链路，
+   仅用于打标，不在此模块重复实现。
+
+``derive_tags`` 是纯函数：region / fund_kind / asset_class / theme tags。
+"""
+from __future__ import annotations
+
+import json
+import re
+import time
+from typing import Callable, Optional
+
+_BROWSER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
+
+_PURCHASE_TTL_S = 6 * 3600
+_purchase_cache: dict = {"ts": 0.0, "table": {}}
+
+
+def _ak():
+    import akshare as ak
+    return ak
+
+
+def get_purchase_table(provider: Optional[Callable[[], object]] = None) -> dict[str, dict]:
+    """code -> {name, fund_type, purchase_status, redeem_status, min_buy, daily_limit}.
+
+    全表缓存 6h；``provider`` 供测试注入假 akshare。
+    """
+    now = time.time()
+    if _purchase_cache["table"] and now - _purchase_cache["ts"] < _PURCHASE_TTL_S:
+        return _purchase_cache["table"]
+
+    df = (provider or (lambda: _ak().fund_purchase_em()))()
+    table: dict[str, dict] = {}
+    if df is not None and not df.empty:
+        def cell(row, col):
+            v = row.get(col)
+            return None if v is None or v != v else str(v).strip()
+
+        for _, row in df.iterrows():
+            code = cell(row, "基金代码")
+            if not code:
+                continue
+            dlimit = cell(row, "日累计限定金额")
+            dlimit_f: Optional[float]
+            try:
+                # 天天基金限购额为数字字符串或“暂不限购”类文本
+                dlimit_f = float(dlimit) if dlimit and re.fullmatch(r"[\d.]+", dlimit.replace(",", "")) else None
+            except ValueError:
+                dlimit_f = None
+            min_buy = cell(row, "购买起点")
+            try:
+                min_buy_f = float(min_buy.replace(",", "")) if min_buy else None
+            except ValueError:
+                min_buy_f = None
+            table[code] = {
+                "name": cell(row, "基金简称") or "",
+                "fund_type": cell(row, "基金类型") or "",
+                "purchase_status": cell(row, "申购状态") or "",
+                "redeem_status": cell(row, "赎回状态") or "",
+                "min_buy": min_buy_f,
+                "daily_limit": dlimit_f,
+            }
+        _purchase_cache["ts"] = now
+        _purchase_cache["table"] = table
+    return table
+
+
+_JJFL_PATTERNS = {
+    "mgmt_fee": r"管理费率</th>\s*<td[^>]*>([\d.]+)\s*%",
+    "custody_fee": r"托管费率</th>\s*<td[^>]*>([\d.]+)\s*%",
+    "sales_service_fee": r"销售服务费率</th>\s*<td[^>]*>([\d.]+)\s*%",
+}
+
+
+def fetch_fee_page(code: str) -> dict[str, Optional[float]]:
+    """费率页 HTML 正则抓取；任何一项缺失为 None，网络失败返回全 None。"""
+    out: dict[str, Optional[float]] = {k: None for k in _JJFL_PATTERNS}
+    try:
+        import requests
+        r = requests.get(
+            f"https://fundf10.eastmoney.com/jjfl_{code}.html",
+            headers={"User-Agent": _BROWSER_UA, "Referer": "https://fundf10.eastmoney.com/"},
+            timeout=15,
+        )
+        r.raise_for_status()
+        html = r.text
+    except Exception:  # noqa: BLE001 — 费率为增强信息，失败不阻断导入
+        return out
+    for key, pat in _JJFL_PATTERNS.items():
+        m = re.search(pat, html)
+        if m:
+            try:
+                out[key] = float(m.group(1))
+            except ValueError:
+                pass
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# derive_tags — 纯函数打标
+# --------------------------------------------------------------------------- #
+
+_REGION_RULES: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("纳斯达克", "标普", "道琼斯", "美国"), "QDII-美国"),
+    (("恒生", "香港", "港股", "港币"), "QDII-香港"),
+    (("新兴市场",), "QDII-新兴市场"),
+    (("日本", "印度", "越南", "欧洲", "德国", "法国"), "QDII-其他"),
+    (("全球", "国际"), "QDII-全球"),
+)
+
+# 名称含海外市场关键词但类型未标 QDII 时同样视为 QDII
+_IMPLICIT_QDII_KEYWORDS = (
+    "纳斯达克", "标普", "道琼斯", "恒生", "香港", "港股", "新兴市场",
+    "日经", "印度", "越南", "德国", "法国", "海外", "美元", "美国",
+)
+
+_THEME_KEYWORDS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("黄金",), "黄金"),
+    (("原油", "石油", "油气", "石化能源"), "原油"),
+    (("半导体", "芯片", "中芯", "华创", "韦尔", "长电", "兆易"), "半导体"),
+    (("科技", "信息技术"), "科技"),
+    (("消费", "白酒", "食品饮料", "酒"), "消费"),
+    (("医药", "医疗", "生物"), "医药"),
+    (("银行", "金融", "证券", "保险"), "大金融"),
+    (("新能源", "光伏", "锂电", "碳中和", "宁德"), "新能源"),
+    (("军工", "国防"), "军工"),
+    (("互联网", "腾讯", "阿里"), "互联网"),
+    (("地产", "房地产"), "地产"),
+    (("基建", "工程"), "基建"),
+)
+
+
+def derive_tags(
+    name: str,
+    fund_type: str = "",
+    top_holdings: Optional[list[dict]] = None,
+    is_money_market: bool = False,
+) -> dict:
+    """从名称/类型/持仓推断 region / fund_kind / asset_class / auto_tags."""
+    n = name or ""
+    t = fund_type or ""
+
+    is_qdii = (
+        "QDII" in t.upper()
+        or "qdii" in n.lower()
+        or any(k in n for k in _IMPLICIT_QDII_KEYWORDS)
+    )
+    region = ""
+    if is_qdii:
+        region = "QDII-其他"
+        for keys, val in _REGION_RULES:
+            if any(k in n for k in keys):
+                region = val
+                break
+    else:
+        region = "境内"
+
+    if is_money_market or "货币" in t:
+        kind = "货币"
+    elif "联接" in n:
+        kind = "ETF联接"
+    elif "ETF" in n.upper() and "%" not in n:
+        kind = "ETF"
+    elif "LOF" in n.upper():
+        kind = "LOF"
+    elif "FOF" in n.upper() or "养老" in t:
+        kind = "FOF"
+    elif "指数" in t or "指数" in n:
+        kind = "指数增强" if "增强" in n else "指数跟踪"
+    else:
+        kind = "主动管理"
+
+    blob = f"{n} {t}"
+    holdings_blob = " ".join(str(h.get("name") or "") for h in (top_holdings or []))
+
+    if kind == "货币":
+        asset_class = "货币"
+    elif "REIT" in blob.upper():
+        asset_class = "另类"
+    elif any(k in blob for k in ("黄金",)):
+        asset_class = "商品-黄金"
+    elif any(k in blob for k in ("原油", "石油", "商品", "豆粕", "期货")):
+        asset_class = "另类"
+    elif "债券" in t or ("债" in n and "转债" not in n and "股票" not in t):
+        asset_class = "偏债"
+    elif "股票" in t or "偏股" in t or is_qdii or kind in ("ETF", "ETF联接", "指数跟踪", "指数增强"):
+        asset_class = "偏股"
+    elif "混合" in t:
+        asset_class = "混合"
+    else:
+        equity_ratio = sum(float(h.get("ratio") or 0) for h in (top_holdings or []))
+        if equity_ratio >= 35:
+            asset_class = "偏股"
+        elif 5 < equity_ratio < 35:
+            asset_class = "混合"
+        else:
+            asset_class = ""
+
+    tags: list[str] = []
+    for keys, label in _THEME_KEYWORDS:
+        if any(k in n or k in holdings_blob for k in keys):
+            tags.append(label)
+    if any("HK" in str(h.get("name") or "").upper() or any(c.isascii() and c.isalpha() for c in str(h.get("name") or "")) for h in (top_holdings or [])):
+        tags.append("含外盘持仓")
+
+    return {"fund_kind": kind, "asset_class": asset_class, "region": region, "auto_tags": tags}
+
+
+def apply_profile(asset, profile: dict, fees: dict, holdings_payload: dict | None = None) -> list[str]:
+    """把 profile/fees 写到 ResearchAsset 上，重算标签。返回被改动的字段名。"""
+    changed: list[str] = []
+
+    def set_field(field, new_val):
+        old = getattr(asset, field)
+        if new_val is not None and new_val != old:
+            setattr(asset, field, new_val)
+            changed.append(field)
+
+    if profile.get("name"):
+        set_field("name", profile["name"])
+    set_field("min_purchase", profile.get("min_buy"))
+    set_field("purchase_limit", profile.get("daily_limit"))
+    for field in ("mgmt_fee", "custody_fee", "sales_service_fee"):
+        set_field(field, fees.get(field))
+    set_field("liquidity_note", profile.get("purchase_status") or "")
+
+    tags = derive_tags(
+        asset.name, profile.get("fund_type") or "", (holdings_payload or {}).get("top_holdings"),
+        bool(asset.is_money_market),
+    )
+    before_tags = getattr(asset, "auto_tags") or "[]"
+    new_tags_json = json.dumps(tags["auto_tags"], ensure_ascii=False)
+    for field in ("fund_kind", "asset_class", "region"):
+        set_field(field, tags[field])
+    if new_tags_json != before_tags:
+        setattr(asset, "auto_tags", new_tags_json)
+        changed.append("auto_tags")
+
+    from datetime import datetime
+    asset.profile_synced_at = datetime.utcnow()
+    return changed
+
+
+def read_auto_tags(raw: Optional[str]) -> list[str]:
+    try:
+        data = json.loads(raw or "[]")
+        return [str(x) for x in data] if isinstance(data, list) else []
+    except (ValueError, TypeError):
+        return []

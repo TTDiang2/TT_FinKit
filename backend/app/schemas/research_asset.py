@@ -39,12 +39,29 @@ class ResearchAssetCreate(BaseModel):
     category: str = ""
     is_money_market: bool = False
     notes: Optional[str] = None
+    # Full watchlist form (parity with pool form)
+    purchase_limit: Optional[float] = None
+    mgmt_fee: Optional[float] = None
+    custody_fee: Optional[float] = None
+    purchase_fee: Optional[float] = None
+    sales_service_fee: Optional[float] = None
+    redeem_rules: List[RedeemRule] = []
+    redeem_fee_note: str = ""
+    min_purchase: Optional[float] = None
+    redeem_t_days: Optional[int] = None
+    liquidity_note: str = ""
+
+    @field_validator("redeem_rules")
+    @classmethod
+    def _check_rules_create(cls, v):
+        return validate_redeem_rules(v)
 
 
 class ResearchAssetPool(BaseModel):
     """Pooling form: fee terms + optional corrections."""
     name: Optional[str] = None
     category: Optional[str] = None
+    purchase_limit: Optional[float] = None
     mgmt_fee: Optional[float] = None
     custody_fee: Optional[float] = None
     purchase_fee: Optional[float] = None
@@ -79,6 +96,7 @@ class ResearchAssetUpdate(BaseModel):
     redeem_t_days: Optional[int] = None
     liquidity_note: Optional[str] = None
     data_quality: Optional[str] = None
+    purchase_limit: Optional[float] = None
     is_money_market: Optional[bool] = None
     notes: Optional[str] = None
 
@@ -138,6 +156,12 @@ class ResearchAssetResponse(BaseModel):
     data_quality: str = ""
     is_money_market: bool
     notes: Optional[str] = None
+    purchase_limit: Optional[float] = None
+    fund_kind: str = ""
+    asset_class: str = ""
+    region: str = ""
+    auto_tags: List[str] = []
+    profile_synced_at: Optional[str] = None
     indicators: ResearchAssetIndicators = ResearchAssetIndicators()
 
 
@@ -174,4 +198,37 @@ class SyncResult(BaseModel):
     source: str = ""
     begin: str = ""
     end: str = ""
+    error: Optional[str] = None
+
+
+class WatchlistImportRequest(BaseModel):
+    """天天基金批量导入自选：纯代码列表，信息全部自动拉取。"""
+    symbols: List[str]
+
+
+class WatchlistImportItem(BaseModel):
+    symbol: str
+    name: str = ""
+    status: Literal["added", "exists", "failed"]
+    fund_type: str = ""
+    daily_limit: Optional[float] = None
+    error: Optional[str] = None
+
+
+class BatchPoolRequest(BaseModel):
+    ids: List[str]
+    apply_defaults: bool = True       # true=入池时沿用导入/自选阶段存的费率限额
+
+
+class BatchRefreshProfilesRequest(BaseModel):
+    ids: Optional[List[str]] = None   # None → 全部基金型标的
+
+
+class ProfileRefreshResult(BaseModel):
+    asset_id: str
+    symbol: str
+    name: str
+    status: Literal["updated", "partial", "failed", "skipped"] = "updated"
+    changed_fields: List[str] = []
+    tags_rebuilt: bool = False
     error: Optional[str] = None

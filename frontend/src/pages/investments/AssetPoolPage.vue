@@ -16,6 +16,12 @@
         <button @click="refreshAll" :disabled="refreshing" class="px-4 py-2 text-sm rounded-md border border-border-default text-text-secondary hover:bg-bg-tertiary flex items-center gap-1 disabled:opacity-50">
           <RefreshCw :size="14" :class="refreshing ? 'animate-spin' : ''" /> 刷新行情
         </button>
+        <button @click="showImportModal = true" class="px-4 py-2 text-sm rounded-md border border-border-default text-text-secondary hover:bg-bg-tertiary flex items-center gap-1">
+          <Download :size="14" /> 天天基金导入
+        </button>
+        <button @click="openBatchModal" class="px-4 py-2 text-sm rounded-md border border-border-default text-text-secondary hover:bg-bg-tertiary flex items-center gap-1">
+          <ListChecks :size="14" /> 批量管理
+        </button>
         <button @click="openAddModal" class="px-4 py-2 text-sm rounded-md bg-accent-primary text-white hover:bg-accent-hover flex items-center gap-1">
           <Plus :size="14" /> 添加自选
         </button>
@@ -34,6 +40,18 @@
       <select v-model="categoryFilter" class="px-3 py-2 text-sm border border-border-default rounded-md">
         <option value="">全部分类</option>
         <option v-for="c in categories" :key="c" :value="c">{{ c }}</option>
+      </select>
+      <select v-model="kindFilter" class="px-3 py-2 text-sm border border-border-default rounded-md" title="类型：ETF/指数跟踪/主动管理等">
+        <option value="">全部类型</option>
+        <option v-for="v in kindOptions" :key="v" :value="v">{{ v }}</option>
+      </select>
+      <select v-model="classFilter" class="px-3 py-2 text-sm border border-border-default rounded-md" title="资产类别：偏股/偏债/另类等">
+        <option value="">全部资产类别</option>
+        <option v-for="v in classOptions" :key="v" :value="v">{{ v }}</option>
+      </select>
+      <select v-model="regionFilter" class="px-3 py-2 text-sm border border-border-default rounded-md" title="地区：境内/QDII细分">
+        <option value="">全部地区</option>
+        <option v-for="v in regionOptions" :key="v" :value="v">{{ v }}</option>
       </select>
       <div class="text-xs text-text-muted ml-auto">研究标的池 · 入池后自动拉取全量历史净值，为因子暴露 / 回测提供数据地基</div>
     </div>
@@ -100,6 +118,7 @@
               <th class="px-3 py-2 font-medium text-right min-w-[150px]">赎回费</th>
               <th class="px-3 py-2 font-medium text-right min-w-[70px]">托管费</th>
               <th class="px-3 py-2 font-medium text-right min-w-[80px]">销售服务费</th>
+              <th class="px-3 py-2 font-medium text-right min-w-[90px]" title="日累计申购限额（元），空=不限/未设置">限额额度</th>
             </template>
             <th class="px-3 py-2 font-medium text-right">操作</th>
           </tr>
@@ -110,9 +129,16 @@
               <div class="font-medium text-text-primary">{{ a.name }}<span v-if="a.is_money_market" class="ml-1 text-xs text-text-muted">货币</span></div>
               <div class="text-xs text-text-muted">{{ a.symbol }} · {{ EXCHANGE_LABELS[a.exchange] || a.exchange || '—' }}</div>
             </td>
-            <td class="px-3 py-2">
+            <td class="px-3 py-2 min-w-[110px]">
               <button v-if="a.category" @click="categoryFilter = a.category" class="px-2 py-0.5 text-xs rounded-md bg-bg-tertiary hover:bg-bg-secondary">{{ a.category }}</button>
-              <span v-else class="text-text-muted">—</span>
+              <span v-if="!a.category && !a.fund_kind && !a.asset_class && !a.region" class="text-text-muted">—</span>
+              <div v-if="a.fund_kind || a.asset_class || a.region || (a.auto_tags && a.auto_tags.length)" class="flex flex-wrap gap-1 mt-0.5">
+                <span v-if="a.fund_kind" class="px-1.5 py-0.5 text-xs rounded-md bg-purple-50 text-purple-700">{{ a.fund_kind }}</span>
+                <span v-if="a.asset_class" class="px-1.5 py-0.5 text-xs rounded-md bg-sky-50 text-sky-700">{{ a.asset_class }}</span>
+                <span v-if="a.region" :class="['px-1.5 py-0.5 text-xs rounded-md', a.region === '境内' ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700']">{{ a.region }}</span>
+                <span v-for="t in (a.auto_tags || [])" :key="t" :title="`主题标签（来自持仓/名称推断）· 点击筛选`" @click="themeTagFilter = themeTagFilter === t ? '' : t"
+                  :class="['px-1.5 py-0.5 text-xs rounded-md cursor-pointer', themeTagFilter === t ? 'bg-accent-primary text-white' : 'bg-bg-tertiary text-text-secondary hover:bg-bg-secondary']">{{ t }}</span>
+              </div>
             </td>
             <td class="px-3 py-2 text-right">
               <div>{{ a.indicators.latest_close != null ? fmt4(a.indicators.latest_close) : '—' }}</div>
@@ -138,6 +164,11 @@
               <td class="px-3 py-2 text-right text-xs" :title="a.redeem_fee_note || ''">{{ shortNote(a.redeem_fee_note) }}</td>
               <td class="px-3 py-2 text-right">{{ feePct(a.custody_fee) }}</td>
               <td class="px-3 py-2 text-right">{{ feePct(a.sales_service_fee) }}</td>
+              <td class="px-3 py-2 text-right" :class="a.purchase_limit ? 'text-text-primary' : 'text-text-muted'">
+                <span :title="a.profile_synced_at ? `档案更新于 ${a.profile_synced_at.slice(0, 16)}` : '未从天天基金同步过档案'">
+                  {{ limitText(a.purchase_limit) }}
+                </span>
+              </td>
             </template>
             <td class="px-3 py-2 text-right whitespace-nowrap">
               <div class="flex items-center justify-end gap-2">
@@ -152,10 +183,10 @@
             </td>
           </tr>
           <tr v-if="!loading && !filteredAssets.length">
-            <td :colspan="activeTab === 'pooled' ? 17 : 12" class="px-4 py-8 text-center text-text-muted">{{ activeTab === 'watchlist' ? '暂无自选标的，点击右上角「添加自选」' : '暂无入池标的，从自选列表点击「入池」' }}</td>
+            <td :colspan="activeTab === 'pooled' ? 17 : 11" class="px-4 py-8 text-center text-text-muted">{{ activeTab === 'watchlist' ? '暂无自选标的，点击右上角「添加自选」或「天天基金导入」' : '暂无入池标的，从自选列表点击「入池」' }}</td>
           </tr>
           <tr v-if="loading">
-            <td :colspan="activeTab === 'pooled' ? 17 : 12" class="px-4 py-8 text-center text-text-muted">加载中…</td>
+            <td :colspan="activeTab === 'pooled' ? 17 : 11" class="px-4 py-8 text-center text-text-muted">加载中…</td>
           </tr>
         </tbody>
       </table>
@@ -190,6 +221,42 @@
           <div><label class="block text-sm mb-1">分类</label><input v-model.trim="addForm.category" class="w-full px-3 py-2 border border-border-default rounded-md" placeholder="如 核心-宽基" /></div>
         </div>
         <div><label class="block text-sm mb-1">名称</label><input v-model.trim="addForm.name" class="w-full px-3 py-2 border border-border-default rounded-md" placeholder="留空自动补全" /></div>
+
+        <div class="border-t border-border-default pt-3">
+          <div class="text-xs text-text-muted mb-2">费用与限额（可留空，入池或批量更新时从天天基金自动拉取）</div>
+          <div class="grid grid-cols-4 gap-3">
+            <div><label class="block text-sm mb-1">管理费 %/年</label><input v-model.number="addForm.mgmt_fee" type="number" step="0.01" min="0" class="w-full px-3 py-2 border border-border-default rounded-md" placeholder="如 1.5" /></div>
+            <div><label class="block text-sm mb-1">托管费 %/年</label><input v-model.number="addForm.custody_fee" type="number" step="0.01" min="0" class="w-full px-3 py-2 border border-border-default rounded-md" placeholder="如 0.25" /></div>
+            <div><label class="block text-sm mb-1">申购费 %</label><input v-model.number="addForm.purchase_fee" type="number" step="0.01" min="0" class="w-full px-3 py-2 border border-border-default rounded-md" placeholder="如 0.15" /></div>
+            <div><label class="block text-sm mb-1">销售服务费 %/年</label><input v-model.number="addForm.sales_service_fee" type="number" step="0.01" min="0" class="w-full px-3 py-2 border border-border-default rounded-md" placeholder="C类如 0.35" /></div>
+          </div>
+        </div>
+
+        <div>
+          <label class="block text-sm mb-1">赎回费规则（阶梯）</label>
+          <div class="space-y-1.5">
+            <div v-for="(r, i) in addForm.redeem_rules" :key="i" class="flex items-center gap-2">
+              <span class="text-xs text-text-muted w-16 shrink-0">持有天数</span>
+              <input v-model.number="r.days" type="number" min="1" class="w-24 px-2 py-1.5 text-sm border border-border-default rounded-md" placeholder="空=兜底" />
+              <span class="text-xs text-text-muted">天以内</span>
+              <input v-model.number="r.fee_rate" type="number" step="0.05" min="0" class="w-24 px-2 py-1.5 text-sm border border-border-default rounded-md" placeholder="费率%" />
+              <span class="text-xs text-text-muted">%</span>
+              <button v-if="addForm.redeem_rules.length > 1" @click="addForm.redeem_rules.splice(i, 1)" class="p-1 text-text-muted hover:text-expense-color"><Trash2 :size="13" /></button>
+            </div>
+          </div>
+          <div class="flex items-center gap-2 mt-1.5">
+            <button @click="addForm.redeem_rules.push({ days: null, fee_rate: 0 })" class="text-xs px-2 py-1 rounded border border-border-default text-text-secondary hover:bg-bg-tertiary flex items-center gap-1"><Plus :size="12" /> 加一档</button>
+            <span class="text-xs text-text-muted">末档留空天数 = 兜底费率；预览：{{ addRulesPreview }}</span>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-4 gap-3">
+          <div><label class="block text-sm mb-1">起购金额（元）</label><input v-model.number="addForm.min_purchase" type="number" step="1" min="0" class="w-full px-3 py-2 border border-border-default rounded-md" placeholder="如 10" /></div>
+          <div><label class="block text-sm mb-1">限额额度（元/日）</label><input v-model.number="addForm.purchase_limit" type="number" step="1000" min="0" class="w-full px-3 py-2 border border-border-default rounded-md" placeholder="限购时填，如 1000" /></div>
+          <div><label class="block text-sm mb-1">赎回到账 T+N</label><input v-model.number="addForm.redeem_t_days" type="number" step="1" min="0" class="w-full px-3 py-2 border border-border-default rounded-md" placeholder="如 2" /></div>
+          <div><label class="block text-sm mb-1">流动性备注</label><input v-model.trim="addForm.liquidity_note" class="w-full px-3 py-2 border border-border-default rounded-md" placeholder="额度/QDII时效等" /></div>
+        </div>
+        <div><label class="block text-sm mb-1">备注</label><input v-model.trim="addForm.notes" class="w-full px-3 py-2 border border-border-default rounded-md" placeholder="研究想法、关注理由等" /></div>
         <div class="text-xs text-text-muted">名称留空将通过行情源自动补全；货币基金会自动识别并跳过波动率 / 夏普计算</div>
       </div>
       <template #footer>
@@ -224,8 +291,9 @@
             <span class="text-xs text-text-muted">末档留空天数 = 兜底费率；预览：{{ rulesPreview }}</span>
           </div>
         </div>
-        <div class="grid grid-cols-3 gap-3">
+        <div class="grid grid-cols-4 gap-3">
           <div><label class="block text-sm mb-1">起购金额（元）</label><input v-model.number="poolForm.min_purchase" type="number" step="1" min="0" class="w-full px-3 py-2 border border-border-default rounded-md" placeholder="如 10" /></div>
+          <div><label class="block text-sm mb-1">限额额度（元/日）</label><input v-model.number="poolForm.purchase_limit" type="number" step="1000" min="0" class="w-full px-3 py-2 border border-border-default rounded-md" placeholder="限购时填" /></div>
           <div><label class="block text-sm mb-1">赎回到账 T+N</label><input v-model.number="poolForm.redeem_t_days" type="number" step="1" min="0" class="w-full px-3 py-2 border border-border-default rounded-md" placeholder="如 2" /></div>
           <div>
             <label class="block text-sm mb-1">数据质量</label>
@@ -273,8 +341,9 @@
             <span class="text-xs text-text-muted">预览：{{ editRulesPreview }}</span>
           </div>
         </div>
-        <div class="grid grid-cols-3 gap-3">
+        <div class="grid grid-cols-4 gap-3">
           <div><label class="block text-sm mb-1">起购金额（元）</label><input v-model.number="editForm.min_purchase" type="number" step="1" min="0" class="w-full px-3 py-2 border border-border-default rounded-md" /></div>
+          <div><label class="block text-sm mb-1">限额额度（元/日）</label><input v-model.number="editForm.purchase_limit" type="number" step="1000" min="0" class="w-full px-3 py-2 border border-border-default rounded-md" /></div>
           <div><label class="block text-sm mb-1">赎回到账 T+N</label><input v-model.number="editForm.redeem_t_days" type="number" step="1" min="0" class="w-full px-3 py-2 border border-border-default rounded-md" /></div>
           <div>
             <label class="block text-sm mb-1">数据质量</label>
@@ -291,6 +360,78 @@
       <template #footer>
         <button @click="editTarget = null" class="px-4 py-2 text-text-secondary">取消</button>
         <button @click="submitEdit" :disabled="editing" class="px-4 py-2 bg-accent-primary text-white rounded-md hover:bg-accent-hover disabled:opacity-50">{{ editing ? '保存中…' : '保存' }}</button>
+      </template>
+    </BaseModal>
+
+    <!-- 天天基金批量导入 -->
+    <BaseModal v-if="showImportModal" title="天天基金批量导入自选" width="max-w-2xl" @close="showImportModal = false">
+      <div class="space-y-3">
+        <div class="text-xs text-text-muted">粘贴基金代码（每行一个，也支持空格/逗号分隔）。自动拉取：名称、类型、申购状态、限额额度、费率，并按名称与类型自动打标。已存在的代码自动跳过。</div>
+        <textarea v-model="importText" rows="6" class="w-full px-3 py-2 text-sm border border-border-default rounded-md font-mono" placeholder="000217&#10;006432&#10;161005"></textarea>
+        <div v-if="importResults.length" class="max-h-60 overflow-y-auto border border-border-default rounded-md">
+          <table class="w-full text-xs">
+            <thead class="bg-bg-tertiary"><tr>
+              <th class="px-2 py-1.5 text-left">代码</th><th class="px-2 py-1.5 text-left">名称</th>
+              <th class="px-2 py-1.5 text-left">结果</th><th class="px-2 py-1.5 text-left">备注</th>
+            </tr></thead>
+            <tbody>
+              <tr v-for="r in importResults" :key="r.symbol" class="border-t border-border-default">
+                <td class="px-2 py-1 font-mono">{{ r.symbol }}</td>
+                <td class="px-2 py-1">{{ r.name || '—' }}</td>
+                <td class="px-2 py-1">
+                  <span :class="['px-1.5 py-0.5 rounded', r.status === 'added' ? 'bg-income-bg text-income-color' : r.status === 'exists' ? 'bg-bg-tertiary text-text-secondary' : 'bg-expense-bg text-expense-color']">
+                    {{ r.status === 'added' ? '已添加' : r.status === 'exists' ? '已存在' : '失败' }}
+                  </span>
+                </td>
+                <td class="px-2 py-1 text-text-muted">{{ r.error || r.fund_type + (r.daily_limit != null ? ` · 限额${r.daily_limit}元` : '') }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <template #footer>
+        <button @click="showImportModal = false" class="px-4 py-2 text-text-secondary">关闭</button>
+        <button @click="importFromEm" :disabled="importing || !importSymbols.length" class="px-4 py-2 bg-accent-primary text-white rounded-md hover:bg-accent-hover disabled:opacity-50">
+          {{ importing ? `导入中（0/${importSymbols.length}）…` : `导入 ${importSymbols.length} 个标的` }}
+        </button>
+      </template>
+    </BaseModal>
+
+    <!-- 批量管理：勾选入池 / 勾选更新档案 -->
+    <BaseModal v-if="showBatchModal" title="批量管理（入池 / 更新档案）" width="max-w-2xl" @close="showBatchModal = false">
+      <div class="space-y-3">
+        <div class="flex items-center gap-3 text-sm">
+          <label class="flex items-center gap-1.5 cursor-pointer">
+            <input type="checkbox" :checked="allChecked" @change="toggleAll" /> 全选
+          </label>
+          <span class="text-text-muted text-xs">已选 {{ selectedIds.size }} 个 · 从下方列表勾选后执行操作</span>
+          <span v-if="batchBusy" class="ml-auto text-accent-primary">{{ batchMsg }}</span>
+        </div>
+        <div class="max-h-80 overflow-y-auto border border-border-default rounded-md divide-y divide-border-default">
+          <label v-for="a in assets" :key="a.id" class="flex items-center gap-3 px-3 py-2 hover:bg-bg-tertiary/50 cursor-pointer">
+            <input type="checkbox" :checked="selectedIds.has(a.id)" @change="toggleSelect(a.id)" />
+            <span class="font-medium w-40 truncate">{{ a.name }}</span>
+            <span class="text-xs text-text-muted font-mono w-16">{{ a.symbol }}</span>
+            <span :class="['px-1.5 py-0.5 text-xs rounded', a.status === 'pooled' ? 'bg-income-bg text-income-color' : 'bg-bg-tertiary text-text-secondary']">
+              {{ a.status === 'pooled' ? '已入池' : '自选' }}
+            </span>
+            <span v-if="a.exchange !== 'FUND_CN'" class="text-xs text-warning">非基金型 · 档案更新不适用</span>
+          </label>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <button @click="runBatchPool" :disabled="batchBusy || !selectedIds.size"
+            class="px-4 py-2 rounded-md border border-border-default text-sm hover:bg-bg-tertiary disabled:opacity-40">
+            入池所选自选
+          </button>
+          <button @click="runBatchRefresh" :disabled="batchBusy || !selectedIds.size"
+            class="px-4 py-2 rounded-md bg-accent-primary text-white hover:bg-accent-hover disabled:opacity-40">
+            更新所选档案（费率/限额/标签）
+          </button>
+        </div>
+        <div v-if="refreshSummary" class="text-xs text-text-muted whitespace-pre-line border-t border-border-default pt-2">{{ refreshSummary }}</div>
+      </div>
+      <template #footer>
+        <button @click="showBatchModal = false" class="px-4 py-2 text-text-secondary">关闭</button>
       </template>
     </BaseModal>
 
@@ -508,7 +649,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { Plus, RefreshCw, Search, X, Eye, PackagePlus, Trash2, Edit2, ChevronUp, ChevronDown, ChevronsUpDown, Sparkles } from 'lucide-vue-next'
+import { Plus, RefreshCw, Search, X, Eye, PackagePlus, Trash2, Edit2, ChevronUp, ChevronDown, ChevronsUpDown, Sparkles, Download, ListChecks } from 'lucide-vue-next'
 import { Line } from 'vue-chartjs'
 import { Chart as ChartJS, LineElement, PointElement, CategoryScale, LinearScale, Tooltip, Legend, Filler } from 'chart.js'
 import { useApi } from '@/composables/useApi'
@@ -531,12 +672,19 @@ const assets = ref<AssetRow[]>([])
 const activeTab = ref<'watchlist' | 'pooled' | 'stats'>('watchlist')
 const search = ref('')
 const categoryFilter = ref('')
+const kindFilter = ref('')
+const classFilter = ref('')
+const regionFilter = ref('')
+const themeTagFilter = ref('')
 const loading = ref(false)
 const refreshing = ref(false)
 
 const watchCount = computed(() => assets.value.filter(a => a.status === 'watchlist').length)
 const pooledCount = computed(() => assets.value.filter(a => a.status === 'pooled').length)
 const categories = computed(() => [...new Set(assets.value.map(a => a.category).filter(Boolean))] as string[])
+const kindOptions = computed(() => [...new Set(assets.value.map(a => a.fund_kind).filter(Boolean))] as string[])
+const classOptions = computed(() => [...new Set(assets.value.map(a => a.asset_class).filter(Boolean))] as string[])
+const regionOptions = computed(() => [...new Set(assets.value.map(a => a.region).filter(Boolean))] as string[])
 
 // ---- sorting ----
 type SortKey = 'name' | 'category' | 'latest_close' | 'ret_1m' | 'ret_1y' | 'ann_volatility' | 'sharpe' | 'sharpe_1y' | 'max_drawdown' | 'points'
@@ -572,6 +720,10 @@ const filteredAssets = computed(() => {
   const list = assets.value.filter(a => {
     if (a.status !== activeTab.value) return false
     if (categoryFilter.value && a.category !== categoryFilter.value) return false
+    if (kindFilter.value && a.fund_kind !== kindFilter.value) return false
+    if (classFilter.value && a.asset_class !== classFilter.value) return false
+    if (regionFilter.value && a.region !== regionFilter.value) return false
+    if (themeTagFilter.value && !(a.auto_tags || []).includes(themeTagFilter.value)) return false
     if (kw && !(a.name.toLowerCase().includes(kw) || a.symbol.toLowerCase().includes(kw))) return false
     return true
   })
@@ -590,6 +742,10 @@ const filteredAssets = computed(() => {
 
 function feePct(v: number | null | undefined): string {
   return v == null ? '—' : v.toFixed(2) + '%'
+}
+function limitText(v: number | null | undefined): string {
+  if (v == null) return '不限'
+  return v >= 10000 ? `${(v / 10000).toFixed(v % 10000 === 0 ? 0 : 1)}万` : `${v}`
 }
 function shortNote(note: string): string {
   if (!note) return '—'
@@ -642,10 +798,26 @@ async function load() {
 
 const showAddModal = ref(false)
 const adding = ref(false)
-const addForm = ref({ symbol: '', exchange: 'FUND_CN', asset_type: 'fund', category: '', name: '' })
+interface AddForm {
+  symbol: string; exchange: string; asset_type: string; category: string; name: string; notes: string;
+  mgmt_fee: number | null; custody_fee: number | null; purchase_fee: number | null; sales_service_fee: number | null;
+  redeem_rules: RedeemRuleForm[]; min_purchase: number | null; purchase_limit: number | null;
+  redeem_t_days: number | null; liquidity_note: string
+}
+function emptyAddForm(): AddForm {
+  return {
+    symbol: '', exchange: 'FUND_CN', asset_type: 'fund', category: '', name: '', notes: '',
+    mgmt_fee: null, custody_fee: null, purchase_fee: null, sales_service_fee: null,
+    redeem_rules: [{ days: 7, fee_rate: 1.5 }, { days: 30, fee_rate: 0.5 }, { days: null, fee_rate: 0 }],
+    min_purchase: null, purchase_limit: null, redeem_t_days: null, liquidity_note: '',
+  }
+}
+// RedeemRuleForm 在下方 poolForm 区域定义（类型提升不适用于 const）——前置声明见 interface
+const addForm = ref<AddForm>(emptyAddForm())
+const addRulesPreview = computed(() => addForm.value.redeem_rules.map(r => r.days == null ? `其余 ${r.fee_rate}%` : `<${r.days}天 ${r.fee_rate}%`).join('，'))
 
 function openAddModal() {
-  addForm.value = { symbol: '', exchange: 'FUND_CN', asset_type: 'fund', category: '', name: '' }
+  addForm.value = emptyAddForm()
   showAddModal.value = true
 }
 
@@ -663,17 +835,108 @@ async function submitAdd() {
   }
 }
 
+// ---- 天天基金批量导入 ----
+const showImportModal = ref(false)
+const importing = ref(false)
+const importText = ref('')
+const importResults = ref<{ symbol: string; name: string; status: string; fund_type: string; daily_limit: number | null; error: string | null }[]>([])
+const importSymbols = computed(() =>
+  [...new Set(importText.value.split(/[\s,，;；]+/).map(s => s.trim()).filter(s => /^\d{6}$/.test(s)))]
+)
+
+async function importFromEm() {
+  importing.value = true
+  try {
+    const { data } = await api.post('/research/assets/import-from-em', { symbols: importSymbols.value })
+    importResults.value = data
+    const added = data.filter((r: any) => r.status === 'added').length
+    const failed = data.filter((r: any) => r.status === 'failed').length
+    show(`导入完成：新增 ${added}，已存在 ${data.length - added - failed}，失败 ${failed}`, added > 0 ? 'success' : 'info')
+    await load()
+  } catch (e) {
+    show(errDetail(e), 'error')
+  } finally {
+    importing.value = false
+  }
+}
+
+// ---- 批量管理：入池 / 更新档案 ----
+const showBatchModal = ref(false)
+const selectedIds = ref<Set<string>>(new Set())
+const batchBusy = ref(false)
+const batchMsg = ref('')
+const refreshSummary = ref('')
+
+function openBatchModal() {
+  selectedIds.value = new Set()
+  refreshSummary.value = ''
+  showBatchModal.value = true
+}
+function toggleSelect(id: string) {
+  const s = new Set(selectedIds.value)
+  if (s.has(id)) s.delete(id)
+  else s.add(id)
+  selectedIds.value = s
+}
+const allChecked = computed(() => assets.value.length > 0 && assets.value.every(a => selectedIds.value.has(a.id)))
+function toggleAll() {
+  if (allChecked.value) selectedIds.value = new Set()
+  else selectedIds.value = new Set(assets.value.map(a => a.id))
+}
+
+async function runBatchPool() {
+  const ids = [...selectedIds.value]
+  if (!ids.length || !confirm(`将所选 ${ids.length} 个自选标的入池（沿用已有费率限额），并后台拉取全量净值？`)) return
+  batchBusy.value = true
+  batchMsg.value = '入池中…'
+  try {
+    await api.post('/research/assets/batch-pool', { ids, apply_defaults: true })
+    show(`已批量入池 ${ids.length} 个标的`, 'success')
+    showBatchModal.value = false
+    activeTab.value = 'pooled'
+    await load()
+  } catch (e) {
+    show(errDetail(e), 'error')
+  } finally {
+    batchBusy.value = false
+    batchMsg.value = ''
+  }
+}
+
+async function runBatchRefresh() {
+  const ids = [...selectedIds.value]
+  if (!ids.length) return
+  batchBusy.value = true
+  batchMsg.value = `更新中（0/${ids.length}）…`
+  try {
+    const { data } = await api.post('/research/assets/batch-refresh-profiles', { ids })
+    const updated = data.filter((r: any) => r.status !== 'failed' && r.status !== 'skipped').length
+    refreshSummary.value = data.map((r: any) =>
+      `${r.symbol} ${r.name}: ${r.status}${r.changed_fields?.length ? ' · ' + r.changed_fields.join('/') : ''}${r.error ? ' · ' + r.error : ''}`
+    ).join('\n')
+    show(`档案更新完成：${updated}/${ids.length} 个有变更`, 'success')
+    await load()
+  } catch (e) {
+    show(errDetail(e), 'error')
+  } finally {
+    batchBusy.value = false
+    batchMsg.value = ''
+  }
+}
+
 const poolTarget = ref<ResearchAsset | null>(null)
 const pooling = ref(false)
 interface RedeemRuleForm { days: number | null; fee_rate: number }
 const poolForm = ref<{
   mgmt_fee: number | null; custody_fee: number | null; purchase_fee: number | null;
   sales_service_fee: number | null; redeem_rules: RedeemRuleForm[]; redeem_fee_note: string;
-  min_purchase: number | null; redeem_t_days: number | null; liquidity_note: string; data_quality: string;
+  min_purchase: number | null; purchase_limit: number | null;
+  redeem_t_days: number | null; liquidity_note: string; data_quality: string;
 }>({
   mgmt_fee: null, custody_fee: null, purchase_fee: null, sales_service_fee: null,
   redeem_rules: [{ days: 7, fee_rate: 1.5 }, { days: 30, fee_rate: 0.5 }, { days: null, fee_rate: 0 }],
-  redeem_fee_note: '', min_purchase: null, redeem_t_days: null, liquidity_note: '', data_quality: '',
+  redeem_fee_note: '', min_purchase: null, purchase_limit: null,
+  redeem_t_days: null, liquidity_note: '', data_quality: '',
 })
 
 const rulesPreview = computed(() => {
@@ -689,9 +952,18 @@ function addRedeemRule() {
 function openPoolModal(a: ResearchAsset) {
   poolTarget.value = a
   poolForm.value = {
-    mgmt_fee: null, custody_fee: null, purchase_fee: null, sales_service_fee: null,
-    redeem_rules: [{ days: 7, fee_rate: 1.5 }, { days: 30, fee_rate: 0.5 }, { days: null, fee_rate: 0 }],
-    redeem_fee_note: '', min_purchase: null, redeem_t_days: null, liquidity_note: '', data_quality: '',
+    // 自选阶段已存（手动填或天天基金导入）的费率限额直接带入，可改
+    mgmt_fee: a.mgmt_fee ?? null,
+    custody_fee: a.custody_fee ?? null,
+    purchase_fee: a.purchase_fee ?? null,
+    sales_service_fee: a.sales_service_fee ?? null,
+    redeem_rules: (a.redeem_rules?.length ? a.redeem_rules : [{ days: 7, fee_rate: 1.5 }, { days: 30, fee_rate: 0.5 }, { days: null, fee_rate: 0 }])
+      .map(r => ({ days: r.days ?? null, fee_rate: r.fee_rate })),
+    redeem_fee_note: '',
+    min_purchase: a.min_purchase ?? null,
+    purchase_limit: a.purchase_limit ?? null,
+    redeem_t_days: a.redeem_t_days ?? null,
+    liquidity_note: a.liquidity_note || '', data_quality: '',
   }
 }
 
@@ -701,10 +973,12 @@ const editing = ref(false)
 const editForm = ref<{
   name: string; category: string; mgmt_fee: number | null; custody_fee: number | null;
   purchase_fee: number | null; sales_service_fee: number | null; redeem_rules: RedeemRuleForm[];
-  min_purchase: number | null; redeem_t_days: number | null; liquidity_note: string; data_quality: string;
+  min_purchase: number | null; purchase_limit: number | null;
+  redeem_t_days: number | null; liquidity_note: string; data_quality: string;
 }>({
   name: '', category: '', mgmt_fee: null, custody_fee: null, purchase_fee: null, sales_service_fee: null,
-  redeem_rules: [], min_purchase: null, redeem_t_days: null, liquidity_note: '', data_quality: '',
+  redeem_rules: [], min_purchase: null, purchase_limit: null,
+  redeem_t_days: null, liquidity_note: '', data_quality: '',
 })
 
 const editRulesPreview = computed(() => {
@@ -720,7 +994,8 @@ function openEditModal(a: ResearchAsset) {
     mgmt_fee: a.mgmt_fee, custody_fee: a.custody_fee, purchase_fee: a.purchase_fee,
     sales_service_fee: a.sales_service_fee,
     redeem_rules: (a.redeem_rules?.length ? a.redeem_rules : []).map(r => ({ days: r.days ?? null, fee_rate: r.fee_rate })),
-    min_purchase: a.min_purchase, redeem_t_days: a.redeem_t_days,
+    min_purchase: a.min_purchase ?? null, purchase_limit: a.purchase_limit ?? null,
+    redeem_t_days: a.redeem_t_days ?? null,
     liquidity_note: a.liquidity_note || '', data_quality: a.data_quality || '',
   }
 }
@@ -739,6 +1014,7 @@ async function submitEdit() {
       sales_service_fee: editForm.value.sales_service_fee,
       redeem_rules: editForm.value.redeem_rules,
       min_purchase: editForm.value.min_purchase,
+      purchase_limit: editForm.value.purchase_limit,
       redeem_t_days: editForm.value.redeem_t_days,
       liquidity_note: editForm.value.liquidity_note,
       data_quality: editForm.value.data_quality,
