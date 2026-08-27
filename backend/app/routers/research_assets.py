@@ -23,6 +23,9 @@ from ..schemas.research_asset import (
     WatchlistImportRequest,
     WatchlistImportItem,
     BatchPoolRequest,
+    BatchPoolResponse,
+    BatchPoolRejected,
+    AuditPooledResult,
     BatchRefreshProfilesRequest,
     ProfileRefreshResult,
 )
@@ -133,6 +136,7 @@ async def _respond(db: AsyncSession, asset: ResearchAsset) -> ResearchAssetRespo
         is_money_market=bool(asset.is_money_market),
         notes=asset.notes,
         purchase_limit=asset.purchase_limit,
+        purchase_status=asset.purchase_status or "",
         fund_kind=asset.fund_kind or "",
         asset_class=asset.asset_class or "",
         region=asset.region or "",
@@ -324,24 +328,31 @@ async def import_watchlist_from_eastmoney(
         if sym in existing:
             out.append(WatchlistImportItem(
                 symbol=sym, name=row["name"], status="exists",
-                fund_type=row["fund_type"], daily_limit=row["daily_limit"],
+                fund_type=row["fund_type"], daily_limit=fund_profile.normalize_daily_limit(row["daily_limit"]),
             ))
             continue
         try:
-            fees = await asyncio.to_thread(fund_profile.fetch_fee_page, sym)
+            if req.with_fees:
+                fees = await asyncio.to_thread(fund_profile.fetch_fee_profile, sym)
+            else:
+                fees = {}
             tags = fund_profile.derive_tags(row["name"], row["fund_type"])
+            tiers = (fees or {}).get("redeem_rules") or []
             asset = ResearchAsset(
                 user_id=user_id,
                 symbol=sym,
                 exchange="FUND_CN",
                 name=row["name"] or sym,
                 asset_type="fund",
-                purchase_limit=row["daily_limit"],
+                purchase_limit=fund_profile.normalize_daily_limit(row["daily_limit"]),
+                purchase_status=(row.get("purchase_status") or "").strip(),
                 min_purchase=row["min_buy"],
                 mgmt_fee=fees.get("mgmt_fee"),
                 custody_fee=fees.get("custody_fee"),
                 sales_service_fee=fees.get("sales_service_fee"),
-                liquidity_note=row["purchase_status"] or "",
+                purchase_fee=fees.get("purchase_fee"),
+                redeem_rules=json.dumps(tiers, ensure_ascii=False) if tiers else "[]",
+                redeem_fee_note=fund_profile.note_from_tiers(tiers) if tiers else "",
                 fund_kind=tags["fund_kind"],
                 asset_class=tags["asset_class"],
                 region=tags["region"],
@@ -352,10 +363,11 @@ async def import_watchlist_from_eastmoney(
             await db.commit()
             await db.refresh(asset)
             existing.add(sym)
-            asyncio.create_task(_sync_asset_prices_task(asset.id, user_id))
+            if req.sync_prices:
+                asyncio.create_task(_sync_asset_prices_task(asset.id, user_id))
             out.append(WatchlistImportItem(
                 symbol=sym, name=asset.name, status="added",
-                fund_type=row["fund_type"], daily_limit=row["daily_limit"],
+                fund_type=row["fund_type"], daily_limit=asset.purchase_limit,
             ))
         except Exception as e:  # noqa: BLE001 — 单只失败不阻断批次
             await db.rollback()
@@ -363,29 +375,117 @@ async def import_watchlist_from_eastmoney(
     return out
 
 
-@router.post("/batch-pool", response_model=List[ResearchAssetResponse])
+async def _refresh_profile(db: AsyncSession, a: ResearchAsset) -> list[str]:
+    """从天天基金刷新单只档案（一览表 + 费率页）。返回变更字段。"""
+    table = await asyncio.to_thread(fund_profile.get_purchase_table)
+    row = table.get(a.symbol)
+    fees = await asyncio.to_thread(fund_profile.fetch_fee_profile, a.symbol)
+    holdings_payload: dict | None = None
+    try:
+        holdings_payload = await asset_holdings.refresh_holdings(db, a)
+    except Exception:  # noqa: BLE001 — 持仓失败只降级打标精度
+        pass
+    return fund_profile.apply_profile(a, row or {}, fees, holdings_payload)
+
+
+@router.post("/batch-pool", response_model=BatchPoolResponse)
 async def batch_pool_assets(
     req: BatchPoolRequest,
     user_id: str = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ):
-    """自选批量入池：沿用导入阶段已存的费率/限额，状态→pooled 并触发全量行情同步。"""
+    """自选批量入池。入池前自动审查：硬违规(暂停申购/限额<1000)直接拒绝；
+    档案缺失/过期先尝试刷新，仍不完整才拒绝。"""
     if not req.ids:
         raise HTTPException(status_code=400, detail="ids 不能为空")
-    q = select(ResearchAsset).where(
-        ResearchAsset.user_id == user_id, ResearchAsset.id.in_(req.ids)
-    )
-    assets = (await db.execute(q)).scalars().all()
+    assets = (await db.execute(
+        select(ResearchAsset).where(ResearchAsset.user_id == user_id, ResearchAsset.id.in_(req.ids))
+    )).scalars().all()
     pooled: list[ResearchAsset] = []
+    rejected: list[BatchPoolRejected] = []
     for a in assets:
-        if a.status != "pooled":
-            a.status = "pooled"
+        if a.status == "pooled":
             pooled.append(a)
+            continue
+        hard, soft = fund_profile.audit_violations(a)
+        if soft:
+            try:
+                await _refresh_profile(db, a)
+                await db.commit()
+                _, soft_after = fund_profile.audit_violations(a)
+                if soft_after:
+                    # 重新跑硬检查——刷新可能带出暂停申购等状态
+                    hard2, _ = fund_profile.audit_violations(a)
+                    rejected.append(BatchPoolRejected(
+                        asset_id=a.id, symbol=a.symbol, name=a.name,
+                        reasons=hard2 + [f"档案不完整：{'、'.join(soft_after)}"],
+                    ))
+                    continue
+            except Exception as e:  # noqa: BLE001
+                await db.rollback()
+                rejected.append(BatchPoolRejected(
+                    asset_id=a.id, symbol=a.symbol, name=a.name,
+                    reasons=[f"档案更新失败：{type(e).__name__}"] + hard,
+                ))
+                continue
+        if hard:
+            rejected.append(BatchPoolRejected(asset_id=a.id, symbol=a.symbol, name=a.name, reasons=hard))
+            continue
+        a.status = "pooled"
+        pooled.append(a)
     await db.commit()
     for a in pooled:
-        await db.refresh(a)
-        asyncio.create_task(_pool_sync_task(a.id, user_id))
-    return [await _respond(db, a) for a in assets]
+        if a.status == "pooled":
+            await db.refresh(a)
+            if a.status == "pooled":
+                asyncio.create_task(_pool_sync_task(a.id, user_id))
+    return BatchPoolResponse(pooled=[await _respond(db, a) for a in pooled], rejected=rejected)
+
+
+@router.post("/batch-audit-pooled", response_model=List[AuditPooledResult])
+async def batch_audit_pooled(
+    user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """已入池标的自动审查：刷新档案 → 硬违规或仍缺档案的踢回自选。"""
+    assets = (await db.execute(
+        select(ResearchAsset).where(
+            ResearchAsset.user_id == user_id, ResearchAsset.status == "pooled",
+            ResearchAsset.exchange == "FUND_CN",
+        ).order_by(ResearchAsset.created_at)
+    )).scalars().all()
+    if len(assets) > 60:
+        assets = assets[:60]
+    out: list[AuditPooledResult] = []
+    demoted_any = False
+    for a in assets:
+        refreshed: list[str] = []
+        try:
+            refreshed = await _refresh_profile(db, a)
+            await db.commit()
+        except Exception as e:  # noqa: BLE001
+            await db.rollback()
+            out.append(AuditPooledResult(
+                asset_id=a.id, symbol=a.symbol, name=a.name,
+                status="failed", error=f"{type(e).__name__}: {e}",
+            ))
+            continue
+        hard, soft = fund_profile.audit_violations(a)
+        reasons = hard + (soft and ["档案不完整：" + "、".join(soft)])
+        if reasons:
+            a.status = "watchlist"
+            await db.commit()
+            demoted_any = True
+            out.append(AuditPooledResult(
+                asset_id=a.id, symbol=a.symbol, name=a.name,
+                status="demoted", refreshed_fields=sorted(set(refreshed)), reasons=reasons,
+            ))
+        else:
+            out.append(AuditPooledResult(
+                asset_id=a.id, symbol=a.symbol, name=a.name,
+                status="kept", refreshed_fields=sorted(set(refreshed)),
+            ))
+    return out
 
 
 @router.post("/batch-refresh-profiles", response_model=List[ProfileRefreshResult])
@@ -415,7 +515,6 @@ async def batch_refresh_profiles(
             ))
             continue
         try:
-            fees = await asyncio.to_thread(fund_profile.fetch_fee_page, a.symbol)
             holdings_payload: dict = {}
             tags_rebuilt = False
             try:
@@ -423,6 +522,7 @@ async def batch_refresh_profiles(
                 tags_rebuilt = True
             except Exception:  # noqa: BLE001 — 持仓失败只降级打标精度
                 pass
+            fees = await asyncio.to_thread(fund_profile.fetch_fee_profile, a.symbol)
             changed = fund_profile.apply_profile(a, row, fees, holdings_payload or None)
             await db.commit()
             results.append(ProfileRefreshResult(
@@ -585,10 +685,28 @@ async def get_nav_history(
 async def pool_asset(
     asset_id: str,
     req: ResearchAssetPool,
+    force: bool = Query(False, description="跳过入池审查强制入池"),
     user_id: str = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ):
     asset = await _get_owned(asset_id, user_id, db)
+    if not force:
+        hard, soft = fund_profile.audit_violations(asset)
+        try:
+            if soft:
+                await _refresh_profile(db, asset)
+                await db.commit()
+                await db.refresh(asset)
+                hard, soft = fund_profile.audit_violations(asset)
+        except Exception:  # noqa: BLE001 — 刷新失败不阻断单只入池，仅按已有数据审
+            await db.rollback()
+            hard, soft = fund_profile.audit_violations(asset)
+        problems = hard + [f"档案不完整：{'、'.join(soft)}"] if soft else hard
+        if problems:
+            raise HTTPException(
+                status_code=422,
+                detail="自动审查未通过：" + "；".join(problems) + "。仍要入池请在批量管理中重试或先更新档案。",
+            )
     data = req.model_dump(exclude_unset=True)
     rules = data.pop("redeem_rules", None)
     if rules:

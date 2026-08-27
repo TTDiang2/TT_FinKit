@@ -1,7 +1,17 @@
-"""fund_profile: derive_tags 打标规则 + purchase 表解析(注入假 provider)。"""
+"""fund_profile: 打标规则 / 限额归一化 / 费率页解析 / purchase 表解析 / 审查规则。"""
+from types import SimpleNamespace
+
 import pandas as pd
 
-from app.services.fund_profile import derive_tags, get_purchase_table, read_auto_tags
+from app.services.fund_profile import (
+    apply_profile,
+    audit_violations,
+    derive_tags,
+    get_purchase_table,
+    normalize_daily_limit,
+    parse_fee_html,
+    read_auto_tags,
+)
 
 
 def test_region_domestic_and_qdii():
@@ -62,6 +72,99 @@ def test_purchase_table_parsing():
     assert table["000217"]["min_buy"] == 10.0
     assert table["006432"]["daily_limit"] is None  # 非数字文本 → 未限额
     assert table["006432"]["purchase_status"] == "暂停申购"
+
+
+def test_normalize_daily_limit():
+    assert normalize_daily_limit(99999999999.0) is None   # 站点“不限购”哨兵值
+    assert normalize_daily_limit("暂不限购") is None
+    assert normalize_daily_limit(None) is None
+    assert normalize_daily_limit("") is None
+    assert normalize_daily_limit("1,000") == 1000.0
+    assert normalize_daily_limit(1000) == 1000.0
+
+
+_FEE_HTML = """
+<div><table class="w770 comm jjfl"><tbody><tr><td class="th w110">管理费率</td><td class="w135">1.20%（每年）</td>
+<td class="th w110">托管费率</td><td class="w135">0.20%（每年）</td>
+<td class="th w110">销售服务费率</td><td class="w135">0.00%（每年）</td></tr></tbody></table></div>
+<h4>申购费率（前端）</h4><table class="w650 comm jjfl"><tbody>
+<tr><td class="">小于100万元</td><td><strike class='gray'>1.50%</strike>&nbsp;&nbsp;|&nbsp;&nbsp;0.15%</td></tr>
+<tr><td class="">大于等于100万元，小于1000万元</td><td><strike class='gray'>1.20%</strike>&nbsp;&nbsp;|&nbsp;&nbsp;0.12%</td></tr>
+</tbody></table>
+<h4>赎回费率（前端）<a name="shfl"></a></h4><table class="w650 comm jjfl"><tbody>
+<tr><td>小于7天</td><td>1.50%</td></tr>
+<tr><td>大于等于7天，小于30天</td><td>0.50%</td></tr>
+<tr><td>大于等于30天</td><td>0.10%</td></tr>
+</tbody></table>
+"""
+
+
+def test_parse_fee_html_full():
+    fees = parse_fee_html(_FEE_HTML)
+    assert fees["mgmt_fee"] == 1.2
+    assert fees["custody_fee"] == 0.2
+    assert fees["sales_service_fee"] == 0.0
+    assert fees["purchase_fee"] == 0.15          # 首档天天基金优惠价
+    tiers = fees["redeem_rules"]
+    assert tiers[0] == {"days": 7, "fee_rate": 1.5}
+    assert {"days": 30, "fee_rate": 0.5} in tiers  # 区间中间档取上界
+    assert tiers[-1] == {"days": None, "fee_rate": 0.1}
+
+
+def _asset(**kw):
+    from datetime import datetime
+    base = dict(
+        symbol="000217", name="X", mgmt_fee=1.5, custody_fee=0.25,
+        purchase_status="开放申购", purchase_limit=None,
+        profile_synced_at=datetime.utcnow(),
+    )
+    base.update(kw)
+    return SimpleNamespace(**base)
+
+
+def test_audit_violations_rules():
+    from datetime import datetime, timedelta
+    hard, soft = audit_violations(_asset())
+    assert not hard and not soft
+
+    hard, _ = audit_violations(_asset(purchase_status="暂停申购"))
+    assert hard == ["申购状态「暂停申购」"]
+
+    hard, _ = audit_violations(_asset(purchase_limit=500))
+    assert hard == ["日限额 500 元 < 1000"]
+    hard, _ = audit_violations(_asset(purchase_limit=500000))
+    assert not hard                                  # 50万 OK
+
+    old = datetime.utcnow() - timedelta(days=40)
+    _, soft = audit_violations(_asset(profile_synced_at=old))
+    assert any("过期" in s for s in soft)
+    _, soft = audit_violations(_asset(mgmt_fee=None))
+    assert any("管理费" in s for s in soft)
+
+
+def test_apply_profile_no_liquidity_overwrite():
+    a = SimpleNamespace(
+        symbol="000217", name="旧名", min_purchase=None, purchase_limit=None,
+        purchase_status="", mgmt_fee=None, custody_fee=None,
+        sales_service_fee=None, purchase_fee=None,
+        redeem_rules="[]", redeem_fee_note="", liquidity_note="用户手写备注",
+        fund_kind="", asset_class="", region="", auto_tags="[]",
+        is_money_market=False, profile_synced_at=None,
+    )
+    changed = apply_profile(
+        a,
+        {"name": "华安黄金ETF联接C", "fund_type": "指数型-其他", "min_buy": 10.0,
+         "daily_limit": 99999999999.0, "purchase_status": "开放申购"},
+        {"mgmt_fee": 0.5, "custody_fee": 0.1, "sales_service_fee": None,
+         "purchase_fee": 0.15, "redeem_rules": [{"days": 7, "fee_rate": 1.5}, {"days": None, "fee_rate": 0}]},
+    )
+    assert "liquidity_note" not in changed
+    assert a.liquidity_note == "用户手写备注"
+    assert a.purchase_limit is None                   # 哨兵值→None
+    assert a.purchase_status == "开放申购"
+    assert a.mgmt_fee == 0.5 and a.purchase_fee == 0.15
+    assert a.name == "华安黄金ETF联接C"
+    assert '"days": null' in a.redeem_rules or "'days': None" in str(a.redeem_rules)
 
 
 def test_read_auto_tags_tolerant():

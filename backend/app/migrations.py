@@ -95,6 +95,7 @@ async def run_lightweight_migrations(conn: AsyncConnection) -> None:
 
     # research_assets: purchase quota + multi-dimension auto classification
     await _add_column_if_missing(conn, "research_assets", "purchase_limit", "FLOAT")
+    await _add_column_if_missing(conn, "research_assets", "purchase_status", "VARCHAR DEFAULT '' NOT NULL")
     await _add_column_if_missing(conn, "research_assets", "fund_kind", "VARCHAR DEFAULT '' NOT NULL")
     await _add_column_if_missing(conn, "research_assets", "asset_class", "VARCHAR DEFAULT '' NOT NULL")
     await _add_column_if_missing(conn, "research_assets", "region", "VARCHAR DEFAULT '' NOT NULL")

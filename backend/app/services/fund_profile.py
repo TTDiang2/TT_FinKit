@@ -31,6 +31,29 @@ def _ak():
     return ak
 
 
+_JJFL_URL = "https://fundf10.eastmoney.com/jjfl_{code}.html"
+
+
+def normalize_daily_limit(v) -> Optional[float]:
+    """日累计限定金额归一化：非数字文本 / >=1亿(站点“不限购”哨兵值 99999999999)
+    都返回 None。"""
+    if v is None:
+        return None
+    if isinstance(v, str):
+        s = v.strip().replace(",", "")
+        if not s or not re.fullmatch(r"[\d.]+", s):
+            return None
+        num = float(s)
+    else:
+        try:
+            num = float(v)
+        except (TypeError, ValueError):
+            return None
+    if num >= 1e8:
+        return None
+    return num
+
+
 def get_purchase_table(provider: Optional[Callable[[], object]] = None) -> dict[str, dict]:
     """code -> {name, fund_type, purchase_status, redeem_status, min_buy, daily_limit}.
 
@@ -51,13 +74,7 @@ def get_purchase_table(provider: Optional[Callable[[], object]] = None) -> dict[
             code = cell(row, "基金代码")
             if not code:
                 continue
-            dlimit = cell(row, "日累计限定金额")
-            dlimit_f: Optional[float]
-            try:
-                # 天天基金限购额为数字字符串或“暂不限购”类文本
-                dlimit_f = float(dlimit) if dlimit and re.fullmatch(r"[\d.]+", dlimit.replace(",", "")) else None
-            except ValueError:
-                dlimit_f = None
+            dlimit_f = normalize_daily_limit(cell(row, "日累计限定金额"))
             min_buy = cell(row, "购买起点")
             try:
                 min_buy_f = float(min_buy.replace(",", "")) if min_buy else None
@@ -77,26 +94,34 @@ def get_purchase_table(provider: Optional[Callable[[], object]] = None) -> dict[
 
 
 _JJFL_PATTERNS = {
-    "mgmt_fee": r"管理费率</th>\s*<td[^>]*>([\d.]+)\s*%",
-    "custody_fee": r"托管费率</th>\s*<td[^>]*>([\d.]+)\s*%",
-    "sales_service_fee": r"销售服务费率</th>\s*<td[^>]*>([\d.]+)\s*%",
+    "mgmt_fee": r"管理费率</td>\s*<td[^>]*>([\d.]+)\s*%",
+    "custody_fee": r"托管费率</td>\s*<td[^>]*>([\d.]+)\s*%",
+    "sales_service_fee": r"销售服务费率</td>\s*<td[^>]*>([\d.]+)\s*%",
 }
 
 
-def fetch_fee_page(code: str) -> dict[str, Optional[float]]:
-    """费率页 HTML 正则抓取；任何一项缺失为 None，网络失败返回全 None。"""
-    out: dict[str, Optional[float]] = {k: None for k in _JJFL_PATTERNS}
-    try:
-        import requests
-        r = requests.get(
-            f"https://fundf10.eastmoney.com/jjfl_{code}.html",
-            headers={"User-Agent": _BROWSER_UA, "Referer": "https://fundf10.eastmoney.com/"},
-            timeout=15,
-        )
-        r.raise_for_status()
-        html = r.text
-    except Exception:  # noqa: BLE001 — 费率为增强信息，失败不阻断导入
-        return out
+def _seg(html: str, start_marker: str, end_markers: tuple[str, ...]) -> str:
+    """截取 start_marker 之后的片段，直到最近的 end_marker（找不到则到文末）。"""
+    i = html.find(start_marker)
+    if i < 0:
+        return ""
+    rest = html[i + len(start_marker):]
+    ends = [rest.find(m) for m in end_markers if rest.find(m) >= 0]
+    return rest[: min(ends)] if ends else rest
+
+
+def parse_fee_html(html: str) -> dict:
+    """jjfl 页面 → 结构化费率。
+
+    基础费率: ``管理费率</td><td>1.20%（每年）`` 模式。
+    申购费: 取"前端"首档(小于100万)的天天基金优惠费率（无优惠则原费率）。
+    赎回费: 前端表按 ``小于N天→{days:N}`` / 纯``大于等于N天``行→兜底
+    ``days=None`` 组装成引擎档位；区间中间档取其上界。
+    """
+    out: dict = {
+        "mgmt_fee": None, "custody_fee": None, "sales_service_fee": None,
+        "purchase_fee": None, "redeem_rules": [],
+    }
     for key, pat in _JJFL_PATTERNS.items():
         m = re.search(pat, html)
         if m:
@@ -104,7 +129,67 @@ def fetch_fee_page(code: str) -> dict[str, Optional[float]]:
                 out[key] = float(m.group(1))
             except ValueError:
                 pass
+
+    buy_seg = _seg(html, "申购费率（前端）", ("申购费率（后端）", "赎回费率", '<div class="boxitem'))
+    m = re.search(
+        r"<strike[^>]*>([\d.]+)\s*%</strike>(?:\s*(?:&nbsp;|<[^>]+>|\|)*?(?:([\d.]+)\s*%))?",
+        buy_seg,
+    )
+    if not m:
+        m = re.search(r"<td[^>]*>([\d.]+)\s*%", buy_seg)
+        if m:
+            out["purchase_fee"] = float(m.group(1))
+    if m and m.lastindex and m.lastindex >= 2 and m.group(2):
+        out["purchase_fee"] = float(m.group(2))       # 天天基金优惠价
+    elif m and m.group(1):
+        out["purchase_fee"] = float(m.group(1))       # 无优惠时原费率
+
+    redeem_seg = _seg(html, "赎回费率（前端）", ("赎回费率（后端）", 'shwarn', '<div class="box">'))
+    tiers: list[dict] = []
+    for row_m in re.finditer(r"<tr><td[^>]*>(.*?)</td><td[^>]*>(.*?)</td></tr>", redeem_seg, re.S):
+        label_raw = re.sub(r"<[^>]+>|\s+", "", row_m.group(1))
+        fee_m = re.search(r"([\d.]+)\s*%", re.sub(r"<[^>]+>", "", row_m.group(2)))
+        if not fee_m:
+            continue
+        fee = float(fee_m.group(1))
+        uppers = [int(x) for x in re.findall(r"小于(\d+)天", label_raw)]
+        if uppers:
+            tiers.append({"days": min(uppers), "fee_rate": fee})
+        elif "大于等于" in label_raw:
+            tiers.append({"days": None, "fee_rate": fee})
+    with_days = sorted((t for t in tiers if t["days"] is not None), key=lambda t: t["days"])
+    fallback = [t for t in tiers if t["days"] is None]
+    rules = with_days[:3]
+    if fallback:
+        rules.append(fallback[0])
+    seen_days: set[int | None] = set()
+    valid_rules: list[dict] = []
+    for t in rules:
+        if t["days"] in seen_days:
+            continue
+        seen_days.add(t["days"])
+        valid_rules.append(t)
+    ok_order = all(
+        valid_rules[i]["days"] is None or (valid_rules[i + 1]["days"] is None or valid_rules[i]["days"] < valid_rules[i + 1]["days"])
+        for i in range(len(valid_rules) - 1)
+    )
+    out["redeem_rules"] = valid_rules if (valid_rules and ok_order) else []
     return out
+
+
+def fetch_fee_profile(code: str) -> dict:
+    """拉取并解析单只基金费率页；网络失败返回全空结构。"""
+    import requests
+    try:
+        r = requests.get(
+            _JJFL_URL.format(code=code),
+            headers={"User-Agent": _BROWSER_UA, "Referer": "https://fundf10.eastmoney.com/"},
+            timeout=15,
+        )
+        r.raise_for_status()
+        return parse_fee_html(r.text)
+    except Exception:  # noqa: BLE001 — 费率为增强信息，失败不阻断导入
+        return {k: None for k in ("mgmt_fee", "custody_fee", "sales_service_fee", "purchase_fee")} | {"redeem_rules": []}
 
 
 # --------------------------------------------------------------------------- #
@@ -217,8 +302,18 @@ def derive_tags(
     return {"fund_kind": kind, "asset_class": asset_class, "region": region, "auto_tags": tags}
 
 
+def note_from_tiers(tiers: list[dict]) -> str:
+    def fmt(t):
+        return f"<{t['days']}天 {t['fee_rate']:g}%" if t["days"] is not None else f"其余 {t['fee_rate']:g}%"
+    return "；".join(fmt(t) for t in tiers)
+
+
 def apply_profile(asset, profile: dict, fees: dict, holdings_payload: dict | None = None) -> list[str]:
-    """把 profile/fees 写到 ResearchAsset 上，重算标签。返回被改动的字段名。"""
+    """把 profile/fees 写到 ResearchAsset 上，重算标签。返回被改动的字段名。
+
+    fees 可为 get_purchase_table 行或 fetch_fee_profile 结果 —— 两者按存在的
+    键合并消费；liquidity_note 是用户备注字段，绝不自动改写。
+    """
     changed: list[str] = []
 
     def set_field(field, new_val):
@@ -230,10 +325,24 @@ def apply_profile(asset, profile: dict, fees: dict, holdings_payload: dict | Non
     if profile.get("name"):
         set_field("name", profile["name"])
     set_field("min_purchase", profile.get("min_buy"))
-    set_field("purchase_limit", profile.get("daily_limit"))
-    for field in ("mgmt_fee", "custody_fee", "sales_service_fee"):
-        set_field(field, fees.get(field))
-    set_field("liquidity_note", profile.get("purchase_status") or "")
+    set_field("purchase_limit", normalize_daily_limit(profile.get("daily_limit")))
+    set_field("purchase_status", (profile.get("purchase_status") or "").strip() or None)
+    for field in ("mgmt_fee", "custody_fee", "sales_service_fee", "purchase_fee"):
+        v = fees.get(field) if fees else None
+        if v is None and profile:
+            v = profile.get(field)
+        set_field(field, v)
+
+    tiers = (fees or {}).get("redeem_rules") or []
+    if tiers:
+        new_json = json.dumps(tiers, ensure_ascii=False)
+        if asset.redeem_rules != new_json:
+            asset.redeem_rules = new_json
+            changed.append("redeem_rules")
+        new_note = note_from_tiers(tiers)
+        if (asset.redeem_fee_note or "") != new_note:
+            asset.redeem_fee_note = new_note
+            changed.append("redeem_fee_note")
 
     tags = derive_tags(
         asset.name, profile.get("fund_type") or "", (holdings_payload or {}).get("top_holdings"),
@@ -250,6 +359,42 @@ def apply_profile(asset, profile: dict, fees: dict, holdings_payload: dict | Non
     from datetime import datetime
     asset.profile_synced_at = datetime.utcnow()
     return changed
+
+
+PROFILE_MAX_AGE_DAYS = 30
+
+
+def audit_violations(asset) -> tuple[list[str], list[str]]:
+    """入池审查。返回 (硬违规→必须剔除, 软缺失→先试更新再定)。
+
+    硬：申购状态非开放 / 限额<1000元。
+    软：管/托费率缺失、档案过期（>30 天）。
+    """
+    hard: list[str] = []
+    soft: list[str] = []
+
+    status = (getattr(asset, "purchase_status", "") or "").strip()
+    if status and status != "开放申购":
+        hard.append(f"申购状态「{status}」")
+    limit = getattr(asset, "purchase_limit", None)
+    if limit is not None and limit < 1000:
+        hard.append(f"日限额 {limit:g} 元 < 1000")
+
+    if getattr(asset, "mgmt_fee", None) is None:
+        soft.append("管理费缺失")
+    if getattr(asset, "custody_fee", None) is None:
+        soft.append("托管费缺失")
+    synced_at = getattr(asset, "profile_synced_at", None)
+    from datetime import datetime
+    fresh = False
+    if synced_at is not None:
+        try:
+            fresh = (datetime.utcnow() - synced_at).days <= PROFILE_MAX_AGE_DAYS
+        except TypeError:
+            fresh = False
+    if not fresh:
+        soft.append("档案未同步或过期")
+    return hard, soft
 
 
 def read_auto_tags(raw: Optional[str]) -> list[str]:

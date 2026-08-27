@@ -157,6 +157,7 @@ class ResearchAssetResponse(BaseModel):
     is_money_market: bool
     notes: Optional[str] = None
     purchase_limit: Optional[float] = None
+    purchase_status: str = ""
     fund_kind: str = ""
     asset_class: str = ""
     region: str = ""
@@ -204,6 +205,8 @@ class SyncResult(BaseModel):
 class WatchlistImportRequest(BaseModel):
     """天天基金批量导入自选：纯代码列表，信息全部自动拉取。"""
     symbols: List[str]
+    with_fees: bool = True        # false=跳过逐只费率页(全量导入用)
+    sync_prices: bool = True      # false=不触发后台净值同步
 
 
 class WatchlistImportItem(BaseModel):
@@ -212,6 +215,28 @@ class WatchlistImportItem(BaseModel):
     status: Literal["added", "exists", "failed"]
     fund_type: str = ""
     daily_limit: Optional[float] = None
+    error: Optional[str] = None
+
+
+class BatchPoolRejected(BaseModel):
+    asset_id: str
+    symbol: str
+    name: str
+    reasons: List[str] = []
+
+
+class BatchPoolResponse(BaseModel):
+    pooled: List[ResearchAssetResponse] = []
+    rejected: List[BatchPoolRejected] = []
+
+
+class AuditPooledResult(BaseModel):
+    asset_id: str
+    symbol: str
+    name: str
+    status: Literal["kept", "demoted", "failed"]
+    refreshed_fields: List[str] = []
+    reasons: List[str] = []
     error: Optional[str] = None
 
 

@@ -71,7 +71,11 @@ def _run_cli(strategy_file: str, *extra: str) -> subprocess.CompletedProcess:
         "--db", db,
         *extra,
     ]
-    return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", timeout=180)
+    # 子进程必须无视控制台代码页强制 UTF-8；errors=replace 只影响
+    # 环境注入的噪声字节，真正的 JSON/摘要损坏仍会被断言抓住
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+    return subprocess.run(cmd, capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", env=env, timeout=180)
 
 
 class TestRunBacktestCli:

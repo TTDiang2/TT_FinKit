@@ -464,6 +464,7 @@ export interface ResearchAsset {
   is_money_market: boolean;
   notes: string | null;
   purchase_limit: number | null;
+  purchase_status: string;
   fund_kind: string;
   asset_class: string;
   region: string;

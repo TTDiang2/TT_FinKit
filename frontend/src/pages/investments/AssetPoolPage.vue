@@ -130,8 +130,11 @@
               <div class="text-xs text-text-muted">{{ a.symbol }} · {{ EXCHANGE_LABELS[a.exchange] || a.exchange || '—' }}</div>
             </td>
             <td class="px-3 py-2 min-w-[110px]">
+              <span v-if="a.purchase_status && a.purchase_status !== '开放申购'"
+                :title="`申购状态：${a.purchase_status}（天天基金）`"
+                class="px-1.5 py-0.5 text-xs rounded-md bg-expense-bg text-expense-color font-medium">{{ a.purchase_status }}</span>
               <button v-if="a.category" @click="categoryFilter = a.category" class="px-2 py-0.5 text-xs rounded-md bg-bg-tertiary hover:bg-bg-secondary">{{ a.category }}</button>
-              <span v-if="!a.category && !a.fund_kind && !a.asset_class && !a.region" class="text-text-muted">—</span>
+              <span v-if="!a.category && !a.fund_kind && !a.asset_class && !a.region && !(a.auto_tags && a.auto_tags.length)" class="text-text-muted">—</span>
               <div v-if="a.fund_kind || a.asset_class || a.region || (a.auto_tags && a.auto_tags.length)" class="flex flex-wrap gap-1 mt-0.5">
                 <span v-if="a.fund_kind" class="px-1.5 py-0.5 text-xs rounded-md bg-purple-50 text-purple-700">{{ a.fund_kind }}</span>
                 <span v-if="a.asset_class" class="px-1.5 py-0.5 text-xs rounded-md bg-sky-50 text-sky-700">{{ a.asset_class }}</span>
@@ -397,38 +400,71 @@
       </template>
     </BaseModal>
 
-    <!-- 批量管理：勾选入池 / 勾选更新档案 -->
-    <BaseModal v-if="showBatchModal" title="批量管理（入池 / 更新档案）" width="max-w-2xl" @close="showBatchModal = false">
+    <!-- 批量管理：勾选入池 / 更新档案 / 入池审查 -->
+    <BaseModal v-if="showBatchModal" title="批量管理（入池 / 更新档案 / 审查）" width="max-w-3xl" @close="showBatchModal = false">
       <div class="space-y-3">
+        <div class="flex items-center gap-2 flex-wrap text-sm">
+          <select v-model="batchStatusFilter" class="px-2 py-1.5 text-xs border border-border-default rounded-md">
+            <option value="">全部状态</option>
+            <option value="watchlist">仅自选</option>
+            <option value="pooled">仅已入池</option>
+          </select>
+          <select v-model="batchCategoryFilter" class="px-2 py-1.5 text-xs border border-border-default rounded-md">
+            <option value="">全部分类</option>
+            <option v-for="c in categories" :key="c" :value="c">{{ c }}</option>
+          </select>
+          <select v-model="batchKindFilter" class="px-2 py-1.5 text-xs border border-border-default rounded-md">
+            <option value="">全部类型</option>
+            <option v-for="v in kindOptions" :key="v" :value="v">{{ v }}</option>
+          </select>
+          <select v-model="batchClassFilter" class="px-2 py-1.5 text-xs border border-border-default rounded-md">
+            <option value="">全部资产类别</option>
+            <option v-for="v in classOptions" :key="v" :value="v">{{ v }}</option>
+          </select>
+          <select v-model="batchRegionFilter" class="px-2 py-1.5 text-xs border border-border-default rounded-md">
+            <option value="">全部地区</option>
+            <option v-for="v in regionOptions" :key="v" :value="v">{{ v }}</option>
+          </select>
+          <input v-model.trim="batchSearch" placeholder="搜索名称/代码" class="px-2 py-1.5 text-xs border border-border-default rounded-md w-32" />
+        </div>
         <div class="flex items-center gap-3 text-sm">
           <label class="flex items-center gap-1.5 cursor-pointer">
-            <input type="checkbox" :checked="allChecked" @change="toggleAll" /> 全选
+            <input type="checkbox" :checked="allChecked" @change="toggleAll" /> 全选（当前筛选 {{ batchFiltered.length }} 个）
           </label>
-          <span class="text-text-muted text-xs">已选 {{ selectedIds.size }} 个 · 从下方列表勾选后执行操作</span>
+          <span class="text-text-muted text-xs">已选 {{ selectedIds.size }} 个</span>
           <span v-if="batchBusy" class="ml-auto text-accent-primary">{{ batchMsg }}</span>
         </div>
         <div class="max-h-80 overflow-y-auto border border-border-default rounded-md divide-y divide-border-default">
-          <label v-for="a in assets" :key="a.id" class="flex items-center gap-3 px-3 py-2 hover:bg-bg-tertiary/50 cursor-pointer">
+          <label v-for="a in batchFiltered" :key="a.id" class="flex items-center gap-3 px-3 py-2 hover:bg-bg-tertiary/50 cursor-pointer">
             <input type="checkbox" :checked="selectedIds.has(a.id)" @change="toggleSelect(a.id)" />
-            <span class="font-medium w-40 truncate">{{ a.name }}</span>
-            <span class="text-xs text-text-muted font-mono w-16">{{ a.symbol }}</span>
-            <span :class="['px-1.5 py-0.5 text-xs rounded', a.status === 'pooled' ? 'bg-income-bg text-income-color' : 'bg-bg-tertiary text-text-secondary']">
+            <span class="font-medium w-44 truncate">{{ a.name }}</span>
+            <span class="text-xs text-text-muted font-mono w-16 shrink-0">{{ a.symbol }}</span>
+            <span :class="['px-1.5 py-0.5 text-xs rounded shrink-0', a.status === 'pooled' ? 'bg-income-bg text-income-color' : 'bg-bg-tertiary text-text-secondary']">
               {{ a.status === 'pooled' ? '已入池' : '自选' }}
             </span>
-            <span v-if="a.exchange !== 'FUND_CN'" class="text-xs text-warning">非基金型 · 档案更新不适用</span>
+            <span v-if="a.purchase_status && a.purchase_status !== '开放申购'" class="px-1.5 py-0.5 text-xs rounded bg-expense-bg text-expense-color shrink-0">{{ a.purchase_status }}</span>
+            <span v-if="a.fund_kind" class="text-xs text-purple-700 shrink-0">{{ a.fund_kind }}</span>
+            <span v-if="a.asset_class" class="text-xs text-sky-700 shrink-0">{{ a.asset_class }}</span>
+            <span v-if="a.region && a.region !== '境内'" class="text-xs text-amber-700 shrink-0">{{ a.region }}</span>
           </label>
         </div>
-        <div class="grid grid-cols-2 gap-3">
+        <div class="grid grid-cols-3 gap-3">
           <button @click="runBatchPool" :disabled="batchBusy || !selectedIds.size"
-            class="px-4 py-2 rounded-md border border-border-default text-sm hover:bg-bg-tertiary disabled:opacity-40">
-            入池所选自选
+            class="px-4 py-2 rounded-md border border-border-default text-sm hover:bg-bg-tertiary disabled:opacity-40"
+            title="入池前自动审查：暂停申购/限额<1000 直接拒绝；档案缺失先尝试更新，仍不完整拒绝">
+            审查并入池所选
           </button>
           <button @click="runBatchRefresh" :disabled="batchBusy || !selectedIds.size"
             class="px-4 py-2 rounded-md bg-accent-primary text-white hover:bg-accent-hover disabled:opacity-40">
             更新所选档案（费率/限额/标签）
           </button>
+          <button @click="runAuditPooled" :disabled="batchBusy"
+            class="px-4 py-2 rounded-md border border-border-default text-sm hover:bg-bg-tertiary disabled:opacity-40"
+            title="扫描全部已入池基金型标的：刷新档案后，暂停申购/限额<1000/档案仍不完整者自动退回自选">
+            自动审查已入池
+          </button>
         </div>
-        <div v-if="refreshSummary" class="text-xs text-text-muted whitespace-pre-line border-t border-border-default pt-2">{{ refreshSummary }}</div>
+        <div v-if="refreshSummary" class="text-xs text-text-muted whitespace-pre-line max-h-40 overflow-y-auto border-t border-border-default pt-2">{{ refreshSummary }}</div>
       </div>
       <template #footer>
         <button @click="showBatchModal = false" class="px-4 py-2 text-text-secondary">关闭</button>
@@ -860,12 +896,31 @@ async function importFromEm() {
   }
 }
 
-// ---- 批量管理：入池 / 更新档案 ----
+// ---- 批量管理：入池 / 更新档案 / 审查 ----
 const showBatchModal = ref(false)
 const selectedIds = ref<Set<string>>(new Set())
 const batchBusy = ref(false)
 const batchMsg = ref('')
 const refreshSummary = ref('')
+const batchStatusFilter = ref('')
+const batchCategoryFilter = ref('')
+const batchKindFilter = ref('')
+const batchClassFilter = ref('')
+const batchRegionFilter = ref('')
+const batchSearch = ref('')
+
+const batchFiltered = computed(() => {
+  const kw = batchSearch.value.trim().toLowerCase()
+  return assets.value.filter(a => {
+    if (batchStatusFilter.value && a.status !== batchStatusFilter.value) return false
+    if (batchCategoryFilter.value && a.category !== batchCategoryFilter.value) return false
+    if (batchKindFilter.value && a.fund_kind !== batchKindFilter.value) return false
+    if (batchClassFilter.value && a.asset_class !== batchClassFilter.value) return false
+    if (batchRegionFilter.value && a.region !== batchRegionFilter.value) return false
+    if (kw && !(a.name.toLowerCase().includes(kw) || a.symbol.includes(kw))) return false
+    return true
+  })
+})
 
 function openBatchModal() {
   selectedIds.value = new Set()
@@ -878,22 +933,48 @@ function toggleSelect(id: string) {
   else s.add(id)
   selectedIds.value = s
 }
-const allChecked = computed(() => assets.value.length > 0 && assets.value.every(a => selectedIds.value.has(a.id)))
+const allChecked = computed(() => batchFiltered.value.length > 0 && batchFiltered.value.every(a => selectedIds.value.has(a.id)))
 function toggleAll() {
   if (allChecked.value) selectedIds.value = new Set()
-  else selectedIds.value = new Set(assets.value.map(a => a.id))
+  else selectedIds.value = new Set(batchFiltered.value.map(a => a.id))
 }
 
 async function runBatchPool() {
   const ids = [...selectedIds.value]
-  if (!ids.length || !confirm(`将所选 ${ids.length} 个自选标的入池（沿用已有费率限额），并后台拉取全量净值？`)) return
+  if (!ids.length || !confirm(`将所选 ${ids.length} 个标的入池（自动审查：暂停申购/限额过低/档案缺失者会被拒绝并保留自选）？`)) return
   batchBusy.value = true
-  batchMsg.value = '入池中…'
+  batchMsg.value = '审查并入池中…'
   try {
-    await api.post('/research/assets/batch-pool', { ids, apply_defaults: true })
-    show(`已批量入池 ${ids.length} 个标的`, 'success')
-    showBatchModal.value = false
-    activeTab.value = 'pooled'
+    const { data } = await api.post('/research/assets/batch-pool', { ids, apply_defaults: true })
+    const pooledN = data.pooled?.length ?? 0
+    const rej: string[] = (data.rejected || []).map((r: { name: string; symbol: string; reasons: string[] }) => `${r.symbol} ${r.name}: ${r.reasons.join('、')}`)
+    refreshSummary.value = rej.length ? `已拒绝 ${rej.length} 个：\n` + rej.join('\n') : '全部通过审查并入池'
+    show(`入池完成：${pooledN} 成功，${rej.length} 被拒绝`, pooledN > 0 ? 'success' : 'info')
+    await load()
+  } catch (e) {
+    show(errDetail(e), 'error')
+  } finally {
+    batchBusy.value = false
+    batchMsg.value = ''
+  }
+}
+
+async function runAuditPooled() {
+  if (!confirm('扫描全部已入池基金型标的：刷新档案，暂停申购 / 限额<1000 / 档案仍不完整者自动退回自选。继续？')) return
+  batchBusy.value = true
+  batchMsg.value = '审查中…'
+  try {
+    const { data } = await api.post('/research/assets/batch-audit-pooled')
+    const demoted: string[] = []
+    let kept = 0, failed = 0
+    for (const r of data as { symbol: string; name: string; status: string; reasons?: string[]; error?: string; refreshed_fields?: string[] }[]) {
+      if (r.status === 'demoted') demoted.push(`${r.symbol} ${r.name}: ${(r.reasons || []).join('、')}`)
+      else if (r.status === 'failed') failed++
+      else kept++
+    }
+    refreshSummary.value = `审查完成：保留 ${kept} · 退回自选 ${demoted.length}${failed ? ` · 失败 ${failed}` : ''}`
+      + (demoted.length ? '\n退回明细：\n' + demoted.join('\n') : '')
+    show(`审查完成：退回自选 ${demoted.length} 个`, 'success')
     await load()
   } catch (e) {
     show(errDetail(e), 'error')

@@ -40,6 +40,7 @@ class ResearchAsset(Base):
 
     # Purchase quota + multi-dimension auto classification (from eastmoney profile)
     purchase_limit = Column(Float, nullable=True)         # 日申购限额(元); None=未设置/不限
+    purchase_status = Column(String, default="")          # 开放申购/暂停申购/暂停大额申购/封闭期...
     fund_kind = Column(String, default="")                # ETF/ETF联接/LOF/FOF/指数跟踪/指数增强/主动管理/货币
     asset_class = Column(String, default="")              # 偏股/偏债/混合/商品-黄金/另类/货币
     region = Column(String, default="")                   # 境内/QDII-美国/QDII-香港/QDII-新兴市场/QDII-全球/QDII-其他
