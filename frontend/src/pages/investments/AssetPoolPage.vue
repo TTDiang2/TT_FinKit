@@ -755,6 +755,33 @@ async function loadCounts() {
   } catch { /* 计数失败不打扰 */ }
 }
 
+// 每日首次打开自动入池体检：刷新档案→硬违规/档案缺失踢回自选，toast 汇总
+const AUDIT_KEY = 'finkit_pool_audit_date'
+async function maybeAutoAudit() {
+  const today = new Date().toISOString().slice(0, 10)
+  if (localStorage.getItem(AUDIT_KEY) === today) return
+  localStorage.setItem(AUDIT_KEY, today)
+  if (!pooledCount.value) return
+  try {
+    const res = await api.post('/research/assets/batch-audit-pooled')
+    const rs = res.data as { status: string; reasons?: string[]; name: string }[]
+    if (!rs.length) return
+    const isQuota = (r: { reasons?: string[] }) => r.reasons?.some(x => x.includes('限额') || x.includes('申购状态'))
+    const kickedQuota = rs.filter(r => r.status === 'demoted' && isQuota(r))
+    const kickedStale = rs.filter(r => r.status === 'demoted' && !isQuota(r))
+    const failed = rs.filter(r => r.status === 'failed')
+    const kicked = kickedQuota.length + kickedStale.length
+    if (kicked || failed.length) {
+      const parts = [`踢出 ${kicked}`]
+      if (kickedQuota.length) parts.push(`额度受限 ${kickedQuota.length}`)
+      if (kickedStale.length) parts.push(`信息无法更新 ${kickedStale.length}`)
+      if (failed.length) parts.push(`刷新失败 ${failed.length}`)
+      show(`入池体检完成：${parts.join(' · ')}`, kicked ? 'warning' : 'info')
+      await load()
+    }
+  } catch { /* 自动体检失败不打扰 */ }
+}
+
 let searchTimer: ReturnType<typeof setTimeout> | null = null
 watch([activeTab, categoryFilter, kindFilter, classFilter, regionFilter], () => {
   page.value = 1
@@ -1468,6 +1495,6 @@ function fmtDate(v?: string): string {
   return v ? v.slice(0, 10) : '—'
 }
 
-onMounted(() => { load(); loadCounts() })
+onMounted(() => { load(); loadCounts().then(maybeAutoAudit) })
 onUnmounted(() => { if (pollTimer) clearTimeout(pollTimer) })
 </script>

@@ -535,8 +535,8 @@ async def batch_audit_pooled(
             ResearchAsset.exchange == "FUND_CN",
         ).order_by(ResearchAsset.created_at)
     )).scalars().all()
-    if len(assets) > 60:
-        assets = assets[:60]
+    if len(assets) > 200:  # 每日自动体检也走这里；200 已远超实际池规模
+        assets = assets[:200]
     out: list[AuditPooledResult] = []
     demoted_any = False
     for a in assets:
