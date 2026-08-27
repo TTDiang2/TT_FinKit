@@ -9,7 +9,7 @@ from ..models.category import Category
 from ..models.tag import Tag
 from ..models.account import Account
 from ..models.asset import Asset
-from ..models.investment import Investment
+from ..models.investment import Investment, open_position_cond
 from ..schemas.statistics import (
     OverviewResponse, CategoryStatItem, MonthlyTrendItem, TagStatItem,
     DailySpendingItem, WeekdayPatternItem, TopTransactionItem,
@@ -113,7 +113,7 @@ async def get_overview(
     total_assets = total_initial + float(all_inc.scalar() or 0) - float(all_exp.scalar() or 0)
 
     # 投资市值与固定资产/其他资产（Bookkeeping 规范 §2.4：总资产 = 现金 + 投资市值 + 固定资产等）
-    inv_result = await db.execute(select(Investment).where(Investment.user_id == user_id, Investment.sell_date == None))
+    inv_result = await db.execute(select(Investment).where(Investment.user_id == user_id, open_position_cond()))
     investments = inv_result.scalars().all()
     total_invested = sum(inv.quantity * inv.purchase_price for inv in investments)
     total_current = sum(inv.quantity * inv.current_price for inv in investments)

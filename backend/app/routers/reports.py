@@ -9,7 +9,7 @@ from ..models.transaction import Transaction
 from ..models.account import Account
 from ..models.category import Category
 from ..models.asset import Asset
-from ..models.investment import Investment
+from ..models.investment import Investment, open_position_cond
 from ..schemas.report import ReportArchiveCreate, ReportArchiveResponse
 from ..middleware.auth import get_current_user_id
 from typing import List
@@ -171,7 +171,7 @@ async def get_balance_sheet(
     )
     cash_balance = total_initial + float(cum_inc.scalar() or 0) - float(cum_exp.scalar() or 0)
 
-    inv_result = await db.execute(select(Investment).where(Investment.user_id == user_id, Investment.sell_date == None))
+    inv_result = await db.execute(select(Investment).where(Investment.user_id == user_id, open_position_cond()))
     investments = inv_result.scalars().all()
     total_inv_current = sum(inv.quantity * inv.current_price for inv in investments)
 

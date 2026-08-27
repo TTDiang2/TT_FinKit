@@ -43,3 +43,9 @@ class Investment(Base):
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+def open_position_cond():
+    """sell_date is stored as '' (empty string) by some legacy paths, so an
+    IS NULL check alone misclassifies live holdings as closed."""
+    return Investment.sell_date.is_(None) | (Investment.sell_date == "")

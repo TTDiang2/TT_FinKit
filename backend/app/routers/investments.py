@@ -8,7 +8,7 @@ from sqlalchemy import select, delete, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_db
-from ..models.investment import Investment
+from ..models.investment import Investment, open_position_cond
 from ..models.investment_transaction import InvestmentTransaction
 from ..models.investment_cash_flow import InvestmentCashFlow
 from ..models.investment_nav_snapshot import InvestmentNavSnapshot
@@ -238,7 +238,7 @@ async def create_investment(
                 Investment.user_id == user_id,
                 Investment.symbol == symbol,
                 Investment.exchange == exchange,
-                Investment.sell_date.is_(None),
+                open_position_cond(),
             )
         )
         match = existing.scalars().first()

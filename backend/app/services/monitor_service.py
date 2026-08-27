@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..models.signal import Signal
 from ..models.research_asset import ResearchAsset, ResearchAssetPrice
 from ..models.factor import Factor, FactorExposure, FactorValue
-from ..models.investment import Investment
+from ..models.investment import Investment, open_position_cond
 from ..models.user_settings import UserSettings
 from ..services.indicators import max_drawdown, annualized_volatility
 
@@ -106,7 +106,7 @@ async def _portfolio_context(db: AsyncSession, user_id: str) -> dict:
             latest_close[aid] = float(close)
 
     invs = (await db.execute(
-        select(Investment).where(Investment.user_id == user_id, Investment.sell_date.is_(None))
+        select(Investment).where(Investment.user_id == user_id, open_position_cond())
     )).scalars().all()
     holdings = [inv for inv in invs if (inv.quantity or 0) > 0]
 

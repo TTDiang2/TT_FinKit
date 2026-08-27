@@ -10,7 +10,7 @@ from ..services.signal_service import (
 from ..services.signal_engine import generate_signal
 from ..models.signal import Signal as SignalModel
 from ..models.research_asset import ResearchAsset, ResearchAssetPrice
-from ..models.investment import Investment
+from ..models.investment import Investment, open_position_cond
 import json
 import uuid
 import datetime as _dt
@@ -141,15 +141,18 @@ async def compute_trade_plan(db: AsyncSession, user_id: str) -> dict:
     by_symbol = {a.symbol: a for a in assets}
 
     invs = (await db.execute(select(Investment).where(
-        Investment.user_id == user_id, Investment.sell_date.is_(None)))).scalars().all()
+        Investment.user_id == user_id, open_position_cond()))).scalars().all()
     holdings = [i for i in invs if (i.quantity or 0) > 0]
 
+    # Navs only for symbols that matter (targets ∪ holdings) — an IN clause over
+    # the full 19k-asset pool stalls SQLite.
+    needed = set(targets) | {i.symbol or "" for i in holdings}
+    wanted_ids = [by_symbol[s].id for s in needed if s in by_symbol]
     navs: dict[str, float] = {}
-    ids = [a.id for a in assets]
-    if ids:
+    if wanted_ids:
         rows = (await db.execute(
             select(ResearchAssetPrice.asset_id, ResearchAssetPrice.close)
-            .where(ResearchAssetPrice.asset_id.in_(ids))
+            .where(ResearchAssetPrice.asset_id.in_(wanted_ids))
             .order_by(ResearchAssetPrice.date.asc()))).all()
         id_to_sym = {a.id: a.symbol for a in assets}
         for aid, close in rows:
