@@ -24,6 +24,54 @@
         </div>
       </div>
 
+      <!-- 调仓清单 -->
+      <div class="mb-4" v-if="currentSignal">
+        <div class="flex items-center justify-between mb-2">
+          <h4 class="text-sm font-medium">调仓清单（{{ tradePlan?.run_date || '—' }} 信号 vs 当前持仓）</h4>
+          <button @click="loadTradePlan" :disabled="planLoading" class="text-xs px-2 py-1 rounded border border-border-default text-text-secondary hover:bg-bg-tertiary disabled:opacity-50">
+            {{ planLoading ? '计算中…' : (tradePlan ? '刷新清单' : '生成调仓清单') }}
+          </button>
+        </div>
+        <div v-if="tradePlan" class="mb-1 text-xs text-text-muted">
+          持仓总市值 {{ fmtMoney(tradePlan.total_value) }} · 小额差额（&lt;100元或&lt;1%）自动保持不动
+        </div>
+        <table v-if="tradePlan" class="w-full text-sm">
+          <thead class="bg-bg-tertiary text-left">
+            <tr>
+              <th class="px-3 py-1.5 font-medium">标的</th>
+              <th class="px-3 py-1.5 font-medium text-right">当前/目标权重</th>
+              <th class="px-3 py-1.5 font-medium text-right">动作</th>
+              <th class="px-3 py-1.5 font-medium text-right">金额</th>
+              <th class="px-3 py-1.5 font-medium text-right">费用</th>
+              <th class="px-3 py-1.5 font-medium text-right">到账</th>
+              <th class="px-3 py-1.5 font-medium">提示</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="r in tradePlan.rows" :key="r.symbol" class="border-t border-border-default">
+              <td class="px-3 py-1.5"><div class="font-medium">{{ r.name }}</div><div class="text-xs text-text-muted">{{ r.symbol }}</div></td>
+              <td class="px-3 py-1.5 text-right text-xs">
+                {{ (r.current_weight * 100).toFixed(1) }}% → <span class="font-medium">{{ (r.target_weight * 100).toFixed(1) }}%</span>
+              </td>
+              <td class="px-3 py-1.5 text-right">
+                <span :class="['px-1.5 py-0.5 text-xs rounded', r.action === 'buy' ? 'bg-income-bg text-income-color' : r.action === 'sell' ? 'bg-expense-bg text-expense-color' : 'bg-bg-tertiary text-text-secondary']">
+                  {{ r.action === 'buy' ? '买入' : r.action === 'sell' ? '卖出' : '持有' }}
+                </span>
+              </td>
+              <td class="px-3 py-1.5 text-right font-mono">{{ r.amount ? fmtMoney(r.amount) : '—' }}</td>
+              <td class="px-3 py-1.5 text-right text-xs">{{ r.est_fee_pct != null ? `${r.est_fee_pct}% ≈ ${fmtMoney(r.est_fee_amount)}` : '—' }}</td>
+              <td class="px-3 py-1.5 text-right text-xs">{{ r.t_plus ? `${r.t_plus} · 约${r.arrive_date}` : '—' }}</td>
+              <td class="px-3 py-1.5 text-xs">
+                <span v-for="(w, i) in r.warnings" :key="i" :title="w" class="text-warning mr-1">⚠ {{ w }}</span>
+                <span v-if="!r.warnings.length" class="text-text-muted">—</span>
+              </td>
+            </tr>
+            <tr v-if="!tradePlan.rows.length"><td colspan="7" class="px-3 py-6 text-center text-text-muted">无数据（先运行信号）</td></tr>
+          </tbody>
+        </table>
+        <div v-else class="py-3 text-center text-xs text-text-muted border border-dashed border-border-default rounded">点击「生成调仓清单」对比目标权重与当前持仓</div>
+      </div>
+
       <!-- 目标权重表 -->
       <div class="mb-4">
         <h4 class="text-sm font-medium mb-2">目标权重</h4>
@@ -105,6 +153,31 @@ const signals = ref<SignalResponse[]>([])
 const running = ref(false)
 const runError = ref('')
 
+interface TradePlanRow {
+  symbol: string; name: string; current_weight: number; target_weight: number;
+  action: 'buy' | 'sell' | 'hold'; amount: number;
+  est_fee_pct: number | null; est_fee_amount: number;
+  t_plus: string | null; arrive_date: string | null; warnings: string[];
+}
+interface TradePlan {
+  signal_id: string | null; run_date: string | null; next_rebalance_date: string | null;
+  total_value: number; rows: TradePlanRow[];
+}
+const tradePlan = ref<TradePlan | null>(null)
+const planLoading = ref(false)
+
+function fmtMoney(v: number): string {
+  return v.toLocaleString('zh-CN', { maximumFractionDigits: 2 }) + ' 元'
+}
+
+async function loadTradePlan() {
+  planLoading.value = true
+  try {
+    const res = await api.get<TradePlan>('/signals/trade-plan')
+    tradePlan.value = res.data
+  } catch { tradePlan.value = null } finally { planLoading.value = false }
+}
+
 async function loadSignals() {
   const [current, list] = await Promise.all([
     api.get<SignalResponse | null>('/signals/current').then(r => r.data).catch(() => null),
@@ -121,6 +194,7 @@ async function runSignal() {
     const result = await api.post<SignalRunResult>('/signals/run', {})
     if (result.data.status === 'ok') {
       await loadSignals()
+      await loadTradePlan()
     } else {
       runError.value = result.data.error || '信号生成失败'
     }
@@ -132,5 +206,8 @@ async function runSignal() {
   }
 }
 
-onMounted(loadSignals)
+onMounted(async () => {
+  await loadSignals()
+  if (currentSignal.value) await loadTradePlan()
+})
 </script>
