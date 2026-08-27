@@ -1,7 +1,7 @@
 @echo off
 rem ============================================
 rem  FinKit 桌面启动器
-rem  1. 检查后端是否已运行, 未运行则隐藏启动 (FastAPI 127.0.0.1:8000)
+rem  1. 检查后端是否已运行, 未运行则隐藏启动 (FastAPI 127.0.0.1:8100)
 rem  2. 等待后端就绪
 rem  3. 启动桌面客户端 FinKit.exe
 rem  双击本文件即可, 无黑色命令行窗口
@@ -27,8 +27,8 @@ if not exist "%EXE%" (
     exit /b 1
 )
 
-rem ---- 检查后端是否已在运行 (端口 8000) ----
-powershell -NoProfile -Command "try { $c = New-Object Net.Sockets.TcpClient; $c.Connect('127.0.0.1', 8000); $c.Close(); exit 0 } catch { exit 1 }" >nul 2>&1
+rem ---- 检查后端是否已在运行 (端口 8100) ----
+powershell -NoProfile -Command "try { $c = New-Object Net.Sockets.TcpClient; $c.Connect('127.0.0.1', 8100); $c.Close(); exit 0 } catch { exit 1 }" >nul 2>&1
 if not errorlevel 1 goto :start_app
 
 rem ---- 隐藏启动后端 ----
@@ -42,7 +42,7 @@ if %tries% gtr 30 (
     echo [错误] 后端 30 秒内未就绪, 请查看 %LOG%
     exit /b 1
 )
-powershell -NoProfile -Command "try { $c = New-Object Net.Sockets.TcpClient; $c.Connect('127.0.0.1', 8000); $c.Close(); exit 0 } catch { exit 1 }" >nul 2>&1
+powershell -NoProfile -Command "try { $c = New-Object Net.Sockets.TcpClient; $c.Connect('127.0.0.1', 8100); $c.Close(); exit 0 } catch { exit 1 }" >nul 2>&1
 if errorlevel 1 (
     timeout /t 1 /nobreak >nul
     goto :wait_loop

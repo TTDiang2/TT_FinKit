@@ -12,7 +12,7 @@ set "ROOT=%ROOT:~0,-1%"
 
 rem ---- Tunable parameters (edit as needed) ----
 set "APP_NAME=FinKit"
-set "APP_URL=http://127.0.0.1:8000"
+set "APP_URL=http://127.0.0.1:8100"
 set "APP_ICON=%ROOT%\build\finkit.ico"
 set "WIN_WIDTH=1280"
 set "WIN_HEIGHT=800"
