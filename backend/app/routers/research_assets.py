@@ -252,6 +252,7 @@ async def list_assets(
     fund_kind: Optional[str] = Query(None),
     asset_class: Optional[str] = Query(None),
     region: Optional[str] = Query(None),
+    limit_filter: Optional[str] = Query(None),   # limited / unlimited
     page: int = Query(0, ge=0),
     page_size: int = Query(50, ge=1, le=200),
     user_id: str = Depends(get_current_user_id),
@@ -271,6 +272,10 @@ async def list_assets(
         q = q.where(ResearchAsset.asset_class == asset_class)
     if region:
         q = q.where(ResearchAsset.region == region)
+    if limit_filter == "limited":
+        q = q.where(ResearchAsset.purchase_limit.isnot(None), ResearchAsset.purchase_limit < 100000)
+    elif limit_filter == "unlimited":
+        q = q.where((ResearchAsset.purchase_limit.is_(None)) | (ResearchAsset.purchase_limit >= 100000))
     if search:
         like = f"%{search}%"
         q = q.where((ResearchAsset.name.like(like)) | (ResearchAsset.symbol.like(like)))

@@ -459,12 +459,12 @@ class TestRouter:
                 a1 = await _mk_asset(db, u.id, symbol="161005", name="富国天惠")
                 await _mk_asset(db, u.id, symbol="000300", name="沪深300", status="pooled")
                 listed = await ra.list_assets(status="watchlist", category=None, search=None,
-                                              fund_kind=None, asset_class=None, region=None,
+                                              fund_kind=None, asset_class=None, region=None, limit_filter=None,
                                               page=0, page_size=50,
                                               user_id=u.id, db=db)
                 assert [x.symbol for x in listed] == ["161005"]
                 found = await ra.list_assets(status=None, category=None, search="沪深",
-                                             fund_kind=None, asset_class=None, region=None,
+                                             fund_kind=None, asset_class=None, region=None, limit_filter=None,
                                              page=0, page_size=50,
                                              user_id=u.id, db=db)
                 assert [x.symbol for x in found] == ["000300"]
