@@ -1,11 +1,11 @@
-﻿from pydantic import BaseModel
-from typing import Optional
+from pydantic import BaseModel
+from typing import Union, Optional
 
 class StrategyCreate(BaseModel):
     name: str
     description: str = ""
     code: str
-    params_schema: dict = {}
+    params_schema: Union[dict, list] = {}
     rebalance_freq: str = "monthly"
     folder: str = ""
     source_file: Optional[str] = None
@@ -16,7 +16,7 @@ class StrategyUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     code: Optional[str] = None
-    params_schema: Optional[dict] = None
+    params_schema: Optional[Union[dict, list]] = None
     rebalance_freq: Optional[str] = None
     group_id: Optional[str] = None
 
@@ -25,7 +25,7 @@ class StrategyResponse(BaseModel):
     name: str
     description: str
     version: int
-    params_schema: dict
+    params_schema: Union[dict, list]
     rebalance_freq: str
     is_builtin: bool
     folder: str = ""

@@ -1,4 +1,4 @@
-﻿from pathlib import Path
+from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, desc, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -70,6 +70,7 @@ def _strategy_to_response(s, latest_backtest: dict | None = None) -> StrategyRes
         rebalance_freq=s.rebalance_freq,
         is_builtin=s.is_builtin,
         folder=s.folder or "",
+        group_id=getattr(s, "group_id", None),
         factor_keys=_factor_keys_from_str(s.factor_keys),
         source_file=s.source_file,
         activated_at=str(s.activated_at) if s.activated_at else None,
@@ -139,6 +140,7 @@ async def import_strategy_endpoint(req: StrategyCreate, db: AsyncSession = Depen
         source_file=req.source_file,
         version_note=doc_meta.get("version_note"),
         logic=doc_meta.get("logic"),
+        version_hint=doc_meta.get("version"),
     )
     return StrategyImportResult(strategy_id=strat.id, version=strat.version, status=status)
 

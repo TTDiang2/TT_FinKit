@@ -6,8 +6,8 @@
 import ast
 import re
 
-# 支持的元数据键（factor_keys 特殊处理为 list）
-_META_KEYS = ("name", "description", "rebalance_freq", "version_note")
+# 支持的元数据键（factor_keys 特殊处理为 list，version 特殊处理为 int）
+_META_KEYS = ("name", "description", "rebalance_freq", "version_note", "version")
 
 
 def _parse_factor_keys(raw: str) -> list[str]:
@@ -39,6 +39,7 @@ def parse_strategy_docstring(code: str) -> dict:
         "rebalance_freq": None,
         "factor_keys": None,
         "version_note": None,
+        "version": None,
         "logic": None,
     }
     try:
@@ -68,6 +69,11 @@ def parse_strategy_docstring(code: str) -> dict:
         key, value = m.group(1), m.group(2)
         if key == "factor_keys":
             meta["factor_keys"] = _parse_factor_keys(value)
+        elif key == "version":
+            try:
+                meta["version"] = int(value)
+            except ValueError:
+                pass
         elif key in _META_KEYS and value:
             meta[key] = value
     return meta

@@ -376,7 +376,7 @@ export interface StrategyResponse {
   name: string
   description: string
   version: number
-  params_schema: Record<string, any>
+  params_schema: any
   rebalance_freq: string
   is_builtin: boolean
   folder?: string

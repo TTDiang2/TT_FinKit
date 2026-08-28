@@ -1,31 +1,33 @@
 """name: 大类资产动量轮动
-description: 类内选强+多周期风险调整动量+波动率目标(国开债缓冲)+周频熔断
-rebalance_freq: weekly
-version_note: 2.0.0-vol-target
+description: 核心卫星宏观动量——各类选最强C+动量开关(黄金迟滞)+权益二选一+风险预算打折+利率债缓冲
+rebalance_freq: monthly
+version: 3
+version_note: 3.0-core-satellite
 factor_keys:
 ---
 
-大类资产动量轮动 v2 — 在「大类资产代表」池上运行的波动率目标版。
+大类资产动量轮动 v3（核心-卫星）——在「大类资产代表」池上运行。
 
-策略逻辑（每个调仓日，默认每周）：
-  1. 类内选强：六大类（权益/海外/黄金/油气/有色/利率债）内按 126 日
-     风险调整动量（收益/波动）选出各类代表
-  2. 类间排序：代表的多周期动量（21/63/126/252 日均值）
-  3. 入选：动量为正的类取前 top_k；全部为负 → 100% 0-3年国开债（防御态，
-     等效紧急调仓——周频检查保证最晚一周内退出风险资产）
-  4. 波动率目标：入选类等权 σ_est = sqrt(mean σi²)（20 日年化），
-     与 0-3年国开债(σ_bond)联合解出风险权重 w_r 使组合 σ≈vol_target，
-     其余权重全部给国开债缓冲（场外基金无杠杆，w_r≤1 天然封顶）
-  5. 缓冲带：已持有类仍处 top_(k+buffer) 且动量为正则保留
+策略逻辑（每个调仓日，月频）：
+  1. 类内选强：权益/海外/黄金/油气/有色各类内按 250 日纯动量选最强者
+  2. 动量开关：类动量 > 0 才开仓；黄金带 -2% 迟滞防频繁开关
+  3. 预算分配：黄金 gold_budget + 权益 equity_budget(给境内/海外较强方)
+     + 油气 oil_budget
+  4. 权益全关时其预算并入黄金（股金负相关承接）
+  5. risk_scale 整体风险预算打折，剩余全部给 0-3 年国开债 C 缓冲
+  6. buffer 缓冲带（百分点）减少无效换仓
 
-实测（2021-09 ~ 2026-08，大类资产代表池 21 只 C 份额）：
-  见 scripts/tune_macro_momentum.py 输出
+实测（2021-09 ~ 2026-08，大类资产代表 21 只 C 份额，定稿参数）：
+  7.24% 年化 / 5.72% 波动 / 夏普 0.92 / 最大回撤 -9.3%
+  （rs=1 激进档：12.91%/10.26%/1.06/-16.4%）
 
-参数（params.schema）：
-  - vol_target: 组合年化波动目标，默认 0.05
-  - top_k: 风险类最多同时持有几个，默认 3
-  - lookback_days: 类代表动量/波动窗口，默认 126
-  - buffer: 类排名缓冲带宽度，默认 1
+参数（params_schema）：
+  - lookback_days: 类内动量窗口，默认 250
+  - gold_budget: 黄金类风险预算，默认 0.5
+  - equity_budget: 权益类风险预算（境内+海外），默认 0.2
+  - oil_budget: 油气类风险预算，默认 0.1
+  - risk_scale: 整体风险预算打折，默认 0.5
+  - buffer: 换仓缓冲带（百分点），默认 2
 """
 
 from finkit_strategy import Strategy, StrategyContext
@@ -48,8 +50,8 @@ class AssetRotationVolTargetStrategy(Strategy):
     name = "大类资产动量轮动"
     rebalance_freq = "monthly"
     params_schema = {
-        "gold_budget": {"type": "float", "default": 0.35, "min": 0.0, "max": 0.6},
-        "equity_budget": {"type": "float", "default": 0.25, "min": 0.0, "max": 0.6},
+"gold_budget": {"type": "float", "default": 0.5, "min": 0.0, "max": 0.6},
+"equity_budget": {"type": "float", "default": 0.2, "min": 0.0, "max": 0.6},
         "oil_budget": {"type": "float", "default": 0.10, "min": 0.0, "max": 0.4},
         "risk_scale": {"type": "float", "default": 0.5, "min": 0.1, "max": 1.0},
         "lookback_days": {"type": "int", "default": 250, "min": 20, "max": 500},

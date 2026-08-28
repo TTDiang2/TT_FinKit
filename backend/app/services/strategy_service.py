@@ -71,6 +71,7 @@ async def import_strategy(
     folder: str = "", factor_keys: list[str] | None = None,
     source_file: str | None = None,
     version_note: str | None = None, logic: str | None = None,
+    version_hint: int | None = None,
 ) -> tuple[Strategy, str]:
     """Import or update a strategy. If name exists, bump version. Returns (strategy, status)."""
     # factor_keys 存 Text 列必须 json.dumps（空列表存 None）
@@ -83,7 +84,7 @@ async def import_strategy(
     existing = result.scalar_one_or_none()
 
     if existing:
-        new_version = existing.version + 1
+        new_version = max(existing.version + 1, version_hint or 0) if version_hint and version_hint > existing.version else existing.version + 1
         strategy = Strategy(
             name=name, code=code, description=description,
             version=new_version, params_schema=json.dumps(params_schema),
@@ -99,7 +100,7 @@ async def import_strategy(
     else:
         strategy = Strategy(
             name=name, code=code, description=description,
-            version=1, params_schema=json.dumps(params_schema),
+            version=version_hint or 1, params_schema=json.dumps(params_schema),
             rebalance_freq=rebalance_freq, is_builtin=False,
             folder=folder, factor_keys=factor_keys_json, source_file=source_file,
             version_note=version_note, logic=logic,
