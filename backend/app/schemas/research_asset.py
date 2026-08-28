@@ -270,8 +270,15 @@ class ResearchGroupUpdate(BaseModel):
     asset_ids: Optional[List[str]] = None   # None=不动，[]/列表=整体替换
 
 
+class ResearchGroupMemberItem(BaseModel):
+    id: str
+    symbol: str
+    name: str
+
+
 class ResearchGroupResponse(BaseModel):
     id: str
     name: str
     note: str
     asset_ids: List[str] = []
+    members: List[ResearchGroupMemberItem] = []

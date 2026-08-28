@@ -253,14 +253,27 @@ async def list_groups(
     user_id: str = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ):
+    id_rows = (await db.execute(
+        select(ResearchAsset.id, ResearchAsset.symbol, ResearchAsset.name)
+        .where(ResearchAsset.user_id == user_id)
+    )).all()
+    asset_map = {r[0]: r for r in id_rows}
     rows = (await db.execute(
         select(ResearchGroup).where(ResearchGroup.user_id == user_id)
         .order_by(ResearchGroup.created_at)
     )).scalars().all()
-    return [ResearchGroupResponse(
-        id=g.id, name=g.name, note=g.note or "",
-        asset_ids=[m.asset_id for m in g.members],
-    ) for g in rows]
+    out = []
+    for g in rows:
+        members = []
+        for m in g.members:
+            a = asset_map.get(m.asset_id)
+            members.append({"id": m.asset_id, "symbol": a.symbol if a else "?", "name": a.name if a else "?"})
+        out.append(ResearchGroupResponse(
+            id=g.id, name=g.name, note=g.note or "",
+            asset_ids=[m.asset_id for m in g.members],
+            members=members,
+        ))
+    return out
 
 
 @router.post("/groups", response_model=ResearchGroupResponse)
@@ -348,6 +361,47 @@ async def delete_group(
     return {"ok": True}
 
 
+@router.get("/ids")
+async def list_asset_ids(
+    status: Optional[str] = Query(None),
+    category: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    fund_kind: Optional[str] = Query(None),
+    asset_class: Optional[str] = Query(None),
+    region: Optional[str] = Query(None),
+    limit_filter: Optional[str] = Query(None),
+    group_id: Optional[str] = Query(None),
+    user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """轻量 id 全集（同 list_assets 筛选口径）——供前端「全选筛选结果」。"""
+    q = select(ResearchAsset.id, ResearchAsset.symbol, ResearchAsset.name, ResearchAsset.status)\
+        .where(ResearchAsset.user_id == user_id)
+    if status:
+        q = q.where(ResearchAsset.status == status)
+    if category:
+        q = q.where(ResearchAsset.category == category)
+    if fund_kind:
+        q = q.where(ResearchAsset.fund_kind == fund_kind)
+    if asset_class:
+        q = q.where(ResearchAsset.asset_class == asset_class)
+    if region:
+        q = q.where(ResearchAsset.region == region)
+    if limit_filter == "limited":
+        q = q.where(ResearchAsset.purchase_limit.isnot(None), ResearchAsset.purchase_limit < 100000)
+    elif limit_filter == "unlimited":
+        q = q.where((ResearchAsset.purchase_limit.is_(None)) | (ResearchAsset.purchase_limit >= 100000))
+    if group_id:
+        member_ids = select(ResearchGroupMember.asset_id).where(ResearchGroupMember.group_id == group_id)
+        q = q.where(ResearchAsset.id.in_(member_ids))
+    if search:
+        like = f"%{search}%"
+        q = q.where((ResearchAsset.name.like(like)) | (ResearchAsset.symbol.like(like)))
+    rows = (await db.execute(q.order_by(ResearchAsset.created_at))).all()
+    return {"items": [{"id": r[0], "symbol": r[1], "name": r[2], "status": r[3]} for r in rows],
+            "total": len(rows)}
+
+
 @router.get("", response_model=None)
 async def list_assets(
     status: Optional[str] = Query(None),
@@ -357,6 +411,7 @@ async def list_assets(
     asset_class: Optional[str] = Query(None),
     region: Optional[str] = Query(None),
     limit_filter: Optional[str] = Query(None),   # limited / unlimited
+    group_id: Optional[str] = Query(None),       # 标的组合过滤
     page: int = Query(0, ge=0),
     page_size: int = Query(50, ge=1, le=200),
     user_id: str = Depends(get_current_user_id),
@@ -380,6 +435,14 @@ async def list_assets(
         q = q.where(ResearchAsset.purchase_limit.isnot(None), ResearchAsset.purchase_limit < 100000)
     elif limit_filter == "unlimited":
         q = q.where((ResearchAsset.purchase_limit.is_(None)) | (ResearchAsset.purchase_limit >= 100000))
+    if group_id:
+        g = (await db.execute(
+            select(ResearchGroup).where(ResearchGroup.id == group_id, ResearchGroup.user_id == user_id)
+        )).scalar_one_or_none()
+        if not g:
+            raise HTTPException(status_code=404, detail="组合不存在")
+        member_ids = select(ResearchGroupMember.asset_id).where(ResearchGroupMember.group_id == group_id)
+        q = q.where(ResearchAsset.id.in_(member_ids))
     if search:
         like = f"%{search}%"
         q = q.where((ResearchAsset.name.like(like)) | (ResearchAsset.symbol.like(like)))
@@ -1003,103 +1066,3 @@ async def sync_asset(
     if result.error:
         raise HTTPException(status_code=502, detail=f"行情同步失败：{result.error}")
     return result
-
-
-@router.get("/groups", response_model=List[ResearchGroupResponse])
-async def list_groups(
-    user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
-):
-    rows = (await db.execute(
-        select(ResearchGroup).where(ResearchGroup.user_id == user_id)
-        .order_by(ResearchGroup.created_at)
-    )).scalars().all()
-    return [ResearchGroupResponse(
-        id=g.id, name=g.name, note=g.note or "",
-        asset_ids=[m.asset_id for m in g.members],
-    ) for g in rows]
-
-
-@router.post("/groups", response_model=ResearchGroupResponse)
-async def create_group(
-    req: ResearchGroupCreate,
-    user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
-):
-    name = req.name.strip()
-    if not name:
-        raise HTTPException(status_code=400, detail="组合名称不能为空")
-    dup = (await db.execute(
-        select(ResearchGroup).where(ResearchGroup.user_id == user_id, ResearchGroup.name == name)
-    )).scalar_one_or_none()
-    if dup:
-        raise HTTPException(status_code=409, detail=f"组合「{name}」已存在")
-
-    g = ResearchGroup(user_id=user_id, name=name, note=req.note or "")
-    db.add(g)
-    await db.flush()
-    owned = set((await db.execute(
-        select(ResearchAsset.id).where(ResearchAsset.user_id == user_id,
-                                       ResearchAsset.id.in_(req.asset_ids))
-    )).scalars().all())
-    for aid in req.asset_ids:
-        if aid in owned:
-            db.add(ResearchGroupMember(group_id=g.id, asset_id=aid))
-    await db.commit()
-    await db.refresh(g)
-    return ResearchGroupResponse(id=g.id, name=g.name, note=g.note or "",
-                                 asset_ids=[m.asset_id for m in g.members])
-
-
-@router.put("/groups/{group_id}", response_model=ResearchGroupResponse)
-async def update_group(
-    group_id: str,
-    req: ResearchGroupUpdate,
-    user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
-):
-    g = (await db.execute(
-        select(ResearchGroup).where(ResearchGroup.id == group_id, ResearchGroup.user_id == user_id)
-    )).scalar_one_or_none()
-    if not g:
-        raise HTTPException(status_code=404, detail="组合不存在")
-
-    if req.name is not None and req.name.strip() and req.name.strip() != g.name:
-        dup = (await db.execute(
-            select(ResearchGroup).where(ResearchGroup.user_id == user_id,
-                                        ResearchGroup.name == req.name.strip())
-        )).scalar_one_or_none()
-        if dup:
-            raise HTTPException(status_code=409, detail=f"组合「{req.name.strip()}」已存在")
-        g.name = req.name.strip()
-    if req.note is not None:
-        g.note = req.note
-    if req.asset_ids is not None:
-        owned = set((await db.execute(
-            select(ResearchAsset.id).where(ResearchAsset.user_id == user_id,
-                                           ResearchAsset.id.in_(req.asset_ids))
-        )).scalars().all())
-        await db.execute(delete(ResearchGroupMember).where(ResearchGroupMember.group_id == g.id))
-        for aid in req.asset_ids:
-            if aid in owned:
-                db.add(ResearchGroupMember(group_id=g.id, asset_id=aid))
-    await db.commit()
-    await db.refresh(g)
-    return ResearchGroupResponse(id=g.id, name=g.name, note=g.note or "",
-                                 asset_ids=[m.asset_id for m in g.members])
-
-
-@router.delete("/groups/{group_id}")
-async def delete_group(
-    group_id: str,
-    user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
-):
-    g = (await db.execute(
-        select(ResearchGroup).where(ResearchGroup.id == group_id, ResearchGroup.user_id == user_id)
-    )).scalar_one_or_none()
-    if not g:
-        raise HTTPException(status_code=404, detail="组合不存在")
-    await db.delete(g)
-    await db.commit()
-    return {"ok": True}

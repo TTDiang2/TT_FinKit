@@ -866,4 +866,5 @@ export interface ResearchGroup {
   name: string
   note: string
   asset_ids: string[]
+  members?: { id: string; symbol: string; name: string }[]
 }

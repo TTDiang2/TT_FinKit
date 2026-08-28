@@ -19,11 +19,12 @@
         <button @click="showImportModal = true" class="px-4 py-2 text-sm rounded-md border border-border-default text-text-secondary hover:bg-bg-tertiary flex items-center gap-1">
           <Download :size="14" /> 天天基金导入
         </button>
-        <button @click="openBatchModal" class="px-4 py-2 text-sm rounded-md border border-border-default text-text-secondary hover:bg-bg-tertiary flex items-center gap-1">
-          <ListChecks :size="14" /> 批量管理
+        <button @click="openBatchModal" :disabled="!selectedIds.size"
+          :class="['px-4 py-2 text-sm rounded-md flex items-center gap-1', selectedIds.size ? 'bg-accent-primary text-white hover:bg-accent-hover' : 'border border-border-default text-text-muted cursor-not-allowed']">
+          <ListChecks :size="14" /> 批量操作 ({{ selectedIds.size }})
         </button>
         <button @click="openGroupsModal" class="px-4 py-2 text-sm rounded-md border border-border-default text-text-secondary hover:bg-bg-tertiary flex items-center gap-1">
-          <FolderOpen :size="14" /> 标的组合{{ groups.length ? ` (${groups.length})` : '' }}
+          <FolderOpen :size="14" /> 组合管理
         </button>
         <button @click="openAddModal" class="px-4 py-2 text-sm rounded-md bg-accent-primary text-white hover:bg-accent-hover flex items-center gap-1">
           <Plus :size="14" /> 添加自选
@@ -61,7 +62,15 @@
         <option value="limited">限购中</option>
         <option value="unlimited">不限购</option>
       </select>
-      <div class="text-xs text-text-muted ml-auto">研究标的池 · 入池后自动拉取全量历史净值，为因子暴露 / 回测提供数据地基</div>
+      <select v-model="groupFilter" class="px-3 py-2 text-sm border border-border-default rounded-md" title="按标的组合过滤">
+        <option value="">全部组合</option>
+        <option v-for="g in groups" :key="g.id" :value="g.id">{{ g.name }}（{{ g.asset_ids.length }}）</option>
+      </select>
+      <div class="text-xs text-text-muted ml-auto flex items-center gap-2">
+        <button @click="selectAllFiltered" class="px-2 py-1 rounded border border-border-default text-text-secondary hover:bg-bg-tertiary">全选筛选结果</button>
+        <button v-if="selectedIds.size" @click="clearSelection" class="px-2 py-1 rounded border border-border-default text-text-secondary hover:bg-bg-tertiary">清空选择</button>
+        <span>已选 {{ selectedIds.size }}</span>
+      </div>
     </div>
 
     <div class="bg-white rounded-lg shadow-sm overflow-hidden">
@@ -69,6 +78,9 @@
       <table class="w-full text-sm">
         <thead class="bg-bg-tertiary text-left">
           <tr>
+            <th class="px-2 py-2 w-8">
+              <input type="checkbox" :checked="pageAllChecked" @change="toggleAllPage" title="全选/取消本页" />
+            </th>
             <th class="px-3 py-2 font-medium">
               <button @click="sortBy('name')" class="inline-flex items-center gap-0.5 hover:text-text-primary">
                 名称 <SortIcon :dir="sortDir" :active="sortKey === 'name'" />
@@ -132,7 +144,10 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="a in filteredAssets" :key="a.id" class="border-t border-border-default hover:bg-bg-tertiary/40 cursor-pointer" @dblclick="openDetail(a)">
+          <tr v-for="a in filteredAssets" :key="a.id" :class="['border-t border-border-default hover:bg-bg-tertiary/40 cursor-pointer', selectedIds.has(a.id) ? 'bg-accent-primary/5' : '']" @dblclick="openDetail(a)">
+            <td class="px-2 py-2 w-8" @click.stop>
+              <input type="checkbox" :checked="selectedIds.has(a.id)" @change="toggleSelect(a.id)" />
+            </td>
             <td class="px-3 py-2">
               <div class="font-medium text-text-primary">{{ a.name }}<span v-if="a.is_money_market" class="ml-1 text-xs text-text-muted">货币</span></div>
               <div class="text-xs text-text-muted">{{ a.symbol }} · {{ EXCHANGE_LABELS[a.exchange] || a.exchange || '—' }}</div>
@@ -200,10 +215,10 @@
             </td>
           </tr>
           <tr v-if="!loading && !filteredAssets.length">
-            <td :colspan="activeTab === 'pooled' ? 17 : 11" class="px-4 py-8 text-center text-text-muted">{{ activeTab === 'watchlist' ? '暂无自选标的，点击右上角「添加自选」或「天天基金导入」' : '暂无入池标的，从自选列表点击「入池」' }}</td>
+            <td :colspan="activeTab === 'pooled' ? 18 : 12" class="px-4 py-8 text-center text-text-muted">{{ activeTab === 'watchlist' ? '暂无自选标的，点击右上角「添加自选」或「天天基金导入」' : '暂无入池标的，从自选列表点击「入池」' }}</td>
           </tr>
           <tr v-if="loading">
-            <td :colspan="activeTab === 'pooled' ? 17 : 11" class="px-4 py-8 text-center text-text-muted">加载中…</td>
+            <td :colspan="activeTab === 'pooled' ? 18 : 12" class="px-4 py-8 text-center text-text-muted">加载中…</td>
           </tr>
         </tbody>
       </table>
@@ -438,84 +453,62 @@
       </template>
     </BaseModal>
 
-    <!-- 批量管理：勾选入池 / 更新档案 / 入池审查 -->
-    <BaseModal v-if="showBatchModal" title="批量管理（入池 / 更新档案 / 审查）" width="max-w-3xl" @close="showBatchModal = false">
+    <!-- 批量操作：作用于主列表勾选 -->
+    <BaseModal v-if="showBatchModal" title="批量操作" width="max-w-2xl" @close="showBatchModal = false">
       <div class="space-y-3">
-        <div class="flex items-center gap-2 flex-wrap text-sm">
-          <select v-model="batchStatusFilter" class="px-2 py-1.5 text-xs border border-border-default rounded-md">
-            <option value="">全部状态</option>
-            <option value="watchlist">仅自选</option>
-            <option value="pooled">仅已入池</option>
-          </select>
-          <select v-model="batchCategoryFilter" class="px-2 py-1.5 text-xs border border-border-default rounded-md">
-            <option value="">全部分类</option>
-            <option v-for="c in categories" :key="c" :value="c">{{ c }}</option>
-          </select>
-          <select v-model="batchKindFilter" class="px-2 py-1.5 text-xs border border-border-default rounded-md">
-            <option value="">全部类型</option>
-            <option v-for="v in kindOptions" :key="v" :value="v">{{ v }}</option>
-          </select>
-          <select v-model="batchClassFilter" class="px-2 py-1.5 text-xs border border-border-default rounded-md">
-            <option value="">全部资产类别</option>
-            <option v-for="v in classOptions" :key="v" :value="v">{{ v }}</option>
-          </select>
-          <select v-model="batchRegionFilter" class="px-2 py-1.5 text-xs border border-border-default rounded-md">
-            <option value="">全部地区</option>
-            <option v-for="v in regionOptions" :key="v" :value="v">{{ v }}</option>
-          </select>
-          <input v-model.trim="batchSearch" placeholder="搜索名称/代码" class="px-2 py-1.5 text-xs border border-border-default rounded-md w-32" />
-        </div>
-        <div class="flex items-center gap-3 text-sm">
-          <label class="flex items-center gap-1.5 cursor-pointer">
-            <input type="checkbox" :checked="allChecked" @change="toggleAll" /> 全选（当前筛选 {{ batchFiltered.length }} 个）
-          </label>
-          <span class="text-text-muted text-xs">已选 {{ selectedIds.size }} 个</span>
+        <div class="flex items-center gap-2 text-sm">
+          <span class="font-medium">已选 {{ selectedIds.size }} 只</span>
+          <button @click="clearSelection" class="text-xs px-2 py-0.5 rounded border border-border-default text-text-secondary hover:bg-bg-tertiary">清空</button>
           <span v-if="batchBusy" class="ml-auto text-accent-primary">{{ batchMsg }}</span>
         </div>
-        <div class="max-h-80 overflow-y-auto border border-border-default rounded-md divide-y divide-border-default">
-          <label v-for="a in batchFiltered" :key="a.id" class="flex items-center gap-3 px-3 py-2 hover:bg-bg-tertiary/50 cursor-pointer">
-            <input type="checkbox" :checked="selectedIds.has(a.id)" @change="toggleSelect(a.id)" />
-            <span class="font-medium w-44 truncate">{{ a.name }}</span>
-            <span class="text-xs text-text-muted font-mono w-16 shrink-0">{{ a.symbol }}</span>
-            <span :class="['px-1.5 py-0.5 text-xs rounded shrink-0', a.status === 'pooled' ? 'bg-income-bg text-income-color' : 'bg-bg-tertiary text-text-secondary']">
-              {{ a.status === 'pooled' ? '已入池' : '自选' }}
-            </span>
-            <span v-if="a.purchase_status && a.purchase_status !== '开放申购'" class="px-1.5 py-0.5 text-xs rounded bg-expense-bg text-expense-color shrink-0">{{ a.purchase_status }}</span>
-            <span v-if="a.fund_kind" class="text-xs text-purple-700 shrink-0">{{ a.fund_kind }}</span>
-            <span v-if="a.asset_class" class="text-xs text-sky-700 shrink-0">{{ a.asset_class }}</span>
-            <span v-if="a.region && a.region !== '境内'" class="text-xs text-amber-700 shrink-0">{{ a.region }}</span>
-          </label>
+        <div class="max-h-32 overflow-y-auto border border-border-default rounded-md p-2 flex flex-wrap gap-1.5">
+          <span v-for="a in selectedAssets" :key="a.id" class="px-1.5 py-0.5 text-xs rounded bg-bg-tertiary">
+            {{ a.symbol }} {{ a.name.length > 10 ? a.name.slice(0, 10) + '…' : a.name }}
+          </span>
+          <span v-if="selectedIds.size > selectedAssets.length" class="text-xs text-text-muted px-1 py-0.5">
+            …等 {{ selectedIds.size }} 只
+          </span>
         </div>
-        <div class="grid grid-cols-3 gap-3">
+        <div class="grid grid-cols-2 gap-3">
           <button @click="runBatchPool" :disabled="batchBusy || !selectedIds.size"
             class="px-4 py-2 rounded-md border border-border-default text-sm hover:bg-bg-tertiary disabled:opacity-40"
             title="入池前自动审查：暂停申购/限额<1000 直接拒绝；档案缺失先尝试更新，仍不完整拒绝">
-            审查并入池所选
+            审查并入池
           </button>
           <button @click="runBatchRefresh" :disabled="batchBusy || !selectedIds.size"
             class="px-4 py-2 rounded-md bg-accent-primary text-white hover:bg-accent-hover disabled:opacity-40">
-            更新所选档案（费率/限额/标签）
+            更新档案（费率/限额/标签）
           </button>
           <button @click="runAuditPooled" :disabled="batchBusy"
             class="px-4 py-2 rounded-md border border-border-default text-sm hover:bg-bg-tertiary disabled:opacity-40"
             title="扫描全部已入池基金型标的：刷新档案后，暂停申购/限额<1000/档案仍不完整者自动退回自选">
             自动审查已入池
           </button>
+          <button @click="batchRemoveSelected" :disabled="batchBusy || !selectedIds.size"
+            class="px-4 py-2 rounded-md border border-border-default text-sm text-expense-color hover:bg-expense-bg disabled:opacity-40"
+            title="仅自选标的可删除；已入池请先踢出">
+            删除所选（仅自选）
+          </button>
         </div>
         <div v-if="refreshSummary" class="text-xs text-text-muted whitespace-pre-line max-h-40 overflow-y-auto border-t border-border-default pt-2">{{ refreshSummary }}</div>
 
-        <!-- 加入组合 -->
-        <div class="flex items-center gap-2 border-t border-border-default pt-3">
-          <span class="text-sm font-medium shrink-0">加入组合</span>
-          <select v-model="batchGroupPick" :disabled="!!batchNewGroupName.trim()" class="px-2 py-1.5 text-xs border border-border-default rounded-md disabled:opacity-40">
-            <option value="">选择已有组合…</option>
-            <option v-for="g in groups" :key="g.id" :value="g.id">{{ g.name }}（{{ g.asset_ids.length }}）</option>
-          </select>
-          <span class="text-xs text-text-muted">或</span>
-          <input v-model="batchNewGroupName" placeholder="新建组合名，如 全宽基指数" class="px-2 py-1.5 text-xs border border-border-default rounded-md w-44"
-                 @input="batchNewGroupName && (batchGroupPick = '')" />
-          <button @click="addSelectedToGroup" :disabled="batchBusy || !selectedIds.size"
-            class="px-3 py-1.5 rounded-md bg-accent-primary text-white text-xs hover:bg-accent-hover disabled:opacity-40">把选中的 {{ selectedIds.size }} 只加入</button>
+        <!-- 组合归组 -->
+        <div class="border-t border-border-default pt-3 space-y-2">
+          <div class="flex items-center gap-2">
+            <span class="text-sm font-medium shrink-0">存为新组合</span>
+            <input v-model="batchNewGroupName" placeholder="新组合名，如 全宽基指数" class="px-2 py-1.5 text-xs border border-border-default rounded-md flex-1" />
+            <button @click="createGroupFromSelection" :disabled="batchBusy || !selectedIds.size || !batchNewGroupName.trim()"
+              class="px-3 py-1.5 rounded-md bg-accent-primary text-white text-xs hover:bg-accent-hover disabled:opacity-40">创建</button>
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="text-sm font-medium shrink-0">加入已有组合</span>
+            <select v-model="batchGroupPick" class="px-2 py-1.5 text-xs border border-border-default rounded-md flex-1">
+              <option value="">选择组合…</option>
+              <option v-for="g in groups" :key="g.id" :value="g.id">{{ g.name }}（{{ g.asset_ids.length }}）</option>
+            </select>
+            <button @click="addSelectedToGroup" :disabled="batchBusy || !selectedIds.size || !batchGroupPick"
+              class="px-3 py-1.5 rounded-md bg-accent-primary text-white text-xs hover:bg-accent-hover disabled:opacity-40">加入</button>
+          </div>
         </div>
       </div>
       <template #footer>
@@ -524,27 +517,35 @@
     </BaseModal>
 
     <!-- 组合管理 -->
-    <BaseModal v-if="showGroupsModal" title="标的组合" width="max-w-xl" @close="showGroupsModal = false">
+    <BaseModal v-if="showGroupsModal" title="组合管理" width="max-w-2xl" @close="showGroupsModal = false">
       <div class="space-y-3">
-        <div class="text-xs text-text-muted">给入池标的按主题归组（全宽基 / 全地域 / 大类资产…）。后续策略可只在某个组合的资产池里构筑。成员变更走「批量管理 → 加入组合」。</div>
+        <div class="text-xs text-text-muted">主列表勾选标的 → 「批量操作」→ 存为新组合 / 加入已有组合。此处管理组合本身。</div>
         <div class="flex items-center gap-2">
           <input v-model="newGroupName" placeholder="新组合名称" class="px-3 py-2 text-sm border border-border-default rounded-md flex-1"
                  @keyup.enter="submitNewGroup" />
           <input v-model="newGroupNote" placeholder="备注（可选）" class="px-3 py-2 text-sm border border-border-default rounded-md w-40"
                  @keyup.enter="submitNewGroup" />
           <button @click="submitNewGroup" :disabled="!newGroupName.trim()"
-            class="px-4 py-2 text-sm rounded-md bg-accent-primary text-white hover:bg-accent-hover disabled:opacity-50 flex items-center gap-1"><Plus :size="14" /> 创建</button>
+            class="px-4 py-2 text-sm rounded-md bg-accent-primary text-white hover:bg-accent-hover disabled:opacity-50 flex items-center gap-1"><Plus :size="14" /> 创建空组合</button>
         </div>
-        <div class="border border-border-default rounded-md divide-y divide-border-default max-h-72 overflow-y-auto">
-          <div v-for="g in groups" :key="g.id" class="flex items-center gap-3 px-3 py-2">
-            <div class="flex-1 min-w-0">
-              <div class="text-sm font-medium truncate">{{ g.name }}</div>
-              <div class="text-xs text-text-muted">{{ g.asset_ids.length }} 个成员{{ g.note ? ` · ${g.note}` : '' }}</div>
+        <div class="border border-border-default rounded-md divide-y divide-border-default max-h-80 overflow-y-auto">
+          <div v-for="g in groups" :key="g.id" class="px-3 py-2">
+            <div class="flex items-center gap-3">
+              <button @click="viewGroupInList(g)" class="flex-1 min-w-0 text-left group">
+                <div class="text-sm font-medium truncate group-hover:text-accent-primary">{{ g.name }}</div>
+                <div class="text-xs text-text-muted">{{ g.asset_ids.length }} 个成员{{ g.note ? ` · ${g.note}` : '' }} · 点击在列表中查看</div>
+              </button>
+              <button @click="renameGroup(g)" class="p-1.5 text-text-secondary hover:text-accent-primary" title="重命名"><Edit2 :size="14" /></button>
+              <button @click="removeGroup(g)" class="p-1.5 text-text-muted hover:text-expense-color" title="删除组合（不影响标的）"><Trash2 :size="14" /></button>
             </div>
-            <button @click="renameGroup(g)" class="p-1.5 text-text-secondary hover:text-accent-primary" title="重命名"><Edit2 :size="14" /></button>
-            <button @click="removeGroup(g)" class="p-1.5 text-text-muted hover:text-expense-color" title="删除组合"><Trash2 :size="14" /></button>
+            <div v-if="g.members?.length" class="mt-1 flex flex-wrap gap-1">
+              <span v-for="m in g.members.slice(0, 12)" :key="m.id" class="px-1.5 py-0.5 text-xs rounded bg-bg-tertiary text-text-secondary">
+                {{ m.symbol }} {{ m.name.length > 8 ? m.name.slice(0, 8) + '…' : m.name }}
+              </span>
+              <span v-if="g.members.length > 12" class="text-xs text-text-muted px-1 py-0.5">…等 {{ g.members.length }} 只</span>
+            </div>
           </div>
-          <div v-if="!groups.length" class="px-3 py-8 text-center text-sm text-text-muted">还没有组合，上方创建一个</div>
+          <div v-if="!groups.length" class="px-3 py-8 text-center text-sm text-text-muted">还没有组合</div>
         </div>
       </div>
       <template #footer>
@@ -794,6 +795,8 @@ const classFilter = ref('')
 const regionFilter = ref('')
 const themeTagFilter = ref('')
 const limitFilter = ref<'limited' | 'unlimited' | ''>('')
+const groupFilter = ref('')
+const selectedIds = ref<Set<string>>(new Set())
 const page = ref(1)
 const pageSize = ref(50)
 const total = ref(0)
@@ -841,7 +844,7 @@ async function maybeAutoAudit() {
 }
 
 let searchTimer: ReturnType<typeof setTimeout> | null = null
-watch([activeTab, categoryFilter, kindFilter, classFilter, regionFilter, limitFilter], () => {
+watch([activeTab, categoryFilter, kindFilter, classFilter, regionFilter, limitFilter, groupFilter], () => {
   page.value = 1
   load()
 })
@@ -973,6 +976,7 @@ async function load() {
     if (classFilter.value) params.asset_class = classFilter.value
     if (regionFilter.value) params.region = regionFilter.value
     if (limitFilter.value) params.limit_filter = limitFilter.value
+    if (groupFilter.value) params.group_id = groupFilter.value
     if (search.value.trim()) params.search = search.value.trim()
     const res = await api.get('/research/assets', { params })
     const env = res.data as { items: ResearchAsset[]; total: number; pages: number }
@@ -1052,31 +1056,11 @@ async function importFromEm() {
   }
 }
 
-// ---- 批量管理：入池 / 更新档案 / 审查 ----
+// ---- 批量操作（作用于主列表勾选的 selectedIds） ----
 const showBatchModal = ref(false)
-const selectedIds = ref<Set<string>>(new Set())
 const batchBusy = ref(false)
 const batchMsg = ref('')
 const refreshSummary = ref('')
-const batchStatusFilter = ref('')
-const batchCategoryFilter = ref('')
-const batchKindFilter = ref('')
-const batchClassFilter = ref('')
-const batchRegionFilter = ref('')
-const batchSearch = ref('')
-
-const batchFiltered = computed(() => {
-  const kw = batchSearch.value.trim().toLowerCase()
-  return assets.value.filter(a => {
-    if (batchStatusFilter.value && a.status !== batchStatusFilter.value) return false
-    if (batchCategoryFilter.value && a.category !== batchCategoryFilter.value) return false
-    if (batchKindFilter.value && a.fund_kind !== batchKindFilter.value) return false
-    if (batchClassFilter.value && a.asset_class !== batchClassFilter.value) return false
-    if (batchRegionFilter.value && a.region !== batchRegionFilter.value) return false
-    if (kw && !(a.name.toLowerCase().includes(kw) || a.symbol.includes(kw))) return false
-    return true
-  })
-})
 
 // ---- 标的组合：自定义命名池，后续策略可按组合圈定 universe ----
 const groups = ref<ResearchGroup[]>([])
@@ -1136,32 +1120,56 @@ async function removeGroup(g: ResearchGroup) {
 
 async function addSelectedToGroup() {
   const ids = [...selectedIds.value]
-  if (!ids.length) { show('先在下方勾选标的', 'error'); return }
-  const nn = batchNewGroupName.value.trim()
+  if (!ids.length) { show('先在列表中勾选标的', 'error'); return }
+  const g = groups.value.find(x => x.id === batchGroupPick.value)
+  if (!g) { show('选择目标组合', 'error'); return }
   try {
-    let g: ResearchGroup | undefined
-    if (nn) {
-      g = await createGroup(nn, '', ids) ?? undefined
-    } else if (batchGroupPick.value) {
-      g = groups.value.find(x => x.id === batchGroupPick.value)
-      if (!g) return
-      const merged = Array.from(new Set([...g.asset_ids, ...ids]))
-      const r = await api.put(`/research/assets/groups/${g.id}`, { asset_ids: merged })
-      g = r.data as ResearchGroup
-      show(`已加入组合「${g.name}」（共 ${(g.asset_ids || []).length} 个成员）`, 'success')
-      await loadGroups()
-    } else {
-      show('选择已有组合，或填写新组合名', 'error')
-      return
-    }
-    if (!nn && g) void g
-    batchNewGroupName.value = ''
+    const merged = Array.from(new Set([...g.asset_ids, ...ids]))
+    const r = await api.put(`/research/assets/groups/${g.id}`, { asset_ids: merged })
+    const ng = r.data as ResearchGroup
+    show(`已加入组合「${ng.name}」（共 ${(ng.asset_ids || []).length} 个成员）`, 'success')
     batchGroupPick.value = ''
+    await loadGroups()
   } catch (e) { show(errDetail(e), 'error') }
 }
 
+async function createGroupFromSelection() {
+  const ids = [...selectedIds.value]
+  const name = batchNewGroupName.value.trim()
+  if (!ids.length || !name) return
+  const g = await createGroup(name, '', ids)
+  if (g) batchNewGroupName.value = ''
+}
+
+const selectedAssets = computed(() =>
+  assets.value.filter(a => selectedIds.value.has(a.id)))
+
+function viewGroupInList(g: ResearchGroup) {
+  groupFilter.value = g.id
+  showGroupsModal.value = false
+}
+
+async function batchRemoveSelected() {
+  const targets = assets.value.filter(a => selectedIds.value.has(a.id) && a.status === 'watchlist')
+  if (!targets.length) { show('所选均为入池标的——请先踢出入池再删除', 'error'); return }
+  if (!window.confirm(`删除 ${targets.length} 个自选标的及其历史净值？入池标的不会被删除。`)) return
+  batchBusy.value = true
+  batchMsg.value = '删除中…'
+  let ok = 0
+  try {
+    for (const t of targets) {
+      try { await api.delete(`/research/assets/${t.id}`); ok++ } catch { /* 单只失败继续 */ }
+    }
+    show(`已删除 ${ok}/${targets.length} 只`, ok === targets.length ? 'success' : 'warning')
+    clearSelection()
+    await load()
+  } finally {
+    batchBusy.value = false
+  }
+}
+
 function openBatchModal() {
-  selectedIds.value = new Set()
+  if (!selectedIds.value.size) { show('先在列表中勾选标的', 'error'); return }
   refreshSummary.value = ''
   showBatchModal.value = true
 }
@@ -1171,10 +1179,43 @@ function toggleSelect(id: string) {
   else s.add(id)
   selectedIds.value = s
 }
-const allChecked = computed(() => batchFiltered.value.length > 0 && batchFiltered.value.every(a => selectedIds.value.has(a.id)))
-function toggleAll() {
-  if (allChecked.value) selectedIds.value = new Set()
-  else selectedIds.value = new Set(batchFiltered.value.map(a => a.id))
+const pageAllChecked = computed(() =>
+  filteredAssets.value.length > 0 && filteredAssets.value.every(a => selectedIds.value.has(a.id)))
+
+async function selectAllFiltered() {
+  try {
+    const params: Record<string, unknown> = {}
+    if (activeTab.value !== 'stats') params.status = activeTab.value
+    if (categoryFilter.value) params.category = categoryFilter.value
+    if (kindFilter.value) params.fund_kind = kindFilter.value
+    if (classFilter.value) params.asset_class = classFilter.value
+    if (regionFilter.value) params.region = regionFilter.value
+    if (limitFilter.value) params.limit_filter = limitFilter.value
+    if (groupFilter.value) params.group_id = groupFilter.value
+    if (search.value.trim()) params.search = search.value.trim()
+    const res = await api.get('/research/assets/ids', { params })
+    const items = (res.data as { items: { id: string }[] }).items
+    selectedIds.value = new Set(items.map(i => i.id))
+    show(`已选中筛选结果全部 ${items.length} 只`, 'success')
+  } catch (e) {
+    show(errDetail(e), 'error')
+  }
+}
+
+function clearSelection() {
+  selectedIds.value = new Set()
+}
+
+function toggleAllPage() {
+  if (pageAllChecked.value) {
+    const s = new Set(selectedIds.value)
+    filteredAssets.value.forEach(a => s.delete(a.id))
+    selectedIds.value = s
+  } else {
+    const s = new Set(selectedIds.value)
+    filteredAssets.value.forEach(a => s.add(a.id))
+    selectedIds.value = s
+  }
 }
 
 async function runBatchPool() {
@@ -1659,6 +1700,6 @@ function fmtDate(v?: string): string {
   return v ? v.slice(0, 10) : '—'
 }
 
-onMounted(() => { load(); loadCounts().then(maybeAutoAudit) })
+onMounted(() => { load(); loadGroups(); loadCounts().then(maybeAutoAudit) })
 onUnmounted(() => { if (pollTimer) clearTimeout(pollTimer) })
 </script>
