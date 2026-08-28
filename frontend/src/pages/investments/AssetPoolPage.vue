@@ -1222,13 +1222,21 @@ async function runBatchPool() {
   const ids = [...selectedIds.value]
   if (!ids.length || !confirm(`将所选 ${ids.length} 个标的入池（自动审查：暂停申购/限额过低/档案缺失者会被拒绝并保留自选）？`)) return
   batchBusy.value = true
-  batchMsg.value = '审查并入池中…'
+  const CHUNK = 6
+  const pooled: ResearchAsset[] = []
+  const rej: string[] = []
   try {
-    const { data } = await api.post('/research/assets/batch-pool', { ids, apply_defaults: true })
-    const pooledN = data.pooled?.length ?? 0
-    const rej: string[] = (data.rejected || []).map((r: { name: string; symbol: string; reasons: string[] }) => `${r.symbol} ${r.name}: ${r.reasons.join('、')}`)
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const chunk = ids.slice(i, i + CHUNK)
+      batchMsg.value = `审查并入池 ${Math.min(i + CHUNK, ids.length)}/${ids.length}…`
+      const { data } = await api.post('/research/assets/batch-pool',
+        { ids: chunk, apply_defaults: true, skip_holdings: true }, { timeout: 120000 })
+      pooled.push(...(data.pooled ?? []))
+      rej.push(...(data.rejected || []).map((r: { name: string; symbol: string; reasons: string[] }) => `${r.symbol} ${r.name}: ${r.reasons.join('、')}`))
+    }
     refreshSummary.value = rej.length ? `已拒绝 ${rej.length} 个：\n` + rej.join('\n') : '全部通过审查并入池'
-    show(`入池完成：${pooledN} 成功，${rej.length} 被拒绝`, pooledN > 0 ? 'success' : 'info')
+    show(`入池完成：${pooled.length} 成功，${rej.length} 被拒绝`, pooled.length > 0 ? 'success' : 'info')
+    clearSelection()
     await load()
   } catch (e) {
     show(errDetail(e), 'error')

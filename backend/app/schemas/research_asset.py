@@ -242,6 +242,7 @@ class AuditPooledResult(BaseModel):
 
 class BatchPoolRequest(BaseModel):
     ids: List[str]
+    skip_holdings: bool = False
     apply_defaults: bool = True       # true=入池时沿用导入/自选阶段存的费率限额
 
 

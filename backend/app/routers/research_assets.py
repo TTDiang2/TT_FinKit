@@ -632,16 +632,17 @@ async def import_watchlist_from_eastmoney(
     return out
 
 
-async def _refresh_profile(db: AsyncSession, a: ResearchAsset) -> list[str]:
+async def _refresh_profile(db: AsyncSession, a: ResearchAsset, skip_holdings: bool = False) -> list[str]:
     """从天天基金刷新单只档案（一览表 + 费率页）。返回变更字段。"""
     table = await asyncio.to_thread(fund_profile.get_purchase_table)
     row = table.get(a.symbol)
     fees = await asyncio.to_thread(fund_profile.fetch_fee_profile, a.symbol)
     holdings_payload: dict | None = None
-    try:
-        holdings_payload = await asset_holdings.refresh_holdings(db, a)
-    except Exception:  # noqa: BLE001 — 持仓失败只降级打标精度
-        pass
+    if not skip_holdings:
+        try:
+            holdings_payload = await asset_holdings.refresh_holdings(db, a)
+        except Exception:  # noqa: BLE001 — 持仓失败只降级打标精度
+            pass
     return fund_profile.apply_profile(a, row or {}, fees, holdings_payload)
 
 
@@ -667,7 +668,7 @@ async def batch_pool_assets(
         hard, soft = fund_profile.audit_violations(a)
         if soft:
             try:
-                await _refresh_profile(db, a)
+                await _refresh_profile(db, a, skip_holdings=req.skip_holdings)
                 await db.commit()
                 _, soft_after = fund_profile.audit_violations(a)
                 if soft_after:
