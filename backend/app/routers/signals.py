@@ -44,11 +44,22 @@ async def run_signal_endpoint(db: AsyncSession = Depends(get_db)):
     # Load strategy params from active (or use defaults)
     active_params = {}
 
-    # Get universe from pooled research assets (by SYMBOL, matching strategy API)
+    # Get universe: 策略绑定的标的组合成员 ∩ 已入池；未绑定 → 全部入池
     from app.models.research_asset import ResearchAsset
-    result = await db.execute(select(ResearchAsset).where(ResearchAsset.status == "pooled"))
+    universe_q = select(ResearchAsset).where(ResearchAsset.status == "pooled")
+    if strat.group_id:
+        from app.models.research_group import ResearchGroupMember
+        member_ids = select(ResearchGroupMember.asset_id).where(
+            ResearchGroupMember.group_id == strat.group_id)
+        universe_q = universe_q.where(ResearchAsset.id.in_(member_ids))
+    result = await db.execute(universe_q)
     assets = list(result.scalars().all())
     universe = [a.symbol for a in assets]
+    if not universe:
+        raise HTTPException(
+            status_code=400,
+            detail="策略绑定的标的组合中没有已入池标的——请先在标的面板把这些组合成员入池",
+        )
 
     try:
         signal_result = generate_signal(

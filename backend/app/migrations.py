@@ -105,6 +105,9 @@ async def run_lightweight_migrations(conn: AsyncConnection) -> None:
     # investment_transactions: per-transaction fee (cost, counts into diluted cost basis)
     await _add_column_if_missing(conn, "investment_transactions", "fee", "FLOAT DEFAULT 0 NOT NULL")
 
+    # strategies: 标的组合限定（策略 universe 圈定）
+    await _add_column_if_missing(conn, "strategies", "group_id", "VARCHAR")
+
     # backtests (Phase 4): safety net for DBs created during partial rollout
     await _add_column_if_missing(conn, "backtests", "results", "TEXT")
     await _add_column_if_missing(conn, "backtests", "error", "TEXT")

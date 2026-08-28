@@ -1121,7 +1121,14 @@ try:
     prices, returns, pool, fee_terms = load_price_data(
         data["db_path"], data["universe"], data["start_date"], data["end_date"]
     )
-    trading_days = sorted(set().union(*(set(p) for p in prices.values()))) if prices else []
+    all_days = sorted(set().union(*(set(p) for p in prices.values()))) if prices else []
+    n_assets = len(prices)
+    # 剔除“补行日”：东财周末/节假日偶发补行只覆盖少数基金，若当作交易日，
+    # 缺行持仓会按 0 计价造成组合净值假性暴跌。≥60% 标的有价才算交易日。
+    trading_days = [
+        d for d in all_days
+        if sum(1 for p in prices.values() if d in p) >= max(2, int(0.6 * n_assets))
+    ] if prices else []
     if not trading_days:
         raise ValueError("No price data found for universe in date range")
 

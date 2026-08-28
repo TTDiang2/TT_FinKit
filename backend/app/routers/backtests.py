@@ -68,7 +68,17 @@ async def create_backtest_endpoint(req: BacktestCreate, db: AsyncSession = Depen
         raise HTTPException(status_code=404, detail="Strategy not found")
 
     # Validate universe: entries must be existing asset SYMBOLS
-    if not req.universe:
+    universe = list(req.universe)
+    if not universe and req.group_id:
+        from app.models.research_group import ResearchGroupMember
+        rows = await db.execute(
+            select(ResearchAsset.symbol)
+            .join(ResearchGroupMember, ResearchGroupMember.asset_id == ResearchAsset.id)
+            .where(ResearchGroupMember.group_id == req.group_id,
+                   ResearchAsset.status == "pooled")
+        )
+        universe = [r[0] for r in rows.all()]
+    if not universe:
         raise HTTPException(status_code=400, detail="universe 不能为空：请至少选择一个标的")
     asset_res = await db.execute(
         select(ResearchAsset.symbol).where(ResearchAsset.symbol.in_(req.universe))
@@ -83,14 +93,14 @@ async def create_backtest_endpoint(req: BacktestCreate, db: AsyncSession = Depen
 
     bt = await create_backtest(
         db, strategy_id=req.strategy_id, strategy_version=req.strategy_version,
-        params=req.params, universe=req.universe, start_date=req.start_date,
+        params=req.params, universe=universe, start_date=req.start_date,
         end_date=req.end_date, rebalance_freq=req.rebalance_freq,
     )
 
     # Run in background task (non-blocking)
     import asyncio
     task = asyncio.create_task(_run_backtest_async(
-        bt.id, strat.code, req.params, req.universe, req.start_date,
+        bt.id, strat.code, req.params, universe, req.start_date,
         req.end_date, req.rebalance_freq,
     ))
     _background_tasks.add(task)

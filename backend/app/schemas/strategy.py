@@ -10,6 +10,7 @@ class StrategyCreate(BaseModel):
     folder: str = ""
     source_file: Optional[str] = None
     factor_keys: Optional[list[str]] = None
+    group_id: Optional[str] = None
 
 class StrategyUpdate(BaseModel):
     name: Optional[str] = None
@@ -17,6 +18,7 @@ class StrategyUpdate(BaseModel):
     code: Optional[str] = None
     params_schema: Optional[dict] = None
     rebalance_freq: Optional[str] = None
+    group_id: Optional[str] = None
 
 class StrategyResponse(BaseModel):
     id: str
@@ -31,6 +33,7 @@ class StrategyResponse(BaseModel):
     source_file: Optional[str] = None
     activated_at: Optional[str] = None
     version_note: Optional[str] = None
+    group_id: Optional[str] = None
     logic: Optional[str] = None
     latest_backtest: Optional[dict] = None
     created_at: str

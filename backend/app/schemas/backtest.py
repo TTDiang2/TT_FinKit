@@ -5,7 +5,8 @@ class BacktestCreate(BaseModel):
     strategy_id: str
     strategy_version: int
     params: dict = {}
-    universe: list[str]  # list of asset SYMBOLS (e.g. "000300", "511010")
+    universe: list[str] = []  # symbols; 空 + group_id 时由后端展开
+    group_id: Optional[str] = None  # 标的组合限定
     start_date: str  # YYYY-MM-DD
     end_date: str
     rebalance_freq: str = "monthly"
