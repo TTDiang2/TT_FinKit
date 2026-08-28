@@ -54,6 +54,9 @@
                 <pre v-if="s.logic && logicExpanded === s.id"
                   class="text-xs text-text-secondary bg-bg-tertiary rounded p-2 mt-1 max-w-xl whitespace-pre-wrap">{{ s.logic }}</pre>
                 <div v-if="s.factor_keys?.length" class="text-xs text-text-muted mt-0.5">因子: {{ s.factor_keys.join(', ') }}</div>
+                <div v-if="groupName(s.group_id)" class="text-xs mt-0.5">
+                  <span class="px-1.5 py-0.5 rounded bg-purple-50 text-purple-700">组合: {{ groupName(s.group_id) }}</span>
+                </div>
               </td>
               <td class="px-3 py-2 text-right text-xs" :class="metricClass(s.latest_backtest?.ann_return)">
                 {{ fmtPct(s.latest_backtest?.ann_return) }}
@@ -181,6 +184,11 @@ watch(() => route.query.sub, (val) => {
 })
 
 const strategies = ref<StrategyResponse[]>([])
+const assetGroups = ref<{ id: string; name: string; asset_ids: string[] }[]>([])
+function groupName(gid?: string | null): string {
+  if (!gid) return ''
+  return assetGroups.value.find(g => g.id === gid)?.name ?? ''
+}
 const activeStrategy = ref<ActiveStrategyResponse | null>(null)
 const logicExpanded = ref<string | null>(null)
 const loading = ref(false)
@@ -312,5 +320,11 @@ function fmtPct(v?: number | null) { return v != null ? `${(v * 100).toFixed(1)}
 function fmtDate(v?: string) { return v ? v.slice(0, 10) : '—' }
 function metricClass(v?: number | null) { return v == null ? 'text-text-muted' : v >= 0 ? 'text-income-color' : 'text-expense-color' }
 
-onMounted(() => { loadStrategies(); loadActive() })
+onMounted(async () => {
+  loadStrategies(); loadActive()
+  try {
+    const { data } = await api.get<{ id: string; name: string; asset_ids: string[] }[]>('/research/assets/groups')
+    assetGroups.value = data
+  } catch { assetGroups.value = [] }
+})
 </script>

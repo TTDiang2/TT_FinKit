@@ -6,8 +6,8 @@
     </div>
 
     <!-- 按策略分组的回测列表 -->
-    <div v-if="groups.length">
-      <div v-for="g in groups" :key="g.strategyId" class="bg-white rounded-lg shadow-sm mb-4 overflow-hidden">
+    <div v-if="strategyGroups.length">
+      <div v-for="g in strategyGroups" :key="g.strategyId" class="bg-white rounded-lg shadow-sm mb-4 overflow-hidden">
         <div
           class="flex items-center justify-between px-4 py-2.5 cursor-pointer select-none hover:bg-bg-tertiary/60"
           @click="toggleGroup(g.strategyId)"
@@ -91,6 +91,14 @@
             </option>
           </select>
         </div>
+        <div>
+          <label class="block text-sm font-medium mb-1">标的范围</label>
+          <select v-model="newForm.scope_group_id" class="w-full px-3 py-2 text-sm border border-border-default rounded-md">
+            <option value="">全部入池标的</option>
+            <option v-for="g in assetGroups" :key="g.id" :value="g.id">{{ g.name }}（{{ g.asset_ids.length }}）</option>
+          </select>
+          <div v-if="newForm.scope_group_id" class="text-xs text-text-muted mt-1">仅使用该组合内的已入池标的</div>
+        </div>
         <div class="grid grid-cols-2 gap-3">
           <div>
             <label class="block text-sm font-medium mb-1">开始日期</label>
@@ -138,6 +146,7 @@ const creating = ref(false)
 const createError = ref('')
 
 const expandedGroupIds = ref<Set<string>>(new Set())
+const assetGroups = ref<{ id: string; name: string; asset_ids: string[] }[]>([])
 const deleteId = ref<string | null>(null)
 const deleting = ref(false)
 
@@ -147,12 +156,13 @@ const newForm = ref({
   start_date: '',
   end_date: '',
   rebalance_freq: 'monthly',
+  scope_group_id: '',
   universe: [] as string[],
   params: {},
 })
 
 // ---- 按策略分组（组内按创建时间倒序，组间按最近创建倒序） ----
-const groups = computed(() => {
+const strategyGroups = computed(() => {
   const map = new Map<string, { strategyId: string; name: string; items: BacktestResponse[]; runningCount: number; failedCount: number }>()
   for (const bt of backtests.value) {
     const key = bt.strategy_id
@@ -213,9 +223,14 @@ async function loadPooledAssets() {
   try {
     const { data } = await api.get<ResearchAsset[]>('/research/assets?status=pooled')
     pooledAssets.value = data
-    newForm.value.universe = data.map(a => a.symbol)
   } catch {
     pooledAssets.value = []
+  }
+  try {
+    const { data } = await api.get<{ id: string; name: string; asset_ids: string[] }[]>('/research/assets/groups')
+    assetGroups.value = data
+  } catch {
+    assetGroups.value = []
   }
 }
 
@@ -224,11 +239,15 @@ async function createBacktest() {
   createError.value = ''
   try {
     const strat = strategies.value.find(s => s.id === newForm.value.strategy_id)
+    const scope = newForm.value.scope_group_id
+      ? { group_id: newForm.value.scope_group_id, universe: [] }
+      : { group_id: null, universe: pooledAssets.value.map(a => a.symbol) }
     await api.post('/backtests', {
       strategy_id: newForm.value.strategy_id,
       strategy_version: strat?.version ?? 1,
       params: {},
-      universe: newForm.value.universe,
+      universe: scope.universe,
+      group_id: scope.group_id,
       start_date: newForm.value.start_date,
       end_date: newForm.value.end_date,
       rebalance_freq: newForm.value.rebalance_freq,

@@ -381,6 +381,7 @@ export interface StrategyResponse {
   is_builtin: boolean
   folder?: string
   source_file?: string
+  group_id?: string | null
   activated_at?: string | null
   version_note?: string | null
   logic?: string | null
