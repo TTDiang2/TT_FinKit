@@ -1,1 +1,0 @@
-import{r as f}from"./index-CNAsA9dP.js";const t=f([]);let l=0;function h(){return{toasts:t,show:(r,a="info",e)=>{const u=++l;t.value.push({id:u,message:r,type:a,position:(e==null?void 0:e.position)??"top"}),setTimeout(()=>{t.value=t.value.filter(s=>s.id!==u)},(e==null?void 0:e.duration)??3e3)}}}export{h as u};

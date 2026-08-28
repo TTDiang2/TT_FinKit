@@ -244,6 +244,110 @@ async def assets_selector(
     }
 
 
+# --------------------------------------------------------------------------- #
+# Research groups (标的组合)
+# --------------------------------------------------------------------------- #
+
+@router.get("/groups", response_model=List[ResearchGroupResponse])
+async def list_groups(
+    user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = (await db.execute(
+        select(ResearchGroup).where(ResearchGroup.user_id == user_id)
+        .order_by(ResearchGroup.created_at)
+    )).scalars().all()
+    return [ResearchGroupResponse(
+        id=g.id, name=g.name, note=g.note or "",
+        asset_ids=[m.asset_id for m in g.members],
+    ) for g in rows]
+
+
+@router.post("/groups", response_model=ResearchGroupResponse)
+async def create_group(
+    req: ResearchGroupCreate,
+    user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    name = req.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="组合名称不能为空")
+    dup = (await db.execute(
+        select(ResearchGroup).where(ResearchGroup.user_id == user_id, ResearchGroup.name == name)
+    )).scalar_one_or_none()
+    if dup:
+        raise HTTPException(status_code=409, detail=f"组合「{name}」已存在")
+
+    g = ResearchGroup(user_id=user_id, name=name, note=req.note or "")
+    db.add(g)
+    await db.flush()
+    owned = set((await db.execute(
+        select(ResearchAsset.id).where(ResearchAsset.user_id == user_id,
+                                       ResearchAsset.id.in_(req.asset_ids))
+    )).scalars().all())
+    for aid in req.asset_ids:
+        if aid in owned:
+            db.add(ResearchGroupMember(group_id=g.id, asset_id=aid))
+    await db.commit()
+    await db.refresh(g)
+    return ResearchGroupResponse(id=g.id, name=g.name, note=g.note or "",
+                                 asset_ids=[m.asset_id for m in g.members])
+
+
+@router.put("/groups/{group_id}", response_model=ResearchGroupResponse)
+async def update_group(
+    group_id: str,
+    req: ResearchGroupUpdate,
+    user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    g = (await db.execute(
+        select(ResearchGroup).where(ResearchGroup.id == group_id, ResearchGroup.user_id == user_id)
+    )).scalar_one_or_none()
+    if not g:
+        raise HTTPException(status_code=404, detail="组合不存在")
+
+    if req.name is not None and req.name.strip() and req.name.strip() != g.name:
+        dup = (await db.execute(
+            select(ResearchGroup).where(ResearchGroup.user_id == user_id,
+                                        ResearchGroup.name == req.name.strip())
+        )).scalar_one_or_none()
+        if dup:
+            raise HTTPException(status_code=409, detail=f"组合「{req.name.strip()}」已存在")
+        g.name = req.name.strip()
+    if req.note is not None:
+        g.note = req.note
+    if req.asset_ids is not None:
+        owned = set((await db.execute(
+            select(ResearchAsset.id).where(ResearchAsset.user_id == user_id,
+                                           ResearchAsset.id.in_(req.asset_ids))
+        )).scalars().all())
+        await db.execute(delete(ResearchGroupMember).where(ResearchGroupMember.group_id == g.id))
+        for aid in req.asset_ids:
+            if aid in owned:
+                db.add(ResearchGroupMember(group_id=g.id, asset_id=aid))
+    await db.commit()
+    await db.refresh(g)
+    return ResearchGroupResponse(id=g.id, name=g.name, note=g.note or "",
+                                 asset_ids=[m.asset_id for m in g.members])
+
+
+@router.delete("/groups/{group_id}")
+async def delete_group(
+    group_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    g = (await db.execute(
+        select(ResearchGroup).where(ResearchGroup.id == group_id, ResearchGroup.user_id == user_id)
+    )).scalar_one_or_none()
+    if not g:
+        raise HTTPException(status_code=404, detail="组合不存在")
+    await db.delete(g)
+    await db.commit()
+    return {"ok": True}
+
+
 @router.get("", response_model=None)
 async def list_assets(
     status: Optional[str] = Query(None),
@@ -771,6 +875,22 @@ async def get_nav_history(
     return NavHistoryDetail(series=series, benchmark=benchmark, source=bench_source)
 
 
+@router.post("/{asset_id}/unpool", response_model=ResearchAssetResponse)
+async def unpool_asset(
+    asset_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """踢出入池：状态回退自选，价格/档案数据全部保留。"""
+    asset = await _get_owned(asset_id, user_id, db)
+    if asset.status != "pooled":
+        raise HTTPException(status_code=400, detail="该标的不在池内")
+    asset.status = "watchlist"
+    await db.commit()
+    await db.refresh(asset)
+    return await _respond(db, asset)
+
+
 @router.post("/{asset_id}/pool", response_model=ResearchAssetResponse)
 async def pool_asset(
     asset_id: str,
@@ -884,10 +1004,6 @@ async def sync_asset(
         raise HTTPException(status_code=502, detail=f"行情同步失败：{result.error}")
     return result
 
-
-# --------------------------------------------------------------------------- #
-# Research groups (标的组合)
-# --------------------------------------------------------------------------- #
 
 @router.get("/groups", response_model=List[ResearchGroupResponse])
 async def list_groups(

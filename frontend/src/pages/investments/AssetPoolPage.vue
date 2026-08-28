@@ -132,7 +132,7 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="a in filteredAssets" :key="a.id" class="border-t border-border-default">
+          <tr v-for="a in filteredAssets" :key="a.id" class="border-t border-border-default hover:bg-bg-tertiary/40 cursor-pointer" @dblclick="openDetail(a)">
             <td class="px-3 py-2">
               <div class="font-medium text-text-primary">{{ a.name }}<span v-if="a.is_money_market" class="ml-1 text-xs text-text-muted">货币</span></div>
               <div class="text-xs text-text-muted">{{ a.symbol }} · {{ EXCHANGE_LABELS[a.exchange] || a.exchange || '—' }}</div>
@@ -170,6 +170,7 @@
             <td class="px-3 py-2 text-right text-xs">
               <div :class="lagClass(a)">{{ a.indicators.points ? `${a.indicators.points} 行` : '无数据' }}</div>
               <div class="text-text-muted">{{ lagText(a) }}</div>
+              <div v-if="isStaleNav(a)" class="text-expense-color font-medium" title="净值长期恒定、近1年收益与年化波动均为0——疑似清盘/停牌/口径异常，建议核查后删除">⚠ 疑似停更</div>
             </td>
             <template v-if="activeTab === 'pooled'">
               <td class="px-3 py-2 text-right">{{ feePct(a.mgmt_fee) }}</td>
@@ -185,13 +186,16 @@
             </template>
             <td class="px-3 py-2 text-right whitespace-nowrap">
               <div class="flex items-center justify-end gap-2">
-                <button @click="openDetail(a)" title="查看详情与净值曲线" class="text-text-secondary hover:text-accent-primary"><Eye :size="14" /></button>
+                <button @click="openDetail(a)" title="查看详情与净值曲线（双击行亦可）" class="text-text-secondary hover:text-accent-primary"><Eye :size="14" /></button>
                 <button v-if="a.status === 'watchlist'" @click="openPoolModal(a)" title="入池" class="text-text-secondary hover:text-accent-primary"><PackagePlus :size="14" /></button>
-                <button v-if="a.status === 'pooled'" @click="openEditModal(a)" title="编辑" class="text-text-secondary hover:text-accent-primary"><Edit2 :size="14" /></button>
+                <template v-if="a.status === 'pooled'">
+                  <button @click="openEditModal(a)" title="编辑" class="text-text-secondary hover:text-accent-primary"><Edit2 :size="14" /></button>
+                  <button @click="unpoolOne(a)" title="踢出入池（退回自选，保留数据）" class="text-text-secondary hover:text-warning"><PackageMinus :size="14" /></button>
+                </template>
                 <button @click="syncOne(a)" :disabled="a._syncing" title="同步历史净值" class="text-accent-primary hover:text-accent-hover disabled:opacity-50">
                   <RefreshCw :size="14" :class="a._syncing ? 'animate-spin' : ''" />
                 </button>
-                <button @click="removeAsset(a)" title="删除" class="text-text-muted hover:text-expense-color"><Trash2 :size="14" /></button>
+                <button v-if="a.status === 'watchlist'" @click="removeAsset(a)" title="删除（连同历史净值）" class="text-text-muted hover:text-expense-color"><Trash2 :size="14" /></button>
               </div>
             </td>
           </tr>
@@ -762,7 +766,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
-import { Plus, RefreshCw, Search, X, Eye, PackagePlus, Trash2, Edit2, ChevronUp, ChevronDown, ChevronsUpDown, Sparkles, Download, ListChecks, FolderOpen } from 'lucide-vue-next'
+import { Plus, RefreshCw, Search, X, Eye, PackagePlus, PackageMinus, Trash2, Edit2, ChevronUp, ChevronDown, ChevronsUpDown, Sparkles, Download, ListChecks, FolderOpen } from 'lucide-vue-next'
 import { Line } from 'vue-chartjs'
 import { Chart as ChartJS, LineElement, PointElement, CategoryScale, LinearScale, Tooltip, Legend, Filler } from 'chart.js'
 import { useApi } from '@/composables/useApi'
@@ -1084,7 +1088,7 @@ const batchNewGroupName = ref('')
 
 async function loadGroups() {
   try {
-    const r = await api.get('/research/groups')
+    const r = await api.get('/research/assets/groups')
     groups.value = r.data as ResearchGroup[]
   } catch { groups.value = [] }
 }
@@ -1096,7 +1100,7 @@ function openGroupsModal() {
 
 async function createGroup(name: string, note = '', assetIds: string[] = []): Promise<ResearchGroup | null> {
   try {
-    const r = await api.post('/research/groups', { name: name.trim(), note, asset_ids: assetIds })
+    const r = await api.post('/research/assets/groups', { name: name.trim(), note, asset_ids: assetIds })
     await loadGroups()
     show(`已创建组合「${(r.data as ResearchGroup).name}」`, 'success')
     return r.data as ResearchGroup
@@ -1117,7 +1121,7 @@ async function renameGroup(g: ResearchGroup) {
   const name = window.prompt('重命名组合', g.name)?.trim()
   if (!name || name === g.name) return
   try {
-    await api.put(`/research/groups/${g.id}`, { name })
+    await api.put(`/research/assets/groups/${g.id}`, { name })
     await loadGroups()
   } catch (e) { show(errDetail(e), 'error') }
 }
@@ -1125,7 +1129,7 @@ async function renameGroup(g: ResearchGroup) {
 async function removeGroup(g: ResearchGroup) {
   if (!window.confirm(`删除组合「${g.name}」？（${g.asset_ids.length} 个成员，不影响标的本身）`)) return
   try {
-    await api.delete(`/research/groups/${g.id}`)
+    await api.delete(`/research/assets/groups/${g.id}`)
     await loadGroups()
   } catch (e) { show(errDetail(e), 'error') }
 }
@@ -1142,7 +1146,7 @@ async function addSelectedToGroup() {
       g = groups.value.find(x => x.id === batchGroupPick.value)
       if (!g) return
       const merged = Array.from(new Set([...g.asset_ids, ...ids]))
-      const r = await api.put(`/research/groups/${g.id}`, { asset_ids: merged })
+      const r = await api.put(`/research/assets/groups/${g.id}`, { asset_ids: merged })
       g = r.data as ResearchGroup
       show(`已加入组合「${g.name}」（共 ${(g.asset_ids || []).length} 个成员）`, 'success')
       await loadGroups()
@@ -1378,6 +1382,24 @@ function pollPriceStatus(assetId: string, remaining: number) {
     } catch { /* transient — keep polling */ }
     pollPriceStatus(assetId, remaining - 1)
   }, 3000)
+}
+
+async function unpoolOne(a: AssetRow) {
+  if (!window.confirm(`将「${a.name}」踢出入池？\n状态退回自选，历史净值与档案数据全部保留。`)) return
+  try {
+    await api.post(`/research/assets/${a.id}/unpool`)
+    show(`已踢出入池：${a.name}`, 'success')
+    await load()
+  } catch (e) {
+    show(errDetail(e), 'error')
+  }
+}
+
+function isStaleNav(a: ResearchAsset): boolean {
+  const ind = a.indicators
+  return !!ind.points && ind.points >= 60
+    && (ind.ann_volatility ?? 0) === 0
+    && (Math.abs(ind.ret_1y ?? 0) < 1e-9)
 }
 
 async function syncOne(a: AssetRow) {

@@ -558,7 +558,7 @@ async function loadAssets() {
     selectTop10()
   } catch { selectorItems.value = [] }
   try {
-    const g = await api.get('/research/groups')
+    const g = await api.get('/research/assets/groups')
     groups.value = g.data as GroupItem[]
   } catch { groups.value = [] }
 }
