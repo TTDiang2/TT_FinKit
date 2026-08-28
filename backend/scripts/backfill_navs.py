@@ -64,7 +64,7 @@ _ENHANCE_PAT = re.compile(r"增强")
 _QDII_PAT = re.compile(r"QDII|全球精选|美国|亚洲|新兴市场|大中华|海外|香港优选")
 _GOLD_PAT = re.compile(r"黄金|贵金属|金ETF|上海金")
 _OIL_PAT = re.compile(r"原油|石油|油气")
-_COMMODITY_PAT = re.compile(r"商品|有色金属|豆粕|铁矿|农产品|能源化工")
+_COMMODITY_PAT = re.compile(r"(?<!品质)商品|有色金属|豆粕|铁矿|农产品|能源化工")
 _CN_EQUITY_PAT = re.compile("|".join(_INDEX_WHITELIST[:15]))
 _CN_BOND_PAT = re.compile(r"同业存单|政策性金融债|国债|地方政府债|国开债")
 _INDUSTRY_KEYS = [
@@ -98,8 +98,16 @@ def normalize_family_name(name: str) -> str:
 
 
 def is_c_share(name: str) -> bool:
-    u = (name or "").strip().upper()
-    return bool(re.search(r"([ABCEIHO])$", u))
+    return bool(re.search(r"C[）)]?$", (name or "").strip().upper()))
+
+
+def bad_for_rep(c: dict) -> bool:
+    """硬违规不当代表：非开放申购 / 日限额<1000（与入池审查同口径）。"""
+    status = (c.get("purchase_status") or "").strip()
+    if status and status != "开放申购":
+        return True
+    limit = c.get("purchase_limit")
+    return limit is not None and limit < 1000
 
 
 def classify(name: str, fund_kind: str, asset_class: str) -> dict[str, str]:
@@ -158,6 +166,8 @@ def classify(name: str, fund_kind: str, asset_class: str) -> dict[str, str]:
 
 def _better(a: dict, b: dict) -> bool:
     """True when a should replace b as bucket/family representative."""
+    if bad_for_rep(a) != bad_for_rep(b):
+        return not bad_for_rep(a)
     if a["pooled"] != b["pooled"]:
         return a["pooled"]
     ca, cb = is_c_share(a["name"]), is_c_share(b["name"])
@@ -168,7 +178,8 @@ def _better(a: dict, b: dict) -> bool:
 
 def build_plan(conn: sqlite3.Connection) -> tuple[dict[str, list[dict]], dict]:
     rows = conn.execute(
-        "SELECT id, symbol, exchange, name, status, is_money_market, fund_kind, asset_class "
+        "SELECT id, symbol, exchange, name, status, is_money_market, fund_kind, asset_class, "
+        "purchase_status, purchase_limit "
         "FROM research_assets WHERE exchange = 'FUND_CN'"
     ).fetchall()
     latest = dict(conn.execute(
@@ -177,13 +188,14 @@ def build_plan(conn: sqlite3.Connection) -> tuple[dict[str, list[dict]], dict]:
     horizon = (date.today() - timedelta(days=int(YEARS_BACK * 365.25) - 14)).isoformat()
 
     candidates = []
-    for aid, sym, exch, name, status, mm, kind, acls in rows:
+    for aid, sym, exch, name, status, mm, kind, acls, pstat, plimit in rows:
         if latest.get(aid) and latest[aid] <= horizon:
             continue
         candidates.append({
             "id": aid, "symbol": sym, "exchange": exch or "FUND_CN",
             "name": name or sym, "pooled": status == "pooled",
             "is_mm": bool(mm), "fund_kind": kind or "", "asset_class": acls or "",
+            "purchase_status": pstat or "", "purchase_limit": plimit,
             "last": latest.get(aid),
         })
 
@@ -195,18 +207,19 @@ def build_plan(conn: sqlite3.Connection) -> tuple[dict[str, list[dict]], dict]:
             fam_best[key] = c
     reps = list(fam_best.values())
 
-    buckets: dict[tuple[str, str], dict] = {}
+    buckets: dict[tuple[str, str], list[dict]] = {}
     for c in reps:
         for module, sub in classify(c["name"], c["fund_kind"], c["asset_class"]).items():
-            k = (module, sub)
-            cur = buckets.get(k)
-            if cur is None or _better(c, cur):
-                buckets[k] = c
+            buckets.setdefault((module, sub), []).append(c)
 
+    SUB_CAPS = {"macro_asset": 4}     # 大类资产每子类最多 4 只 → 模块 15-20 只
     plan: dict[str, list[dict]] = {m: [] for m in MODULE_ORDER}
-    for (module, _sub), rep in buckets.items():
-        rep["module"] = module
-        plan[module].append(rep)
+    for (module, _sub), members in buckets.items():
+        members.sort(key=lambda c: (bad_for_rep(c), not c["pooled"], not is_c_share(c["name"]), c["symbol"]))
+        cap = SUB_CAPS.get(module, 1)
+        for c in members[:cap]:
+            c["module"] = module
+            plan[module].append(c)
     for m in plan:
         plan[m].sort(key=lambda r: (not r["pooled"], r["symbol"]))
         if m in MODULE_CAPS and len(plan[m]) > MODULE_CAPS[m]:
@@ -248,15 +261,21 @@ def upsert_groups(conn: sqlite3.Connection, plan: dict[str, list[dict]]) -> None
 
 
 def upsert_prices(conn: sqlite3.Connection, asset_id: str, series: list[dict]) -> int:
-    rows = [(asset_id, p["date"], float(p["close"])) for p in series if p.get("date") and p.get("close") is not None]
+    """Returns actually-inserted row count (INSERT OR IGNORE silently skips
+    NOT NULL/UNIQUE violations, so len(rows) would lie)."""
+    import uuid
+    rows = [(str(uuid.uuid4()), asset_id, p["date"], float(p["close"]), "eastmoney")
+            for p in series if p.get("date") and p.get("close") is not None]
     if not rows:
         return 0
+    before = conn.total_changes
     conn.executemany(
-        "INSERT OR IGNORE INTO research_prices (asset_id, date, close) VALUES (?, ?, ?)",
+        "INSERT OR IGNORE INTO research_prices (id, asset_id, date, close, source) "
+        "VALUES (?, ?, ?, ?, ?)",
         rows,
     )
     conn.commit()
-    return len(rows)
+    return conn.total_changes - before
 
 
 def wait_if_night() -> None:

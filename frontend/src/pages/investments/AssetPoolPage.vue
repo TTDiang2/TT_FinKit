@@ -1267,14 +1267,21 @@ async function runBatchRefresh() {
   const ids = [...selectedIds.value]
   if (!ids.length) return
   batchBusy.value = true
-  batchMsg.value = `更新中（0/${ids.length}）…`
+  const CHUNK = 8
+  const all: { symbol: string; name: string; status: string; changed_fields?: string[]; error?: string | null }[] = []
   try {
-    const { data } = await api.post('/research/assets/batch-refresh-profiles', { ids })
-    const updated = data.filter((r: any) => r.status !== 'failed' && r.status !== 'skipped').length
-    refreshSummary.value = data.map((r: any) =>
-      `${r.symbol} ${r.name}: ${r.status}${r.changed_fields?.length ? ' · ' + r.changed_fields.join('/') : ''}${r.error ? ' · ' + r.error : ''}`
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const chunk = ids.slice(i, i + CHUNK)
+      batchMsg.value = `更新中 ${Math.min(i + CHUNK, ids.length)}/${ids.length}…`
+      const { data } = await api.post('/research/assets/batch-refresh-profiles',
+        { ids: chunk, skip_holdings: true }, { timeout: 120000 })
+      all.push(...data)
+    }
+    const updated = all.filter((r) => r.status !== 'failed' && r.status !== 'skipped').length
+    refreshSummary.value = all.map((r) =>
+      `${r.symbol} ${r.name}: ${r.status}${r.changed_fields?.length ? ' → ' + r.changed_fields.join('/') : ''}${r.error ? ' → ' + r.error : ''}`
     ).join('\n')
-    show(`档案更新完成：${updated}/${ids.length} 个有变更`, 'success')
+    show(`档案更新完成：${updated}/${ids.length} 只有变更`, 'success')
     await load()
   } catch (e) {
     show(errDetail(e), 'error')
@@ -1474,11 +1481,22 @@ async function syncOne(a: AssetRow) {
 async function refreshAll() {
   refreshing.value = true
   try {
-    const res = await api.post('/research/assets/refresh-prices')
-    const results = res.data as SyncResult[]
+    // 行情 + 档案（费率/限购/申购状态，跳过持仓抓取提速）并行
+    const [pricesRes, profRes] = await Promise.all([
+      api.post('/research/assets/refresh-prices'),
+      api.post('/research/assets/batch-refresh-profiles', { skip_holdings: true }, { timeout: 180000 }).catch(() => null),
+    ])
+    const results = pricesRes.data as SyncResult[]
     const ok = results.filter(r => !r.error)
     const fail = results.filter(r => r.error)
-    show(`刷新完成：成功 ${ok.length}（共 ${ok.reduce((s, r) => s + r.rows, 0)} 行）${fail.length ? ` / 失败 ${fail.length}` : ''}`, fail.length ? 'warning' : 'success')
+    let msg = `刷新完成：行情成功 ${ok.length}（共 ${ok.reduce((s, r) => s + r.rows, 0)} 行）${fail.length ? ` / 失败 ${fail.length}` : ''}`
+    if (profRes) {
+      const prs = profRes.data as { status: string }[]
+      const updated = prs.filter(r => r.status === 'updated').length
+      const pfail = prs.filter(r => r.status === 'failed').length
+      msg += ` · 档案更新 ${updated}${pfail ? ` / 失败 ${pfail}` : ''}`
+    }
+    show(msg, fail.length ? 'warning' : 'success')
     await load()
   } catch (e) {
     show(errDetail(e), 'error')

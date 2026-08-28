@@ -246,7 +246,8 @@ class BatchPoolRequest(BaseModel):
 
 
 class BatchRefreshProfilesRequest(BaseModel):
-    ids: Optional[List[str]] = None   # None → 全部基金型标的
+    ids: Optional[List[str]] = None
+    skip_holdings: bool = False       # true=跳过持仓抓取（批量全量更新时提速）   # None → 全部基金型标的
 
 
 class ProfileRefreshResult(BaseModel):

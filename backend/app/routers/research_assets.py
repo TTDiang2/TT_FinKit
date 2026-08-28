@@ -774,11 +774,12 @@ async def batch_refresh_profiles(
         try:
             holdings_payload: dict = {}
             tags_rebuilt = False
-            try:
-                holdings_payload = await asset_holdings.refresh_holdings(db, a)
-                tags_rebuilt = True
-            except Exception:  # noqa: BLE001 — 持仓失败只降级打标精度
-                pass
+            if not req.skip_holdings:
+                try:
+                    holdings_payload = await asset_holdings.refresh_holdings(db, a)
+                    tags_rebuilt = True
+                except Exception:  # noqa: BLE001 — 持仓失败只降级打标精度
+                    pass
             fees = await asyncio.to_thread(fund_profile.fetch_fee_profile, a.symbol)
             changed = fund_profile.apply_profile(a, row, fees, holdings_payload or None)
             await db.commit()
