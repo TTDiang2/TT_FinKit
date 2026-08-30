@@ -7,8 +7,8 @@ from app.models.strategy import Strategy
 
 async def create_backtest(db: AsyncSession, strategy_id: str, strategy_version: int,
                           params: dict, universe: list[str], start_date: str,
-                          end_date: str, rebalance_freq: str) -> Backtest:
-    # Get latest data_as_of (today)
+                          end_date: str, rebalance_freq: str,
+                          group_ids: list[str] | None = None) -> Backtest:
     from datetime import date
     data_as_of = date.today().isoformat()
 
@@ -22,6 +22,9 @@ async def create_backtest(db: AsyncSession, strategy_id: str, strategy_version: 
         rebalance_freq=rebalance_freq,
         data_as_of=data_as_of,
         status="pending",
+        group_ids=json.dumps(group_ids or []),
+        universe_count=len(universe),
+        progress=0.0,
     )
     db.add(bt)
     await db.commit()
@@ -37,13 +40,16 @@ async def list_backtests(db: AsyncSession, limit: int = 50) -> list[Backtest]:
     return list(result.scalars().all())
 
 async def update_backtest_status(db: AsyncSession, backtest_id: str, status: str,
-                                 error: str | None = None, results: dict | None = None):
+                                 error: str | None = None, results: dict | None = None,
+                                 progress: float | None = None):
     bt = await get_backtest(db, backtest_id)
     if not bt:
         return
     bt.status = status
     if error is not None:
         bt.error = error
+    if progress is not None:
+        bt.progress = progress
     if results is not None:
         bt.results = json.dumps(results)
     await db.commit()

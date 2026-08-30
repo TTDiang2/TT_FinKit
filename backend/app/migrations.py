@@ -63,6 +63,10 @@ async def run_lightweight_migrations(conn: AsyncConnection) -> None:
     await _add_column_if_missing(conn, "investments", "is_money_market", "BOOLEAN DEFAULT 0")
     await _add_column_if_missing(conn, "investments", "seven_day_yield", "FLOAT")
 
+    # backtests: progress reporting (0-100) + running PID for orphan detection
+    await _add_column_if_missing(conn, "backtests", "progress", "INTEGER DEFAULT 0")
+    await _add_column_if_missing(conn, "backtests", "run_pid", "INTEGER")
+
     # user_settings: AI investment analysis knobs
     await _add_column_if_missing(conn, "user_settings", "ai_search_backend", "VARCHAR DEFAULT 'duckduckgo'")
     await _add_column_if_missing(conn, "user_settings", "ai_search_api_key", "VARCHAR DEFAULT ''")
@@ -111,6 +115,16 @@ async def run_lightweight_migrations(conn: AsyncConnection) -> None:
     # backtests (Phase 4): safety net for DBs created during partial rollout
     await _add_column_if_missing(conn, "backtests", "results", "TEXT")
     await _add_column_if_missing(conn, "backtests", "error", "TEXT")
+
+    # backtests: 标的池来源（group_ids[] 快照）+ 标的数量 + 进度心跳
+    await _add_column_if_missing(conn, "backtests", "group_ids", "TEXT")
+    await _add_column_if_missing(conn, "backtests", "universe_count", "INTEGER")
+    await _add_column_if_missing(conn, "backtests", "last_heartbeat", "DATETIME")
+    await conn.execute(
+        text("UPDATE backtests SET universe_count = length(universe) - length(replace(universe, ',', '')) "
+             "+ CASE WHEN universe IS NULL OR universe = '' THEN 0 ELSE 1 END "
+             "WHERE universe_count IS NULL")
+    )
 
     # signals: Phase 5 signal table (strategy output snapshots)
     await add_tablemigration(

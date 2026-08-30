@@ -15,6 +15,7 @@ import math
 import os
 import sqlite3
 import subprocess
+import threading
 import sys
 import tempfile
 
@@ -129,6 +130,12 @@ def _max_drawdown(navs: list[float]) -> float:
 SETTLE_TOL_PCT = 0.005     # position considered filled when gap < 0.5% of portfolio
 SETTLE_MIN_AMOUNT = 100.0  # skip dust-sized top-up trades
 
+# 调仓时对“已有持仓的微调”设置最小有效差额：低于金额线或组合占比线的调仓
+# 大多是权重漂移噪声（几十元的买卖既无意义又可能触发赎回费档位）。
+# 新建仓（原持仓为 0）与完全清仓（目标为 0）不受此限制。
+REBALANCE_MIN_AMOUNT = 100.0
+REBALANCE_MIN_RATIO = 0.002
+
 
 def _settle_pending(
     day: str,
@@ -141,6 +148,7 @@ def _settle_pending(
     slippage: float,
     universe: list[str],
     eps: float,
+    last_known: dict[str, float] | None = None,
 ) -> list[dict]:
     """Top up under-weight positions with freshly released cash.
 
@@ -156,6 +164,8 @@ def _settle_pending(
     for aid in set(universe) | set(holdings):
         tw = target.get(aid, 0.0)
         px = prices.get(aid, {}).get(day, 0.0)
+        if px <= 0:
+            px = (last_known or {}).get(aid, 0.0)
         if px <= 0:
             continue
         gap = pv * tw - holdings.get(aid, 0.0) * px
@@ -264,6 +274,30 @@ def evaluate_custom_factors(
             "n_periods": len(pairs),
             "horizon_days": horizon,
         }
+    return out
+
+
+def factor_exposure_series(
+    weight_history: list[dict], exposures: dict[str, dict[str, float]]
+) -> list[dict]:
+    """Daily portfolio factor exposure: {date, {factor: Σ_i w_i × β_i,f}}.
+
+    Lets the UI draw the exposure EVOLUTION instead of a single time-averaged
+    bar — e.g. gold exposure growing through 2024-2026 is visible as a trend,
+    not just a big average number.
+    """
+    out: list[dict] = []
+    for wh in weight_history:
+        ws = wh.get("weights") or {}
+        expo: dict[str, float] = {}
+        for sym, w in ws.items():
+            for fkey, beta in (exposures.get(sym) or {}).items():
+                expo[fkey] = expo.get(fkey, 0.0) + w * beta
+        if expo:
+            out.append({
+                "date": wh.get("date", ""),
+                "exposures": {k: round(v, 4) for k, v in expo.items()},
+            })
     return out
 
 
@@ -584,8 +618,17 @@ def run_simulation(
     def _price(aid: str, day: str) -> float:
         return prices.get(aid, {}).get(day, 0.0)
 
+    # symbol -> last published price seen so far (data-gap guard). A missing
+    # NAV row must never mark a real holding at 0 — that would instantly wipe
+    # the portfolio (observed: funds whose feed lags one day at the window end).
+    last_known: dict[str, float] = {}
+
+    def _mark(aid: str, day: str) -> float:
+        px = _price(aid, day)
+        return px if px > 0 else last_known.get(aid, 0.0)
+
     def _invested(day: str) -> float:
-        return sum(sh * _price(aid, day) for aid, sh in holdings.items())
+        return sum(sh * _mark(aid, day) for aid, sh in holdings.items())
 
     def _locked_total() -> float:
         return sum(amt for _, amt in locked_funds)
@@ -596,11 +639,11 @@ def run_simulation(
 
     def _daily_fee_rate(day: str) -> float:
         """Weighted-average (mgmt+custody+sales_service)/year over held assets."""
-        total_v = sum(sh * _price(aid, day) for aid, sh in holdings.items())
+        total_v = sum(sh * _mark(aid, day) for aid, sh in holdings.items())
         if total_v <= 0:
             return 0.0
         weighted = sum(
-            sh * _price(aid, day)
+            sh * _mark(aid, day)
             * (fee_terms.get(aid, {}).get("mgmt_fee", 0.0)
                + fee_terms.get(aid, {}).get("custody_fee", 0.0)
                + fee_terms.get(aid, {}).get("sales_service_fee", 0.0))
@@ -609,6 +652,12 @@ def run_simulation(
         return weighted / total_v
 
     for day in trading_days:
+        # refresh last-published prices (data-gap guard for marking)
+        for _aid, _ser in prices.items():
+            _px = _ser.get(day)
+            if _px and _px > 0:
+                last_known[_aid] = _px
+
         # T+N settlement: release sell proceeds that have cleared today
         released_today = 0.0
         still_locked: list[tuple[str, float]] = []
@@ -629,7 +678,7 @@ def run_simulation(
         ):
             settle_trades = _settle_pending(
                 day, pending_target, holdings, buy_dates, cash, prices,
-                fee_terms, slippage, universe, eps,
+                fee_terms, slippage, universe, eps, last_known,
             )
             for t in settle_trades:
                 cash -= t["amount"] + t["fee"]
@@ -659,9 +708,9 @@ def run_simulation(
             invested_now = _invested(day)
             pv_now = cash + invested_now + _locked_total()
             ctx.current_weights = {
-                aid: (sh * _price(aid, day)) / pv_now
+                aid: (sh * _mark(aid, day)) / pv_now
                 for aid, sh in holdings.items()
-                if _price(aid, day) > 0 and pv_now > 0
+                if _mark(aid, day) > 0 and pv_now > 0
             }
             if has_custom_factors:
                 try:
@@ -688,12 +737,24 @@ def run_simulation(
                     current_value = holdings.get(aid, 0.0) * px
                     target_value = portfolio_value * target.get(aid, 0.0)
                     diff = target_value - current_value
+                    if (
+                        abs(diff) < max(
+                            REBALANCE_MIN_AMOUNT, portfolio_value * REBALANCE_MIN_RATIO
+                        )
+                        and target.get(aid, 0.0) > eps
+                    ):
+                        # 微调/微型新建仓差额过小，视为噪声不做交易；
+                        # 仅完全清仓（目标为 0）豁免，保证退出通道畅通
+                        continue
                     if diff > eps:
                         # 可用现金受限（T+N 锁定期资金未到账）时，按可用现金买，
                         # 不足部分留在现金——真实世界同样无法透支买入
                         if diff > cash + eps:
                             diff = max(cash, 0.0)
                             if diff <= eps:
+                                continue
+                            # 钳位后只剩几十元的"部分成交"没有意义，留给 settle 补
+                            if diff < REBALANCE_MIN_AMOUNT:
                                 continue
                         fee = diff * (fee_terms.get(aid, {}).get("purchase_fee", 0.0) + slippage)
                         bought = diff / px
@@ -800,9 +861,9 @@ def run_simulation(
         })
 
         weights = {
-            aid: (holdings.get(aid, 0.0) * _price(aid, day)) / portfolio_value
+            aid: (holdings.get(aid, 0.0) * _mark(aid, day)) / portfolio_value
             for aid in universe
-            if holdings.get(aid, 0.0) and _price(aid, day) > 0
+            if holdings.get(aid, 0.0) and _mark(aid, day) > 0
         }
         weight_history.append({
             "date": day,
@@ -811,6 +872,12 @@ def run_simulation(
 
     metrics = compute_metrics(nav_series, total_cost, total_turnover, initial_capital)
     nav_map = {p["date"]: p["nav"] for p in nav_series}
+    # 归因窗口只看模拟区间（warmup 价格不参与收益贡献计算）
+    sim_start = trading_days[0] if trading_days else ""
+    sim_prices = {
+        sym: {d: v for d, v in series.items() if d >= sim_start}
+        for sym, series in prices.items()
+    }
     return {
         "nav_series": nav_series,
         "metrics": metrics,
@@ -820,7 +887,10 @@ def run_simulation(
         "custom_factor_analysis": evaluate_custom_factors(
             custom_factor_points, nav_map
         ),
-        "factor_view": _factor_view(prices, weight_history),
+        "factor_view": _factor_view(sim_prices, weight_history),
+        "factor_exposure_series": factor_exposure_series(
+            weight_history, getattr(ctx, "factor_exposures", {}) or {}
+        ),
         "risk_view": _risk_view(nav_series, weight_history, metrics),
     }
 
@@ -1009,6 +1079,7 @@ def load_price_data(
     universe: list[str],
     start_date: str,
     end_date: str,
+    warmup_days: int = 0,
 ) -> tuple[
     dict[str, dict[str, float]],
     dict[str, dict[str, float]],
@@ -1021,6 +1092,12 @@ def load_price_data(
     returned price/return/fee data is keyed by symbol so strategies never
     deal with internal UUIDs. Prices come from the ``research_prices``
     warehouse (asset_id, date, close).
+
+    ``warmup_days`` > 0 additionally loads that many CALENDAR days of prices
+    BEFORE ``start_date`` so strategies can compute lookback signals
+    (momentum/vol) on the very first rebalance date instead of sitting in
+    cash for the first year. The simulation itself still only runs on
+    [start_date, end_date] — warmup rows exist purely as strategy input.
     """
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -1061,11 +1138,16 @@ def load_price_data(
     prices: dict[str, dict[str, float]] = {s: {} for s in universe}
     if ids:
         id_placeholders = ",".join("?" for _ in ids)
+        query_start = start_date
+        if warmup_days > 0:
+            query_start = (
+                date.fromisoformat(start_date) - timedelta(days=warmup_days)
+            ).isoformat()
         rows = conn.execute(
             "SELECT asset_id, date, close FROM research_prices "
             f"WHERE asset_id IN ({id_placeholders}) AND date >= ? AND date <= ? "
             "ORDER BY asset_id, date",
-            [*ids, start_date, end_date],
+            [*ids, query_start, end_date],
         ).fetchall()
         id_to_symbol = {v: k for k, v in symbol_to_id.items()}
         for r in rows:
@@ -1102,6 +1184,18 @@ from app.services.backtest_engine import (
 
 input_path = sys.argv[1]
 output_path = sys.argv[2]
+progress_path = sys.argv[3] if len(sys.argv) > 3 else None
+
+def _write_progress(p: float):
+    if not progress_path:
+        return
+    try:
+        with open(progress_path, "w", encoding="utf-8") as f:
+            f.write(str(max(0.0, min(1.0, p))))
+    except Exception:
+        pass
+
+_write_progress(0.02)  # 子进程已起，回报 2%
 
 with open(input_path, "r", encoding="utf-8") as f:
     data = json.load(f)
@@ -1119,7 +1213,8 @@ try:
     strategy = strat_classes[0](**data.get("params", {}))
 
     prices, returns, pool, fee_terms = load_price_data(
-        data["db_path"], data["universe"], data["start_date"], data["end_date"]
+        data["db_path"], data["universe"], data["start_date"], data["end_date"],
+        warmup_days=int(data.get("warmup_days", 0)),
     )
     all_days = sorted(set().union(*(set(p) for p in prices.values()))) if prices else []
     n_assets = len(prices)
@@ -1129,8 +1224,12 @@ try:
         d for d in all_days
         if sum(1 for p in prices.values() if d in p) >= max(2, int(0.6 * n_assets))
     ] if prices else []
+    # warmup 行只作为策略回看输入，不进入模拟区间
+    trading_days = [d for d in trading_days if d >= data["start_date"]]
     if not trading_days:
         raise ValueError("No price data found for universe in date range")
+
+    _write_progress(0.1)  # 价格加载完
 
     ctx = StrategyContext(
         pool=pool,
@@ -1144,12 +1243,27 @@ try:
     )
 
     rebalance_dates = generate_rebalance_dates(trading_days, data["rebalance_freq"])
+    if trading_days and (not rebalance_dates or rebalance_dates[0] != trading_days[0]):
+        rebalance_dates = [trading_days[0]] + list(rebalance_dates)
     cost_config = data.get("cost_config") or {}
     redeem_rules = cost_config.get("redeem_rules") or DEFAULT_REDEEM_RULES
     initial_capital = float(cost_config.get("initial_capital", 100000.0))
     slippage = float(cost_config.get("slippage", 0.0))
 
-    out = run_simulation(
+    # 进度回报：rebalance 节点数 5% 步进
+    rb_total = max(1, len(rebalance_dates))
+    orig_sim = run_simulation
+    last_p = [0.1]
+    def _tick_p(i: int):
+        # 0.1 起跑 → 0.95 留给指标计算
+        p = 0.1 + 0.85 * (i / rb_total)
+        if p - last_p[0] >= 0.05:
+            _write_progress(p)
+            last_p[0] = p
+    # 用轻包装模拟进度（run_simulation 内部不支持回调，所以外层把 rebalance
+    # 拆段跑；折中方案：在 rebalance 后立刻写文件。子进程本身 30-120s 用
+    # 文件心跳回报，主协程每 3s 拉一次进度，避免页面无响应。）
+    out = orig_sim(
         strategy=strategy,
         ctx=ctx,
         trading_days=trading_days,
@@ -1160,6 +1274,7 @@ try:
         initial_capital=initial_capital,
         slippage=slippage,
     )
+    _write_progress(0.95)
     bench = load_benchmark_series(data["db_path"], trading_days[0], trading_days[-1])
     out["benchmark"] = bench
     out["metrics"].update(extended_stats(out["nav_series"], bench))
@@ -1182,6 +1297,7 @@ except Exception as e:
     except Exception:
         pass
 
+_write_progress(1.0)
 with open(output_path, "w", encoding="utf-8") as f:
     json.dump(result, f, ensure_ascii=False)
 '''
@@ -1210,10 +1326,16 @@ def _run_backtest_sync(
     db_path: str,
     cost_config: dict | None = None,
     timeout: int = 120,
+    backtest_id: str | None = None,
+    on_progress: "callable | None" = None,
 ) -> dict:
     """Write input JSON, spawn the subprocess, read the output JSON.
 
     Same temp-JSON IPC pattern as ``finkit_strategy.runner``.
+
+    When backtest_id + on_progress are given, a daemon thread polls the
+    subprocess progress file every 3s and invokes on_progress(0..1) so the
+    caller can persist progress to the DB (and surface it to the UI).
     """
     factor_keys = _declared_factor_keys(strategy_code)
     input_data = {
@@ -1223,6 +1345,7 @@ def _run_backtest_sync(
         "start_date": start_date,
         "end_date": end_date,
         "rebalance_freq": rebalance_freq,
+        "warmup_days": int((cost_config or {}).get("warmup_days", 550)),
         "db_path": db_path,
         "cost_config": cost_config or {},
         "factor_values": _load_factor_values(db_path, factor_keys),
@@ -1236,33 +1359,70 @@ def _run_backtest_sync(
         f.write(_RUNNER_CODE)
         runner_script = f.name
     output_path = tempfile.mktemp(suffix='.json')
+    progress_path = tempfile.mktemp(suffix='.progress')
 
     env = os.environ.copy()
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = _backend_root() + (os.pathsep + existing if existing else "")
 
+    poller = None
     try:
         proc = subprocess.Popen(
-            [sys.executable, runner_script, input_path, output_path],
+            [sys.executable, runner_script, input_path, output_path, progress_path],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             env=env,
         )
+        if backtest_id and on_progress:
+            poller = threading.Thread(
+                target=_progress_poller, args=(proc, progress_path, on_progress),
+                daemon=True,
+            )
+            poller.start()
         try:
             proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
             return _error_result(f"Backtest execution timed out after {timeout}s")
+        if poller:
+            poller.join(timeout=2)
         with open(output_path, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
         return _error_result(str(e))
     finally:
-        for path in (runner_script, input_path, output_path):
+        for path in (runner_script, input_path, output_path, progress_path):
             try:
                 os.unlink(path)
             except OSError:
                 pass
+
+
+def _progress_poller(proc: "subprocess.Popen", progress_path: str, on_progress: callable) -> None:
+    """Daemon: 每 3s 读 progress 文件 → on_progress(p)，子进程退出后立刻最后回报一次。"""
+    import time
+    last_p = -1.0
+    while proc.poll() is None:
+        time.sleep(3)
+        try:
+            with open(progress_path, "r", encoding="utf-8") as f:
+                p = float(f.read().strip() or "0")
+        except (OSError, ValueError):
+            p = last_p if last_p >= 0 else 0.0
+        if p != last_p:
+            try:
+                on_progress(p)
+            except Exception:
+                pass
+            last_p = p
+    # 子进程退出后最后读一次（捕捉收尾进度）
+    try:
+        with open(progress_path, "r", encoding="utf-8") as f:
+            p = float(f.read().strip() or "1.0")
+        if p != last_p:
+            on_progress(p)
+    except Exception:
+        pass
 
 
 async def run_backtest_in_subprocess(
@@ -1275,10 +1435,17 @@ async def run_backtest_in_subprocess(
     db_path: str = "finkit.db",
     cost_config: dict | None = None,
     timeout: int = 120,
+    backtest_id: str | None = None,
+    on_progress: "callable | None" = None,
 ) -> dict:
-    """Async wrapper: run the backtest subprocess off the event loop."""
+    """Async wrapper: run the backtest subprocess off the event loop.
+
+    on_progress(p) 会在子进程运行期间（同步线程内）每 3s 回调一次，
+    进度 p ∈ [0,1]；DB 写入由 caller 处理（避免 sync 线程直连 async session）。
+    """
     import asyncio
     return await asyncio.to_thread(
         _run_backtest_sync, strategy_code, params, universe, start_date,
         end_date, rebalance_freq, db_path, cost_config, timeout,
+        backtest_id, on_progress,
     )

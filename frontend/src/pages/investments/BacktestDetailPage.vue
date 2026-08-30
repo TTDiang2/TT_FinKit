@@ -7,6 +7,26 @@
       <span v-if="backtest.strategy_name" class="text-sm text-text-muted">· {{ backtest.strategy_name }}</span>
     </div>
 
+    <!-- 标的池快照：每次回测创建时冻结的标的来源（用于复现） -->
+    <div v-if="backtest.group_names?.length || backtest.universe_count" class="bg-bg-tertiary/40 rounded-lg px-4 py-3 mb-4 text-xs">
+      <div class="flex items-center gap-2 flex-wrap text-text-secondary">
+        <span class="font-medium text-text-primary">标的池快照：</span>
+        <span>{{ backtest.universe_count }} 只标的</span>
+        <span v-if="backtest.group_names?.length" class="text-text-muted">·</span>
+        <span v-for="g in backtest.group_names" :key="g.id"
+          class="px-1.5 py-0.5 rounded bg-purple-50 text-purple-700">
+          {{ g.name }}（{{ g.member_count }}）
+        </span>
+        <button v-if="backtest.universe.length"
+          @click="showPool = !showPool" class="ml-auto text-accent-primary hover:underline">
+          {{ showPool ? '收起' : `查看 ${backtest.universe.length} 个代码` }}
+        </button>
+      </div>
+      <div v-if="showPool" class="mt-2 max-h-32 overflow-y-auto text-text-muted font-mono text-xs leading-5">
+        {{ backtest.universe.join('、') }}
+      </div>
+    </div>
+
     <div v-if="backtest.status === 'done' && backtest.results">
       <!-- 核心指标卡 -->
       <div class="grid grid-cols-4 gap-4 mb-6">
@@ -133,7 +153,7 @@
       </div>
 
       <!-- 分析图表区 -->
-      <BacktestCharts :backtest="backtest" />
+      <BacktestCharts :backtest="backtest" :factor-names="factorNameMap" />
 
       <!-- 因子效果 -->
       <div v-if="backtest.factor_keys?.length" class="bg-white rounded-lg shadow-sm p-4 mb-4">
@@ -244,14 +264,23 @@
       <div class="text-sm text-expense-color mt-1">{{ backtest.error }}</div>
     </div>
     <div v-else-if="backtest.status === 'running' || backtest.status === 'pending'" class="bg-blue-50 rounded-lg p-4">
-      <div class="text-blue-700">回测进行中，请稍后刷新...</div>
+      <div class="flex items-center justify-between mb-2">
+        <span class="text-blue-700 font-medium">回测进行中…</span>
+        <span class="text-xs text-blue-600">心跳 {{ heartbeatAgo }}s 前</span>
+      </div>
+      <div class="w-full bg-blue-100 rounded-full h-2.5 mb-2 overflow-hidden">
+        <div class="bg-accent-primary h-2.5 transition-all" :style="{width: (backtest.progress || 0) + '%'}"></div>
+      </div>
+      <div class="text-xs text-text-secondary">
+        进度 {{ backtest.progress || 0 }}% · {{ backtest.universe_count || backtest.universe.length }} 只标的
+      </div>
     </div>
   </div>
   <div v-else class="text-center py-8 text-text-muted">加载中...</div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { Line } from 'vue-chartjs'
 import { Chart as ChartJS, LineElement, PointElement, CategoryScale, LinearScale, Tooltip, Legend, Filler } from 'chart.js'
@@ -266,6 +295,30 @@ const route = useRoute()
 const api = useApi()
 const backtest = ref<BacktestResponse | null>(null)
 const evalData = ref<{ thresholds: Record<string, number>; evaluations: any[] } | null>(null)
+const showPool = ref(false)
+const heartbeatAgo = ref(-1)
+let pollTimer: ReturnType<typeof setInterval> | null = null
+
+function startPolling() {
+  stopPolling()
+  pollTimer = setInterval(async () => {
+    if (!backtest.value) return
+    if (backtest.value.status === 'done' || backtest.value.status === 'failed') {
+      stopPolling()
+      return
+    }
+    try {
+      const { data } = await api.get<BacktestResponse>(`/backtests/${backtest.value.id}?parts=core`)
+      backtest.value = data
+      heartbeatAgo.value = 0
+    } catch { /* ignore */ }
+  }, 3000)
+}
+function stopPolling() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+}
+
+setInterval(() => { heartbeatAgo.value++ }, 1000)
 
 function goBack() {
   router.push('/investments/strategies?sub=backtest')
@@ -623,14 +676,30 @@ function factorName(key: string): string {
   const e = factorEvalMap.value[key]
   return e?.factor_name || key
 }
+const factorNameMap = computed<Record<string, string>>(() => {
+  const map: Record<string, string> = {}
+  for (const [k, e] of Object.entries(factorEvalMap.value)) map[k] = e.factor_name || k
+  return map
+})
 
 function icColor(v: number) { return Math.abs(v) > 0.05 ? 'text-income-color' : 'text-text-muted' }
 function icirColor(v: number) { return v > 0.5 ? 'text-income-color' : v > 0.3 ? 'text-warning' : 'text-text-muted' }
 
 async function load() {
   const id = route.params.id as string
-  const { data } = await api.get<BacktestResponse>(`/backtests/${id}`)
+  // 分段加载：先拉 core（指标+摘要，毫秒级），重载荷并行补齐
+  const { data } = await api.get<BacktestResponse>(`/backtests/${id}?parts=core`)
   backtest.value = data
+  const partsToLoad = ['nav_series', 'weight_history', 'rebalance_records', 'factor_exposure_series']
+  if ((data.results?.available_parts || []).length) {
+    try {
+      const loaded = await Promise.all(partsToLoad.map(name =>
+        api.get(`/backtests/${id}/part/${name}`).then(r => [name, r.data[name]])))
+      const patch: Record<string, unknown> = {}
+      for (const [name, value] of loaded) patch[name] = value
+      if (backtest.value?.results) backtest.value.results = { ...backtest.value.results, ...patch }
+    } catch { /* 分段失败时保留 core 渲染 */ }
+  }
   // 旧回测（benchmark 字段上线前创建）懒加载基准，让超额收益/滚动Alpha-Beta图可用
   if (data.results && !data.results.benchmark && data.start_date && data.end_date) {
     try {
@@ -661,5 +730,6 @@ function statusLabel(s: string) {
   return m[s as keyof typeof m] || s
 }
 
-onMounted(load)
+onMounted(() => { load(); startPolling() })
+onUnmounted(stopPolling)
 </script>

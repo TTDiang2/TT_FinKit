@@ -21,6 +21,8 @@ class Backtest(Base):
     rebalance_freq = Column(String, nullable=False)  # monthly / weekly
     data_as_of = Column(String, nullable=False)  # snapshot date for reproducibility
     status = Column(String, default="pending")  # pending/running/done/failed
+    progress = Column(Integer, default=0)  # 0-100 回测进度
+    run_pid = Column(Integer, nullable=True)  # 运行中的子进程 PID（孤儿检测用）
     error = Column(Text, nullable=True)
     results = Column(Text, nullable=True)  # JSON: full results
     created_at = Column(DateTime, default=datetime.datetime.utcnow)

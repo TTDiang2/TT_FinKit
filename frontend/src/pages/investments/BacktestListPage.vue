@@ -92,12 +92,19 @@
           </select>
         </div>
         <div>
-          <label class="block text-sm font-medium mb-1">标的范围</label>
-          <select v-model="newForm.scope_group_id" class="w-full px-3 py-2 text-sm border border-border-default rounded-md">
-            <option value="">全部入池标的</option>
-            <option v-for="g in assetGroups" :key="g.id" :value="g.id">{{ g.name }}（{{ g.asset_ids.length }}）</option>
-          </select>
-          <div v-if="newForm.scope_group_id" class="text-xs text-text-muted mt-1">仅使用该组合内的已入池标的</div>
+          <label class="block text-sm font-medium mb-1">标的范围（多选组合，限 ≤500 只）</label>
+          <div class="border border-border-default rounded-md p-2 max-h-32 overflow-y-auto bg-bg-primary">
+            <label v-if="!assetGroups.length" class="text-xs text-text-muted px-1 py-1">无可用组合，先在标的面板创建</label>
+            <label v-for="g in assetGroups" :key="g.id" class="flex items-center gap-2 px-1 py-0.5 text-sm hover:bg-bg-tertiary rounded cursor-pointer">
+              <input type="checkbox" :checked="newForm.scope_group_ids.includes(g.id)"
+                @change="toggleScopeGroup(g.id)" class="accent-accent-primary" />
+              <span class="flex-1 truncate">{{ g.name }}</span>
+              <span class="text-xs text-text-muted">{{ g.asset_ids.length }}</span>
+            </label>
+          </div>
+          <div v-if="newForm.scope_group_ids.length" class="text-xs text-text-muted mt-1">
+            已选 {{ newForm.scope_group_ids.length }} 个组合（去重后的标的池将在回测详情页冻结显示）
+          </div>
         </div>
         <div class="grid grid-cols-2 gap-3">
           <div>
@@ -140,6 +147,7 @@ const router = useRouter()
 const backtests = ref<BacktestResponse[]>([])
 const strategies = ref<StrategyResponse[]>([])
 const pooledAssets = ref<ResearchAsset[]>([])
+const pooledLoadError = ref('')
 const loading = ref(false)
 const showNew = ref(false)
 const creating = ref(false)
@@ -156,10 +164,16 @@ const newForm = ref({
   start_date: '',
   end_date: '',
   rebalance_freq: 'monthly',
-  scope_group_id: '',
+  scope_group_ids: [] as string[],
   universe: [] as string[],
   params: {},
 })
+
+function toggleScopeGroup(gid: string) {
+  const i = newForm.value.scope_group_ids.indexOf(gid)
+  if (i >= 0) newForm.value.scope_group_ids.splice(i, 1)
+  else newForm.value.scope_group_ids.push(gid)
+}
 
 // ---- 按策略分组（组内按创建时间倒序，组间按最近创建倒序） ----
 const strategyGroups = computed(() => {
@@ -223,8 +237,11 @@ async function loadPooledAssets() {
   try {
     const { data } = await api.get<ResearchAsset[]>('/research/assets?status=pooled')
     pooledAssets.value = data
-  } catch {
+    pooledLoadError.value = ''
+  } catch (e) {
     pooledAssets.value = []
+    // 不再静默吞错：后端现已支持空 universe 自动展开为全部入池，但要让用户知道列表没加载到
+    pooledLoadError.value = `入池标的列表加载失败（不影响回测，后端将自动使用全部入池标的）`
   }
   try {
     const { data } = await api.get<{ id: string; name: string; asset_ids: string[] }[]>('/research/assets/groups')
@@ -239,20 +256,23 @@ async function createBacktest() {
   createError.value = ''
   try {
     const strat = strategies.value.find(s => s.id === newForm.value.strategy_id)
-    const scope = newForm.value.scope_group_id
-      ? { group_id: newForm.value.scope_group_id, universe: [] }
-      : { group_id: null, universe: pooledAssets.value.map(a => a.symbol) }
+    const groupIds = newForm.value.scope_group_ids
+    if (!groupIds.length) {
+      createError.value = '请至少选择一个标的组合'
+      return
+    }
     await api.post('/backtests', {
       strategy_id: newForm.value.strategy_id,
       strategy_version: strat?.version ?? 1,
       params: {},
-      universe: scope.universe,
-      group_id: scope.group_id,
+      universe: [],
+      group_ids: groupIds,
       start_date: newForm.value.start_date,
       end_date: newForm.value.end_date,
       rebalance_freq: newForm.value.rebalance_freq,
     })
     showNew.value = false
+    newForm.value.scope_group_ids = []
     await loadBacktests()
   } catch (e: unknown) {
     createError.value = apiErrorMessage(e)

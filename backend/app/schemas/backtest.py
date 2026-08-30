@@ -6,10 +6,18 @@ class BacktestCreate(BaseModel):
     strategy_version: int
     params: dict = {}
     universe: list[str] = []  # symbols; 空 + group_id 时由后端展开
-    group_id: Optional[str] = None  # 标的组合限定
+    group_id: Optional[str] = None  # 单组合模式（保留兼容）
+    group_ids: list[str] = []      # 多组合模式（新）
     start_date: str  # YYYY-MM-DD
     end_date: str
     rebalance_freq: str = "monthly"
+
+
+class BacktestGroupMeta(BaseModel):
+    id: str
+    name: str
+    member_count: int
+
 
 class BacktestResponse(BaseModel):
     id: str
@@ -17,12 +25,16 @@ class BacktestResponse(BaseModel):
     strategy_name: Optional[str] = None
     strategy_version: int
     params: dict
-    universe: list[str]  # list of asset symbols
+    universe: list[str]
+    universe_count: int = 0
+    group_ids: list[str] = []
+    group_names: list[BacktestGroupMeta] = []
     start_date: str
     end_date: str
     rebalance_freq: str
     data_as_of: str
     status: str
+    progress: int = 0
     error: Optional[str] = None
     results: Optional[dict] = None
     factor_keys: Optional[list[str]] = None

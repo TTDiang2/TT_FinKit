@@ -570,6 +570,7 @@ export interface ExposureMatrix {
   as_of: string | null;
   factors: FactorResponse[];
   assets: AssetExposureRow[];
+  total_assets?: number | null
 }
 
 export interface ExposureHistoryPoint {
@@ -627,14 +628,22 @@ export interface AgentPreviewResult {
 
 // ---- 信号（Signal）----
 
+export interface SignalTargetDetail {
+  symbol: string
+  name: string
+  weight: number
+}
+
 export interface SignalResponse {
   id: string
   strategy_id: string
   strategy_version: number
+  strategy_name?: string | null
   run_date: string
   as_of_date: string
   next_rebalance_date: string | null
-  target_weights: Record<string, number>  // asset_id -> weight
+  target_weights: Record<string, number>  // symbol -> weight
+  weights_detail?: SignalTargetDetail[] | null  // 按权重降序，含标的名称
   risk_status: SignalRiskStatus | null
   backtest_id: string | null
   created_at: string
@@ -651,7 +660,32 @@ export interface SignalRunResult {
   error?: string
 }
 
+export interface TradePlanRow {
+  symbol: string; name: string; current_weight: number; target_weight: number;
+  current_mv: number; target_mv: number;
+  action: 'buy' | 'sell' | 'hold'; amount: number;
+  est_fee_pct: number | null; est_fee_amount: number;
+  t_plus: string | null; arrive_date: string | null; warnings: string[];
+}
+
+export interface FactorExposurePoint {
+  date: string
+  exposures: Record<string, number>
+}
+
+export interface TradePlan {
+  signal_id: string | null; run_date: string | null; next_rebalance_date: string | null;
+  invested_value: number; additional_cash: number; total_value: number;
+  rows: TradePlanRow[];
+}
+
 // ---- 回测（Backtest）----
+export interface BacktestGroupMeta {
+  id: string
+  name: string
+  member_count: number
+}
+
 export interface BacktestResponse {
   id: string
   strategy_id: string
@@ -659,11 +693,15 @@ export interface BacktestResponse {
   strategy_version: number
   params: Record<string, any>
   universe: string[]
+  universe_count?: number
+  group_ids?: string[]
+  group_names?: BacktestGroupMeta[]
   start_date: string
   end_date: string
   rebalance_freq: string
   data_as_of: string
   status: 'pending' | 'running' | 'done' | 'failed'
+  progress?: number
   error?: string
   factor_keys?: string[]
   created_at: string
@@ -680,6 +718,8 @@ export interface BacktestResults {
   custom_factor_analysis?: Record<string, CustomFactorStat>
   benchmark?: BenchmarkSeries | null
   portfolio_factor_exposures?: PortfolioFactorExposure[]
+  factor_exposure_series?: FactorExposurePoint[]
+  available_parts?: string[]
   factor_view: FactorView
   risk_view: RiskView
 }
