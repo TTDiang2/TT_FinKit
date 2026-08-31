@@ -749,8 +749,10 @@ async function loadContribution() {
 }
 
 async function loadPooledAssets() {
-  const assets = (await api.get<any[]>('/research/assets?status=pooled')).data as any[]
-  pooledAssets.value = assets.map((a: any) => ({ value: a.id, label: `${a.name} (${a.symbol})`, symbol: a.symbol }))
+  // 轻量 id 全集（无价格 N+1）；旧的全量 /assets?status=pooled 对上万只逐只拉历史会超时
+  const { data } = await api.get<{ items: { id: string; symbol: string; name: string }[] }>(
+    '/research/assets/ids?status=pooled')
+  pooledAssets.value = data.items.map(a => ({ value: a.id, label: `${a.name} (${a.symbol})`, symbol: a.symbol }))
 }
 
 // ---- agent ----

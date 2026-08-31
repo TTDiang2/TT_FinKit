@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_private_db
 from ..middleware.auth import get_current_user_id
+from ..config import private_db_path
 from ..services.ai_advisor import (
     ask_advisor,
     ensure_tables,
@@ -19,7 +20,9 @@ from ..services.ai_advisor import (
 from ..services.finance_snapshot import finance_snapshot
 
 BACKEND = Path(__file__).resolve().parents[1]
-DB = str(BACKEND / "finkit.db")
+# advisor_chats 由 private session 读写——建表必须落在 private 库，
+# 曾经指向 finkit.db 导致双库后 no such table（2026-08-31）
+DB = private_db_path()
 
 router = APIRouter(prefix="/api/ai-advisor", tags=["ai-advisor"])
 

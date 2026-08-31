@@ -1432,7 +1432,7 @@ async def run_backtest_in_subprocess(
     start_date: str,
     end_date: str,
     rebalance_freq: str,
-    db_path: str = "finkit.db",
+    db_path: str = "",
     cost_config: dict | None = None,
     timeout: int = 120,
     backtest_id: str | None = None,
@@ -1444,6 +1444,9 @@ async def run_backtest_in_subprocess(
     进度 p ∈ [0,1]；DB 写入由 caller 处理（避免 sync 线程直连 async session）。
     """
     import asyncio
+    if not db_path:
+        from ..config import public_db_path
+        db_path = public_db_path()
     return await asyncio.to_thread(
         _run_backtest_sync, strategy_code, params, universe, start_date,
         end_date, rebalance_freq, db_path, cost_config, timeout,

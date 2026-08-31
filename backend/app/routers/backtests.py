@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..database import get_private_db, get_public_db
+from ..config import public_db_path
 from ..schemas.backtest import BacktestCreate, BacktestResponse, BacktestResult
 from ..services.backtest_service import (
     create_backtest, get_backtest, list_backtests, update_backtest_status, delete_backtest
@@ -75,7 +76,8 @@ async def list_backtests_endpoint(limit: int = Query(50),
     out = []
     for bt in backtests:
         name, fkeys = strats.get(bt.strategy_id, (None, None))
-        gmeta = await _resolve_group_meta(db, json.loads(bt.group_ids) if getattr(bt, "group_ids", None) else [])
+        # ResearchGroup 在 public 库——用 private session 查会报 no such table（双库后 500 根因）
+        gmeta = await _resolve_group_meta(pub, json.loads(bt.group_ids) if getattr(bt, "group_ids", None) else [])
         out.append(_backtest_to_response(bt, strategy_name=name, factor_keys=fkeys,
                                         group_meta=gmeta, heavy=heavy))
     return out
@@ -91,7 +93,8 @@ async def _resolve_group_meta(db: AsyncSession, group_ids: list[str]) -> list[di
     )).scalars().all()
     out = []
     for g in rows:
-        out.append({"id": g.id, "name": g.name, "member_count": len(g.asset_ids)})
+        # ResearchGroup 模型没有 asset_ids 属性（那是响应 schema 的字段），成员走 g.members
+        out.append({"id": g.id, "name": g.name, "member_count": len(g.members)})
     return sorted(out, key=lambda x: group_ids.index(x["id"]) if x["id"] in group_ids else 999)
 
 
@@ -248,7 +251,9 @@ async def _run_backtest_async(backtest_id: str, strategy_code: str, params: dict
                 start_date=start_date,
                 end_date=end_date,
                 rebalance_freq=rebalance_freq,
-                db_path="finkit.db",
+                # 价格/因子/基准全在 public 库——曾经硬编码 finkit.db
+                # 导致双库后回测读到过时旧库（2026-08-31）
+                db_path=public_db_path(),
                 backtest_id=backtest_id,
                 on_progress=_on_progress,
             )
@@ -293,7 +298,7 @@ async def get_benchmark(
     Lets OLD backtest results (created before benchmark was embedded) render
     the excess-return / rolling-alpha-beta charts without a re-run.
     """
-    bench = load_benchmark_series("finkit.db", start, end)
+    bench = load_benchmark_series(public_db_path(), start, end)
     if not bench:
         raise HTTPException(status_code=404, detail="基准因子(equity)无该区间数据")
     return bench
@@ -303,7 +308,8 @@ async def get_benchmark(
 async def get_backtest_endpoint(backtest_id: str,
                                 parts: str = Query("core",
                                     description="core=轻量（指标+摘要）| all=全量（旧客户端兼容）"),
-                                db: AsyncSession = Depends(get_private_db)):
+                                db: AsyncSession = Depends(get_private_db),
+                                pub: AsyncSession = Depends(get_public_db)):
     """回测详情分段加载：parts=core 只回指标与轻量视图（毫秒级）；
     nav/weights/trades 等重载荷由 /{id}/part/{name} 按需拉取。"""
     bt = await get_backtest(db, backtest_id)

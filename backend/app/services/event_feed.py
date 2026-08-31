@@ -19,7 +19,10 @@ import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
 
-DB = Path(__file__).resolve().parents[1] / "finkit.db"
+# rss_events 是公共缓存数据 → 随 public 库走（双库架构 2026-08-31）
+from ..config import public_db_path  # noqa: E402
+
+DB = Path(public_db_path())
 
 FEEDS: list[dict] = [
     {"name": "GoogleNews-美联储", "url": "https://news.google.com/rss/search?q=%E7%BE%8E%E8%81%94%E5%82%A8&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"},

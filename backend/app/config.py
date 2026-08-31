@@ -77,6 +77,25 @@ def _resolve_private_url() -> str:
     return settings.PRIVATE_DATABASE_URL or settings.DATABASE_URL
 
 
+def _db_file_from_url(url: str) -> str:
+    """SQLAlchemy sqlite URL -> 本机文件路径（供子进程/裸 sqlite3 直连用）。"""
+    from urllib.parse import unquote
+    if url.startswith("sqlite"):
+        return unquote(url.split("///", 1)[-1])
+    return url
+
+
+def public_db_path() -> str:
+    """public 库的文件系统路径——回测/信号子进程读价格、因子、基准必须连它，
+    曾经硬编码 'finkit.db' 导致双库后读到过时旧库（2026-08-31）。"""
+    return _db_file_from_url(_resolve_public_url())
+
+
+def private_db_path() -> str:
+    """private 库的文件系统路径（用户数据/聊天记录等直连场景）。"""
+    return _db_file_from_url(_resolve_private_url())
+
+
 def is_split_mode() -> bool:
     pub = _resolve_public_url()
     prv = _resolve_private_url()

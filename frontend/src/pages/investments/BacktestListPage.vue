@@ -98,7 +98,7 @@
           <label class="flex items-center gap-2 px-2 py-1.5 mb-1 text-sm rounded cursor-pointer bg-bg-tertiary hover:bg-accent-light border border-border-default">
             <input type="checkbox" :checked="newForm.all_pooled" @change="toggleAllPooled" class="accent-accent-primary" />
             <span class="flex-1 font-medium">全部入池标的</span>
-            <span class="text-xs text-text-muted">{{ pooledAssets.length || '—' }} 只</span>
+            <span class="text-xs text-text-muted">{{ pooledCount || '—' }} 只</span>
           </label>
 
           <div class="border border-border-default rounded-md p-2 max-h-32 overflow-y-auto bg-bg-primary"
@@ -162,13 +162,13 @@ import { useRouter } from 'vue-router'
 import { Plus, Trash2, ChevronDown } from 'lucide-vue-next'
 import { useApi } from '@/composables/useApi'
 import BaseModal from '@/components/common/BaseModal.vue'
-import type { BacktestResponse, StrategyResponse, ResearchAsset } from '@/types'
+import type { BacktestResponse, StrategyResponse } from '@/types'
 
 const api = useApi()
 const router = useRouter()
 const backtests = ref<BacktestResponse[]>([])
 const strategies = ref<StrategyResponse[]>([])
-const pooledAssets = ref<ResearchAsset[]>([])
+const pooledCount = ref(0)
 const pooledLoadError = ref('')
 const loading = ref(false)
 const showNew = ref(false)
@@ -207,7 +207,7 @@ function toggleAllPooled() {
 
 // 预估池子大小：全池 -> 入池标的数；否则按所选组合去重合并
 const scopeUniverseCount = computed(() => {
-  if (newForm.value.all_pooled) return pooledAssets.value.length
+  if (newForm.value.all_pooled) return pooledCount.value
   const set = new Set<string>()
   for (const gid of newForm.value.scope_group_ids) {
     const g = assetGroups.value.find(x => x.id === gid)
@@ -286,21 +286,20 @@ async function loadStrategies() {
 }
 
 async function loadPooledAssets() {
-  try {
-    const { data } = await api.get<ResearchAsset[]>('/research/assets?status=pooled')
-    pooledAssets.value = data
+  // 计数走轻量 /pooled-count（纯 COUNT，毫秒级）；组合与计数并行请求，
+  // 曾经串行 + 全量 /assets?status=pooled（18891 只 N+1 算指标）把组合加载拖到分钟级。
+  const [countRes, groupsRes] = await Promise.allSettled([
+    api.get<{ count: number }>('/research/assets/pooled-count'),
+    api.get<{ id: string; name: string; asset_ids: string[] }[]>('/research/assets/groups'),
+  ])
+  if (countRes.status === 'fulfilled') {
+    pooledCount.value = countRes.value.data.count
     pooledLoadError.value = ''
-  } catch (e) {
-    pooledAssets.value = []
-    // 不再静默吞错：后端现已支持空 universe 自动展开为全部入池，但要让用户知道列表没加载到
-    pooledLoadError.value = `入池标的列表加载失败（不影响回测，后端将自动使用全部入池标的）`
+  } else {
+    pooledCount.value = 0
+    pooledLoadError.value = '入池标的数量加载失败（不影响回测，后端将自动使用全部入池标的）'
   }
-  try {
-    const { data } = await api.get<{ id: string; name: string; asset_ids: string[] }[]>('/research/assets/groups')
-    assetGroups.value = data
-  } catch {
-    assetGroups.value = []
-  }
+  assetGroups.value = groupsRes.status === 'fulfilled' ? groupsRes.value.data : []
 }
 
 async function createBacktest() {

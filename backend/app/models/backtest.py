@@ -25,5 +25,10 @@ class Backtest(Base):
     run_pid = Column(Integer, nullable=True)  # 运行中的子进程 PID（孤儿检测用）
     error = Column(Text, nullable=True)
     results = Column(Text, nullable=True)  # JSON: full results
+    # 以下三列数据库迁移早已存在，但模型曾漏声明 —— 导致
+    # Backtest(group_ids=...) 直接 TypeError -> 创建回测必 500（2026-08-31）
+    group_ids = Column(Text, default="[]")  # JSON: list of research group ids
+    universe_count = Column(Integer, default=0)  # 展开后的标的池大小
+    last_heartbeat = Column(DateTime, nullable=True)  # 运行心跳（孤儿检测）
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)

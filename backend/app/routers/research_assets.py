@@ -365,6 +365,20 @@ async def delete_group(
     return {"ok": True}
 
 
+@router.get("/pooled-count")
+async def pooled_count(
+    user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_public_db),
+):
+    """入池标的数量（纯 COUNT，毫秒级）——回测面板「全部入池标的」显示用。
+    旧实现拉全量 18891 只逐只算指标（N+1 全历史价格），分钟级超时。"""
+    n = (await db.execute(
+        select(func.count()).select_from(ResearchAsset)
+        .where(ResearchAsset.user_id == user_id, ResearchAsset.status == "pooled")
+    )).scalar_one()
+    return {"count": n}
+
+
 @router.get("/ids")
 async def list_asset_ids(
     status: Optional[str] = Query(None),

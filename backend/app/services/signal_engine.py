@@ -63,7 +63,7 @@ def get_next_rebalance_date(current_date: str, rebalance_freq: str) -> str:
 
 
 def generate_signal(strategy_code: str, params: dict, universe: list[str],
-                    db_path: str = "finkit.db", rebalance_freq: str = "monthly",
+                    db_path: str = "", rebalance_freq: str = "monthly",
                     current_weights: dict | None = None, timeout: int = 60,
                     max_history_days: int = 750) -> dict:
     """Generate signal by running strategy on up-to-today data.
@@ -71,6 +71,9 @@ def generate_signal(strategy_code: str, params: dict, universe: list[str],
     Uses the same subprocess runner pattern as finkit_strategy/runner.py.
     Returns: {status, target_weights, risk_status, next_rebalance_date, as_of_date}
     """
+    if not db_path:
+        from ..config import public_db_path
+        db_path = public_db_path()
     from finkit_strategy.runner import run_strategy_in_subprocess
     import tempfile, os, sqlite3
 
