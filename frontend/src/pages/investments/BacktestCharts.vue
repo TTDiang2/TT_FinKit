@@ -64,6 +64,17 @@
         <div style="height: 240px"><Line v-if="utilData" :data="utilData" :options="utilOpts" /></div>
       </div>
 
+      <!-- 持仓变化堆叠面积图 -->
+      <div class="bg-white rounded-lg shadow-sm p-4">
+        <h3 class="text-sm font-medium mb-3">
+          持仓变化
+          <span class="text-xs text-text-muted font-normal">
+            · 按权重堆叠 · 权重均值 Top10 标的，其余并入「其他」；「现金/未配置」为空仓部分 · 悬停看各期明细
+          </span>
+        </h3>
+        <div style="height: 300px"><Line v-if="weightsAreaData" :data="weightsAreaData" :options="weightsAreaOpts" /></div>
+      </div>
+
       <!-- 归因瀑布图 -->
       <div class="bg-white rounded-lg shadow-sm p-4">
         <h3 class="text-sm font-medium mb-3">
@@ -337,6 +348,46 @@ const histData = computed(() => {
     ] as any,
   }
 })
+
+// ---- 持仓变化堆叠面积图 ----
+const AREA_COLORS = ["#6366f1","#ef4444","#10b981","#f59e0b","#8b5cf6","#06b6d4","#ec4899","#84cc16","#f97316","#3b82f6"]
+const weightsAreaData = computed(() => {
+  const wh = r.value?.weight_history || []
+  if (wh.length < 2) return null
+  // 标的按全期平均权重排序取 Top10，其余合并为「其他」
+  const sums: Record<string, number> = {}
+  for (const p of wh) for (const [sym, w] of Object.entries(p.weights || {})) sums[sym] = (sums[sym] || 0) + (w as number)
+  const top = Object.entries(sums).sort((a, b) => b[1] - a[1]).slice(0, 10).map(e => e[0])
+  const topSet = new Set(top)
+  const labels = wh.map(p => p.date)
+  const ds = top.map((sym, i) => ({
+    label: dispName(sym),
+    data: wh.map(p => +(((p.weights || {})[sym] || 0) * 100).toFixed(2)),
+    backgroundColor: AREA_COLORS[i % AREA_COLORS.length],
+    borderColor: AREA_COLORS[i % AREA_COLORS.length],
+    borderWidth: 0.5, pointRadius: 0, fill: true, tension: 0.15,
+  }))
+  // 现金/未配置 = 100% - 各标的权重和（可能为负=杠杆，夹 0）
+  ds.push({
+    label: "现金/未配置",
+    data: wh.map(p => {
+      const s2 = Object.values(p.weights || {}).reduce((a: number, b) => a + (b as number), 0)
+      return +(Math.max(0, 1 - s2) * 100).toFixed(2)
+    }),
+    backgroundColor: "rgba(148,163,184,0.35)", borderColor: "#94a3b8", borderWidth: 0.5, pointRadius: 0, fill: true, tension: 0.15,
+  })
+  return { labels, datasets: ds }
+})
+
+const weightsAreaOpts = {
+  responsive: true, maintainAspectRatio: false,
+  interaction: { mode: "index" as const, intersect: false },
+  plugins: { legend: { position: "bottom" as const, labels: { boxWidth: 10, font: { size: 10 } } } },
+  scales: {
+    x: { ticks: { maxTicksLimit: 10, font: { size: 10 } } },
+    y: { stacked: true, max: 100, ticks: { callback: (v: any) => v + "%" } },
+  },
+}
 
 // ---- 资金使用率 ----
 const utilData = computed(() => {

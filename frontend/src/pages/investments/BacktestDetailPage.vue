@@ -197,6 +197,7 @@
             <tr>
               <th class="px-2 py-1.5 font-medium">日期</th>
               <th class="px-2 py-1.5 font-medium">交易</th>
+              <th class="px-2 py-1.5 font-medium" style="border-left: 1px solid rgba(0,0,0,0.08)">调仓后持仓</th>
               <th class="px-2 py-1.5 font-medium" colspan="5" style="border-left: 1px solid rgba(0,0,0,0.08)">阶段（上次调仓至今）</th>
               <th class="px-2 py-1.5 font-medium" colspan="4" style="border-left: 1px solid rgba(0,0,0,0.08)">累计（开测至今）</th>
             </tr>
@@ -214,7 +215,8 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="rec in backtest.results.rebalance_records" :key="rec.date + rec.kind" class="border-t border-border-default align-top">
+            <template v-for="rec in backtest.results.rebalance_records" :key="rec.date + rec.kind">
+            <tr class="border-t border-border-default align-top cursor-pointer hover:bg-bg-tertiary/40" @click="expandedRec = expandedRec === rec.date ? null : rec.date">
               <td class="px-2 py-1.5 whitespace-nowrap">
                 {{ rec.date }}
                 <span v-if="rec.kind === 'settle'" class="ml-1 px-1 py-0.5 rounded bg-blue-50 text-blue-600" style="font-size:10px">settle</span>
@@ -224,6 +226,16 @@
                   <span :class="t.side === 'buy' ? 'text-income-color' : 'text-expense-color'" class="font-medium">{{ t.side === 'buy' ? '买' : '卖' }}</span>
                   {{ t.name || t.symbol }}<span class="text-text-muted">({{ t.symbol }})</span>
                   ¥{{ t.amount.toFixed(0) }}
+                </div>
+              </td>
+              <td class="px-2 py-1.5" style="border-left: 1px solid rgba(0,0,0,0.06)">
+                <div class="flex items-center gap-1 flex-wrap">
+                  <span v-for="h in holdingsAt(rec.date).slice(0, 3)" :key="h.symbol" class="px-1 py-0.5 rounded bg-bg-tertiary whitespace-nowrap"
+                    :title="`${symbolName(h.symbol)} ${h.pct}%`">
+                    {{ shortName(h.symbol) }} {{ h.pct }}%
+                  </span>
+                  <span class="text-text-muted">{{ holdingsAt(rec.date).length }} 只</span>
+                  <span class="text-accent-primary ml-1">{{ expandedRec === rec.date ? '▲' : '▼' }}</span>
                 </div>
               </td>
               <template v-if="rec.period_stats">
@@ -251,6 +263,25 @@
               </template>
               <template v-else><td colspan="4" style="border-left: 1px solid rgba(0,0,0,0.06)">—</td></template>
             </tr>
+            <tr v-if="expandedRec === rec.date">
+              <td colspan="12" class="px-4 py-2 bg-bg-tertiary/30 border-t border-border-default">
+                <table class="w-full text-xs">
+                  <thead><tr class="text-text-muted">
+                    <th class="px-2 py-1 text-left font-medium">标的</th>
+                    <th class="px-2 py-1 text-right font-medium">权重</th>
+                    <th class="px-2 py-1 text-right font-medium">估算市值</th>
+                  </tr></thead>
+                  <tbody>
+                    <tr v-for="h in holdingsAt(rec.date)" :key="h.symbol" class="border-t border-border-light">
+                      <td class="px-2 py-1">{{ symbolName(h.symbol) }} <span class="text-text-muted font-mono">{{ h.symbol }}</span></td>
+                      <td class="px-2 py-1 text-right">{{ h.pct }}%</td>
+                      <td class="px-2 py-1 text-right">¥{{ h.mv.toLocaleString("zh-CN", { maximumFractionDigits: 0 }) }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </td>
+            </tr>
+            </template>
             <tr v-if="!backtest.results.rebalance_records.length">
               <td colspan="12" class="px-2 py-2 text-center text-text-muted">无调仓记录</td>
             </tr>
@@ -296,6 +327,47 @@ const api = useApi()
 const backtest = ref<BacktestResponse | null>(null)
 const evalData = ref<{ thresholds: Record<string, number>; evaluations: any[] } | null>(null)
 const showPool = ref(false)
+
+// ---- 调仓时点持仓 ----
+const expandedRec = ref<string | null>(null)
+
+const symbolNameMap = computed(() => {
+  const map: Record<string, string> = {}
+  for (const rec of backtest.value?.results?.rebalance_records || []) {
+    for (const t of rec.trades || []) {
+      if (t.symbol && t.name) map[t.symbol] = t.name
+    }
+  }
+  return map
+})
+function symbolName(sym: string): string {
+  return symbolNameMap.value[sym] || sym
+}
+function shortName(sym: string): string {
+  const n = symbolName(sym)
+  return n.length > 6 ? n.slice(0, 6) + "…" : n
+}
+
+// weight_history 按日期升序；取 <= date 的最后一期权重快照，
+// 市值 = 权重 × 该期组合净值（nav_series 对齐）
+function holdingsAt(date: string): { symbol: string; pct: string; mv: number }[] {
+  const wh = backtest.value?.results?.weight_history || []
+  if (!wh.length) return []
+  let snap = wh[0]
+  for (const p of wh) {
+    if (p.date <= date) snap = p
+    else break
+  }
+  const ns = backtest.value?.results?.nav_series || []
+  let pv = 0
+  for (let i = ns.length - 1; i >= 0; i--) {
+    if (ns[i].date <= date) { pv = ns[i].portfolio_value || 0; break }
+  }
+  return Object.entries(snap.weights || {})
+    .map(([symbol, w]) => ({ symbol, pct: ((w as number) * 100).toFixed(1), mv: (w as number) * pv }))
+    .filter(h => parseFloat(h.pct) > 0.05)
+    .sort((a, b) => parseFloat(b.pct) - parseFloat(a.pct))
+}
 const heartbeatAgo = ref(-1)
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
