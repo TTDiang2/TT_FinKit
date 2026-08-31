@@ -94,7 +94,19 @@ async def _resolve_group_meta(db: AsyncSession, group_ids: list[str]) -> list[di
     return sorted(out, key=lambda x: group_ids.index(x["id"]) if x["id"] in group_ids else 999)
 
 
-_UNIVERSE_HARD_CAP = 500
+_UNIVERSE_HARD_CAP = 5000
+
+
+def _universe_warning(count: int) -> str | None:
+    """返回 >2000 标的时的提示文案，否则 None。"""
+    if count > 2000:
+        return (
+            f"⚠ 标的池 {count} 只较大，可能占用 1~4GB 内存，回测耗时分钟级。"
+            f"建议拆成多个小组合对比验证而非一次跑全库。"
+        )
+    if count > 500:
+        return f"标的池 {count} 只已超过保守默认（500），预计耗时数十秒。"
+    return None
 
 
 @router.post("", response_model=BacktestResponse)
@@ -141,8 +153,10 @@ async def create_backtest_endpoint(req: BacktestCreate, db: AsyncSession = Depen
     if len(universe) > _UNIVERSE_HARD_CAP:
         raise HTTPException(
             status_code=400,
-            detail=f"标的池 {len(universe)} 只超过硬上限 {_UNIVERSE_HARD_CAP}（引擎内存 OOM 风险）。请缩小组合或自选标的数。",
+            detail=f"标的池 {len(universe)} 只超过硬上限 {_UNIVERSE_HARD_CAP}（引擎内存 OOM 风险）。请缩小组合或分批回测。",
         )
+
+    warning = _universe_warning(len(universe))
 
     bt = await create_backtest(
         db, strategy_id=req.strategy_id, strategy_version=req.strategy_version,
@@ -161,7 +175,10 @@ async def create_backtest_endpoint(req: BacktestCreate, db: AsyncSession = Depen
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
 
-    return _backtest_to_response(bt, group_meta=gmeta)
+    resp = _backtest_to_response(bt, group_meta=gmeta)
+    if warning:
+        resp.warning = warning
+    return resp
 
 
 async def _run_backtest_async(backtest_id: str, strategy_code: str, params: dict,

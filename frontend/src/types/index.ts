@@ -703,6 +703,7 @@ export interface BacktestResponse {
   status: 'pending' | 'running' | 'done' | 'failed'
   progress?: number
   error?: string
+  warning?: string
   factor_keys?: string[]
   created_at: string
   updated_at: string

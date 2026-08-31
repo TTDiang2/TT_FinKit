@@ -36,6 +36,7 @@ class BacktestResponse(BaseModel):
     status: str
     progress: int = 0
     error: Optional[str] = None
+    warning: Optional[str] = None
     results: Optional[dict] = None
     factor_keys: Optional[list[str]] = None
     created_at: str

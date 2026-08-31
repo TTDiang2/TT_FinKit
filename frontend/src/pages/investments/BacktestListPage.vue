@@ -261,7 +261,7 @@ async function createBacktest() {
       createError.value = '请至少选择一个标的组合'
       return
     }
-    await api.post('/backtests', {
+    const res = await api.post<BacktestResponse>('/backtests', {
       strategy_id: newForm.value.strategy_id,
       strategy_version: strat?.version ?? 1,
       params: {},
@@ -273,6 +273,9 @@ async function createBacktest() {
     })
     showNew.value = false
     newForm.value.scope_group_ids = []
+    if (res.data.warning) {
+      createError.value = res.data.warning
+    }
     await loadBacktests()
   } catch (e: unknown) {
     createError.value = apiErrorMessage(e)
