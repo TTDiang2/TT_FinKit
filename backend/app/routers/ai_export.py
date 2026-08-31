@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Body
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
-from ..database import get_db
+from ..database import get_private_db
 from ..models.transaction import Transaction
 from ..models.account import Account
 from ..models.category import Category
@@ -104,7 +104,7 @@ AI_GUIDE_MD = """# FinKit AI 数据分析指南
 async def export_package(
     archive_ids: List[str] = Body(default=[]),
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_private_db)
 ):
     now = datetime.now()
     current_month_start = f"{now.year}-{now.month:02d}-01"

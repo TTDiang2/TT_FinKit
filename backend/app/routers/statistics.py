@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, extract, case
 from datetime import datetime, timedelta
 from calendar import monthrange
-from ..database import get_db
+from ..database import get_private_db
 from ..models.transaction import Transaction
 from ..models.category import Category
 from ..models.tag import Tag
@@ -51,7 +51,7 @@ async def get_overview(
     year: int = Query(default=None),
     month: int = Query(default=None),
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_private_db)
 ):
     now = datetime.now()
     year = year or now.year
@@ -290,7 +290,7 @@ async def get_by_category(
     month: int | None = None,
     type_filter: str = "expense",
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_private_db)
 ):
     start, end = resolve_date_range(start_date, end_date, year, month)
 
@@ -339,7 +339,7 @@ async def get_by_category(
 async def get_monthly_trend(
     months: int = Query(default=12, ge=1, le=60),
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_private_db)
 ):
     now = datetime.now()
     results = []
@@ -378,7 +378,7 @@ async def get_by_tag(
     year: int | None = None,
     month: int | None = None,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_private_db)
 ):
     start, end = resolve_date_range(start_date, end_date, year, month)
 
@@ -414,7 +414,7 @@ async def get_daily_spending(
     year: int | None = None,
     month: int | None = None,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_private_db)
 ):
     start, end = resolve_date_range(start_date, end_date, year, month)
 
@@ -445,7 +445,7 @@ async def get_weekday_pattern(
     year: int | None = None,
     month: int | None = None,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_private_db)
 ):
     start, end = resolve_date_range(start_date, end_date, year, month)
 
@@ -494,7 +494,7 @@ async def get_top_expenses(
     year: int | None = None,
     month: int | None = None,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_private_db)
 ):
     start, end = resolve_date_range(start_date, end_date, year, month)
 
@@ -528,7 +528,7 @@ async def get_top_expenses(
 async def get_net_worth_trend(
     months: int = Query(default=12, ge=1, le=60),
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_private_db)
 ):
     now = datetime.now()
 
@@ -586,7 +586,7 @@ async def get_net_worth_trend(
 async def get_burn_rate(
     months: int = Query(default=6, ge=1, le=12),
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_private_db)
 ):
     now = datetime.now()
     results = []
@@ -630,7 +630,7 @@ async def get_burn_rate(
 async def get_cumulative_trend(
     months: int = Query(default=12, ge=1, le=60),
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_private_db)
 ):
     now = datetime.now()
     results = []
@@ -673,7 +673,7 @@ async def get_cumulative_trend(
 async def get_savings_rate_trend(
     months: int = Query(default=12, ge=1, le=60),
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_private_db)
 ):
     now = datetime.now()
     results = []
@@ -713,7 +713,7 @@ async def get_savings_rate_trend(
 async def get_necessary_ratio_trend(
     months: int = Query(default=12, ge=1, le=60),
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_private_db)
 ):
     now = datetime.now()
     results = []
@@ -757,7 +757,7 @@ async def get_necessary_ratio_trend(
 async def get_emergency_reserve_trend(
     months: int = Query(default=12, ge=1, le=60),
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_private_db)
 ):
     now = datetime.now()
     acc_result = await db.execute(select(Account).where(Account.user_id == user_id, Account.hidden == False, Account.account_type == "cash"))
@@ -819,7 +819,7 @@ async def get_emergency_reserve_trend(
 async def get_net_worth_growth_trend(
     months: int = Query(default=12, ge=1, le=60),
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_private_db)
 ):
     now = datetime.now()
     acc_result = await db.execute(select(Account).where(Account.user_id == user_id, Account.hidden == False))
@@ -891,7 +891,7 @@ async def get_category_trend(
     type_filter: str = Query(default="expense"),
     months: int = Query(default=12, ge=1, le=60),
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_private_db)
 ):
     now = datetime.now()
     all_results = []
@@ -937,7 +937,7 @@ async def get_category_trend(
 async def get_expense_volatility(
     months: int = Query(default=12, ge=3, le=60),
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_private_db)
 ):
     now = datetime.now()
     monthly_expenses = []
@@ -982,7 +982,7 @@ async def get_expense_volatility(
 async def get_asset_composition_trend(
     months: int = Query(default=12, ge=1, le=60),
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_private_db)
 ):
     now = datetime.now()
 

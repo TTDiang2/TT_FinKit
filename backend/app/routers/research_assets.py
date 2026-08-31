@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..database import get_db, async_session_maker
+from ..database import get_public_db, async_session_maker
 from ..models.research_asset import ResearchAsset, ResearchAssetPrice
 from ..models.research_group import ResearchGroup, ResearchGroupMember
 from ..schemas.research_asset import (
@@ -112,14 +112,35 @@ async def _get_owned(asset_id: str, user_id: str, db: AsyncSession) -> ResearchA
     return asset
 
 
-async def _respond(db: AsyncSession, asset: ResearchAsset) -> ResearchAssetResponse:
-    prices = (
-        await db.execute(
-            select(ResearchAssetPrice)
-            .where(ResearchAssetPrice.asset_id == asset.id)
-            .order_by(ResearchAssetPrice.date)
-        )
-    ).scalars().all()
+async def _respond(db: AsyncSession, asset: ResearchAsset,
+                   stats_row=None) -> ResearchAssetResponse:
+    # indicators 优先读预计算表（O(1)）；stats_row 为 None 时才回退拉全历史现算
+    if stats_row is not None and (stats_row.rows or 0) >= 30:
+        prices = []
+        indicators = {
+            "points": stats_row.rows or 0,
+            "first_date": None,
+            "last_date": stats_row.last_date,
+            "latest_close": None,
+            "ret_1m": stats_row.ret_21d,
+            "ret_1y": stats_row.ret_252d,
+            "ann_return": stats_row.ann_all,
+            "ann_volatility": stats_row.vol_all,
+            "sharpe": stats_row.sharpe_all,
+            "ann_return_1y": stats_row.ann_1y,
+            "ann_volatility_1y": stats_row.vol_1y,
+            "sharpe_1y": stats_row.sharpe_1y,
+            "max_drawdown": stats_row.mdd_1y,
+        }
+    else:
+        prices = (
+            await db.execute(
+                select(ResearchAssetPrice)
+                .where(ResearchAssetPrice.asset_id == asset.id)
+                .order_by(ResearchAssetPrice.date)
+            )
+        ).scalars().all()
+        indicators = compute_asset_indicators(asset, list(prices))
     return ResearchAssetResponse(
         id=asset.id,
         symbol=asset.symbol,
@@ -147,7 +168,7 @@ async def _respond(db: AsyncSession, asset: ResearchAsset) -> ResearchAssetRespo
         region=asset.region or "",
         auto_tags=fund_profile.read_auto_tags(asset.auto_tags),
         profile_synced_at=str(asset.profile_synced_at) if asset.profile_synced_at else None,
-        indicators=compute_asset_indicators(asset, list(prices)),
+        indicators=indicators,
     )
 
 
@@ -190,58 +211,41 @@ async def _sync_asset_prices_task(asset_id: str, user_id: str) -> None:
 
 @router.get("/selector")
 async def assets_selector(
+    status: Optional[str] = Query(None),
+    group_id: Optional[str] = Query(None),
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
 ):
-    """轻量标的选择器列表（统计页）：无价格载荷，附 has_data 与 1Y 夏普
-    （仅对已有行情数据的标的计算）。"""
-    rows = (await db.execute(
-        select(
-            ResearchAsset.id, ResearchAsset.symbol, ResearchAsset.name,
-            ResearchAsset.status, ResearchAsset.category,
-            ResearchAsset.fund_kind, ResearchAsset.asset_class, ResearchAsset.region,
-            ResearchAsset.exchange, ResearchAsset.is_money_market,
-        ).where(ResearchAsset.user_id == user_id).order_by(ResearchAsset.created_at)
-    )).all()
+    """轻量标的选择器列表（统计页）：读预计算表 research_asset_stats，
+    不再拉价格现算（旧实现拉 320 万行现算夏普 = 12 秒，2026-08-29）。"""
+    from ..models.research_asset_stats import ResearchAssetStats
 
-    sharpe_1y: dict[str, float] = {}
-    has_data: set[str] = set()
-    if rows:
-        cutoff = (date.today() - timedelta(days=400)).isoformat()
-        price_rows = (await db.execute(
-            select(ResearchAssetPrice.asset_id, ResearchAssetPrice.date, ResearchAssetPrice.close)
-            .where(
-                ResearchAssetPrice.asset_id.in_([r.id for r in rows]),
-                ResearchAssetPrice.date >= cutoff,
-            )
-            .order_by(ResearchAssetPrice.asset_id, ResearchAssetPrice.date)
-        )).all()
-        by_asset: dict[str, list[float]] = {}
-        for aid, _d, close in price_rows:
-            by_asset.setdefault(aid, []).append(close)
-        rf_daily = 0.02 / 252
-        for aid, closes in by_asset.items():
-            if len(closes) < 60:
-                continue
-            rets = [closes[i] / closes[i - 1] - 1.0 for i in range(1, len(closes)) if closes[i - 1] > 0]
-            if len(rets) < 60:
-                continue
-            m = sum(rets) / len(rets)
-            sd = math.sqrt(sum((x - m) ** 2 for x in rets) / (len(rets) - 1))
-            has_data.add(aid)
-            if sd > 1e-9:
-                sharpe_1y[aid] = round((m - rf_daily) / sd * math.sqrt(252), 3)
-    return {
-        "items": [
-            {
-                "id": r.id, "symbol": r.symbol, "name": r.name, "status": r.status,
-                "category": r.category or "", "fund_kind": r.fund_kind or "",
-                "asset_class": r.asset_class or "", "region": r.region or "",
-                "exchange": r.exchange or "", "is_money_market": bool(r.is_money_market),
-                "has_data": r.id in has_data, "sharpe_1y": sharpe_1y.get(r.id),
-            } for r in rows
-        ]
-    }
+    aq = select(ResearchAsset, ResearchAssetStats).join(
+        ResearchAssetStats, ResearchAssetStats.asset_id == ResearchAsset.id, isouter=True
+    ).where(ResearchAsset.user_id == user_id)
+    if status:
+        aq = aq.where(ResearchAsset.status == status)
+    if group_id:
+        from ..models.research_group import ResearchGroupMember
+        member_ids = select(ResearchGroupMember.asset_id).where(
+            ResearchGroupMember.group_id == group_id)
+        aq = aq.where(ResearchAsset.id.in_(member_ids))
+    aq = aq.order_by(ResearchAsset.created_at)
+    pairs = (await db.execute(aq)).all()
+
+    items = []
+    for a, st in pairs:
+        has_data = st is not None and (st.rows or 0) >= 60
+        items.append({
+            "id": a.id, "symbol": a.symbol, "name": a.name, "status": a.status,
+            "category": a.category or "", "fund_kind": a.fund_kind or "",
+            "asset_class": a.asset_class or "", "region": a.region or "",
+            "exchange": a.exchange or "", "is_money_market": bool(a.is_money_market),
+            "has_data": has_data,
+            "sharpe_1y": st.sharpe_1y if (st is not None and has_data) else None,
+        })
+    return {"items": items}
+
 
 
 # --------------------------------------------------------------------------- #
@@ -251,7 +255,7 @@ async def assets_selector(
 @router.get("/groups", response_model=List[ResearchGroupResponse])
 async def list_groups(
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
 ):
     id_rows = (await db.execute(
         select(ResearchAsset.id, ResearchAsset.symbol, ResearchAsset.name)
@@ -280,7 +284,7 @@ async def list_groups(
 async def create_group(
     req: ResearchGroupCreate,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
 ):
     name = req.name.strip()
     if not name:
@@ -312,7 +316,7 @@ async def update_group(
     group_id: str,
     req: ResearchGroupUpdate,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
 ):
     g = (await db.execute(
         select(ResearchGroup).where(ResearchGroup.id == group_id, ResearchGroup.user_id == user_id)
@@ -349,7 +353,7 @@ async def update_group(
 async def delete_group(
     group_id: str,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
 ):
     g = (await db.execute(
         select(ResearchGroup).where(ResearchGroup.id == group_id, ResearchGroup.user_id == user_id)
@@ -372,7 +376,7 @@ async def list_asset_ids(
     limit_filter: Optional[str] = Query(None),
     group_id: Optional[str] = Query(None),
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
 ):
     """轻量 id 全集（同 list_assets 筛选口径）——供前端「全选筛选结果」。"""
     q = select(ResearchAsset.id, ResearchAsset.symbol, ResearchAsset.name, ResearchAsset.status)\
@@ -402,6 +406,28 @@ async def list_asset_ids(
             "total": len(rows)}
 
 
+@router.post("/lookthrough")
+async def lookthrough_endpoint(req: dict,
+                               user_id: str = Depends(get_current_user_id),
+                               db: AsyncSession = Depends(get_public_db)):
+    """持仓穿透报告：给一组标的代码，返回两两重叠度 + 独特性得分。"""
+    from ..services.lookthrough import lookthrough_report
+    symbols = [x.strip() for x in str(req.get("symbols", "")).split(",") if x.strip()][:20]
+    if len(symbols) < 2:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="请至少输入 2 个标的代码")
+    force = bool(req.get("force"))
+    return await lookthrough_report(db, user_id, symbols, force=force)
+
+
+@router.get("/hot")
+async def hot_overview_endpoint(user_id: str = Depends(get_current_user_id),
+                                db: AsyncSession = Depends(get_public_db)):
+    """热点页：持仓层每日异动 + 全池层异动（截至最近统计刷新）。"""
+    from ..services.hot_movers import hot_overview
+    return await hot_overview(db, user_id)
+
+
 @router.get("", response_model=None)
 async def list_assets(
     status: Optional[str] = Query(None),
@@ -414,12 +440,18 @@ async def list_assets(
     group_id: Optional[str] = Query(None),       # 标的组合过滤
     page: int = Query(0, ge=0),
     page_size: int = Query(50, ge=1, le=200),
+    sort_by: Optional[str] = Query(None, description="全库排序: sharpe_1y/ret_252d/ret_63d/mdd_1y/vol_252d/rows"),
+    order: str = Query("desc", pattern="^(asc|desc)$"),
+    with_stats: int = Query(1, description="分页模式下附带 research_asset_stats 指标"),
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
 ):
     """标的列表。page>=1 时返回分页信封 {items,total,page,pages}（大库必需）；
     不传则维持旧的全量数组行为。指标只对本页标的计算——曾经的超时根因是
-    全库 N+1 全历史价格查询。"""
+    全库 N+1 全历史价格查询。
+
+    sort_by 走预计算表 research_asset_stats（全库级排序，服务端完成）；
+    with_stats=1 时每行附带 stats 指标供展示。"""
     q = select(ResearchAsset).where(ResearchAsset.user_id == user_id)
     if status:
         q = q.where(ResearchAsset.status == status)
@@ -447,14 +479,57 @@ async def list_assets(
         like = f"%{search}%"
         q = q.where((ResearchAsset.name.like(like)) | (ResearchAsset.symbol.like(like)))
 
+    _STATS_SORTABLE = {
+        "sharpe_1y", "ret_252d", "ret_63d", "ret_21d",
+        "mdd_1y", "vol_1y", "sharpe_all", "rows", "last_date",
+    }
+    stats_join_active = False
+    if page >= 1 and sort_by in _STATS_SORTABLE:
+        from ..models.research_asset_stats import ResearchAssetStats
+        q = q.join(ResearchAssetStats,
+                   ResearchAssetStats.asset_id == ResearchAsset.id, isouter=True)
+        col = getattr(ResearchAssetStats, sort_by)
+        q = q.order_by(col.desc() if order == "desc" else col.asc())
+        stats_join_active = True
+
     if page >= 1:
         total = (await db.execute(select(func.count()).select_from(q.subquery()))).scalar_one()
+        order_col = ResearchAsset.created_at if not stats_join_active else None
+        stmt = q
+        if order_col is not None:
+            stmt = stmt.order_by(order_col)
         rows = (await db.execute(
-            q.order_by(ResearchAsset.created_at).offset((page - 1) * page_size).limit(page_size)
+            stmt.offset((page - 1) * page_size).limit(page_size)
         )).scalars().all()
-        items = [await _respond(db, a) for a in rows]
-        return {"items": items, "total": total, "page": page,
-                "pages": max(1, math.ceil(total / page_size))}
+        # 批量取本页的预计算指标（R4：消灭逐条拉全历史）
+        from ..models.research_asset_stats import ResearchAssetStats as _RAS
+        page_ids = [a.id for a in rows]
+        smap: dict = {}
+        if page_ids:
+            srows = (await db.execute(
+                select(_RAS).where(_RAS.asset_id.in_(page_ids))
+            )).scalars().all()
+            smap = {r.asset_id: r for r in srows}
+        items = [await _respond(db, a, stats_row=smap.get(a.id)) for a in rows]
+        out = {"items": items, "total": total, "page": page,
+               "pages": max(1, math.ceil(total / page_size))}
+        if with_stats:
+            from ..models.research_asset_stats import ResearchAssetStats
+            ids = [a.id for a in rows]
+            if ids:
+                srows = (await db.execute(select(ResearchAssetStats).where(
+                    ResearchAssetStats.asset_id.in_(ids)))).scalars().all()
+                smap = {r.asset_id: r for r in srows}
+                out["stats"] = {
+                    a.id: ({
+                        "sharpe_1y": sm.sharpe_1y, "ret_252d": sm.ret_252d,
+                        "ret_63d": sm.ret_63d, "mdd_1y": sm.mdd_1y,
+                        "vol_1y": sm.vol_1y, "last_date": sm.last_date,
+                        "computed_at": sm.computed_at,
+                    } if (sm := smap.get(a.id)) else None)
+                    for a in rows
+                }
+        return out
 
     assets = (await db.execute(q.order_by(ResearchAsset.created_at))).scalars().all()
     return [await _respond(db, a) for a in assets]
@@ -464,7 +539,7 @@ async def list_assets(
 async def create_asset(
     req: ResearchAssetCreate,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
 ):
     symbol = req.symbol.strip()
     if not symbol:
@@ -538,7 +613,7 @@ async def create_asset(
 async def delete_asset(
     asset_id: str,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
 ):
     asset = await _get_owned(asset_id, user_id, db)
     await db.execute(delete(ResearchAssetPrice).where(ResearchAssetPrice.asset_id == asset.id))
@@ -555,7 +630,7 @@ async def delete_asset(
 async def import_watchlist_from_eastmoney(
     req: WatchlistImportRequest,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
 ):
     """天天基金批量导入自选：代码列表 → 自动拉名称/类型/限额/费率并打标。"""
     symbols = [s.strip() for s in req.symbols if s.strip()]
@@ -650,7 +725,7 @@ async def _refresh_profile(db: AsyncSession, a: ResearchAsset, skip_holdings: bo
 async def batch_pool_assets(
     req: BatchPoolRequest,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
 ):
     """自选批量入池。入池前自动审查：硬违规(暂停申购/限额<1000)直接拒绝；
     档案缺失/过期先尝试刷新，仍不完整才拒绝。"""
@@ -703,7 +778,7 @@ async def batch_pool_assets(
 @router.post("/batch-audit-pooled", response_model=List[AuditPooledResult])
 async def batch_audit_pooled(
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
 ):
     """已入池标的自动审查：刷新档案 → 硬违规或仍缺档案的踢回自选。"""
     assets = (await db.execute(
@@ -750,7 +825,7 @@ async def batch_audit_pooled(
 async def batch_refresh_profiles(
     req: BatchRefreshProfilesRequest,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
 ):
     """批量更新档案（费率/限购额/申购状态）并重算标签 — 数据源天天基金。"""
     q = select(ResearchAsset).where(ResearchAsset.user_id == user_id)
@@ -801,17 +876,18 @@ async def batch_refresh_profiles(
 @router.post("/refresh-prices", response_model=List[SyncResult])
 async def refresh_prices(
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
 ):
     ifind_user, ifind_pass = await ifind_client.get_credentials(db, user_id)
     return await refresh_all_pooled(db, user_id, ifind_user, ifind_pass)
 
 
-@router.get("/price-status", response_model=List[ResearchAssetPriceStatus])
-async def price_status(
-    user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
-):
+_PRICE_STATUS_TTL_S = 600          # 数据新鲜度看板缓存时长（秒）
+_price_status_cache: dict = {"ts": 0.0, "rows": [], "refreshing": False}
+
+
+async def _rebuild_price_status(db: AsyncSession, user_id: str) -> list:
+    """全库价格新鲜度聚合（647 万行 GROUP BY，冷启动 ~50s）。"""
     assets = (
         await db.execute(
             select(ResearchAsset).where(ResearchAsset.user_id == user_id)
@@ -820,7 +896,6 @@ async def price_status(
     ).scalars().all()
     if not assets:
         return []
-
     rows = (
         await db.execute(
             select(
@@ -834,31 +909,56 @@ async def price_status(
         )
     ).all()
     stats = {r[0]: (r[1], r[2], r[3], r[4]) for r in rows}
-
     out: List[ResearchAssetPriceStatus] = []
     for a in assets:
         rows_n, last_date, last_sync, source = stats.get(a.id, (0, None, None, None))
-        out.append(
-            ResearchAssetPriceStatus(
-                asset_id=a.id,
-                symbol=a.symbol,
-                name=a.name,
-                status=a.status,  # type: ignore[arg-type]
-                rows=rows_n,
-                last_date=last_date,
-                last_sync=str(last_sync) if last_sync else None,
-                source=source,
-                lag_days=lag_days(last_date),
-            )
-        )
+        out.append(ResearchAssetPriceStatus(
+            asset_id=a.id, symbol=a.symbol, name=a.name, status=a.status,
+            rows=rows_n, last_date=last_date,
+            last_sync=str(last_sync) if last_sync else None, source=source,
+            lag_days=lag_days(last_date)))
     return out
+
+
+@router.get("/price-status", response_model=List[ResearchAssetPriceStatus])
+async def price_status(
+    status: Optional[str] = Query(None),
+    user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_public_db),
+):
+    """serve-stale-while-revalidate：先回缓存旧值，过期后后台重算。
+    冷启动 50s 的聚合查询绝不能挡在用户请求路径上（2026-08-29 事故）。"""
+    import time as _time
+    import asyncio as _asyncio
+
+    stale = _time.time() - _price_status_cache["ts"] > _PRICE_STATUS_TTL_S
+    if stale and not _price_status_cache["refreshing"]:
+        _price_status_cache["refreshing"] = True
+
+        async def _revalidate() -> None:
+            try:
+                rows = await _rebuild_price_status(db, user_id)
+                if rows:
+                    _price_status_cache["rows"] = rows
+                    _price_status_cache["ts"] = _time.time()
+            except Exception:  # noqa: BLE001 — 刷新失败沿用旧值
+                pass
+            finally:
+                _price_status_cache["refreshing"] = False
+
+        _asyncio.create_task(_revalidate())
+
+    data = _price_status_cache["rows"]
+    if status:
+        data = [r for r in data if r.status == status]
+    return data
 
 
 @router.get("/{asset_id}", response_model=ResearchAssetResponse)
 async def get_asset(
     asset_id: str,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
 ):
     asset = await _get_owned(asset_id, user_id, db)
     return await _respond(db, asset)
@@ -871,7 +971,7 @@ async def get_nav_history(
     with_benchmark: bool = Query(False),
     with_ma: bool = Query(False),
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
 ):
     """Asset NAV history.
 
@@ -944,7 +1044,7 @@ async def get_nav_history(
 async def unpool_asset(
     asset_id: str,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
 ):
     """踢出入池：状态回退自选，价格/档案数据全部保留。"""
     asset = await _get_owned(asset_id, user_id, db)
@@ -962,7 +1062,7 @@ async def pool_asset(
     req: ResearchAssetPool,
     force: bool = Query(False, description="跳过入池审查强制入池"),
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
 ):
     asset = await _get_owned(asset_id, user_id, db)
     if not force:
@@ -1002,7 +1102,7 @@ async def update_asset(
     asset_id: str,
     req: ResearchAssetUpdate,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
 ):
     asset = await _get_owned(asset_id, user_id, db)
     data = req.model_dump(exclude_unset=True)
@@ -1022,7 +1122,7 @@ async def update_asset(
 async def get_asset_holdings(
     asset_id: str,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
 ):
     """Cached holdings transparency (quarterly top-10 + asset class mix)."""
     asset = await _get_owned(asset_id, user_id, db)
@@ -1038,7 +1138,7 @@ async def get_asset_holdings(
 async def refresh_asset_holdings(
     asset_id: str,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
 ):
     """Trigger a fresh akshare pull of quarterly holdings (async-safe, cached 7d)."""
     asset = await _get_owned(asset_id, user_id, db)
@@ -1060,7 +1160,7 @@ async def sync_asset(
     asset_id: str,
     full: bool = Query(False),
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
 ):
     asset = await _get_owned(asset_id, user_id, db)
     ifind_user, ifind_pass = await ifind_client.get_credentials(db, user_id)

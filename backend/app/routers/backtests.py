@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from ..database import get_db
+from ..database import get_private_db, get_public_db
 from ..schemas.backtest import BacktestCreate, BacktestResponse, BacktestResult
 from ..services.backtest_service import (
     create_backtest, get_backtest, list_backtests, update_backtest_status, delete_backtest
@@ -59,14 +59,15 @@ def _backtest_to_response(bt, strategy_name: str | None = None,
 async def list_backtests_endpoint(limit: int = Query(50),
                                   heavy: bool = Query(False,
                                       description="true=返回全量结果（详情页用）；默认只回指标"),
-                                  db: AsyncSession = Depends(get_db)):
+                                  db: AsyncSession = Depends(get_private_db),
+                                  pub: AsyncSession = Depends(get_public_db)):
     backtests = await list_backtests(db, limit)
     # Batch-load strategy names + factor_keys for all backtests
     strat_ids = list({bt.strategy_id for bt in backtests})
     strats = {}
     if strat_ids:
         from app.models.strategy import Strategy
-        rows = (await db.execute(
+        rows = (await pub.execute(
             select(Strategy.id, Strategy.name, Strategy.factor_keys)
             .where(Strategy.id.in_(strat_ids))
         )).all()
@@ -74,7 +75,7 @@ async def list_backtests_endpoint(limit: int = Query(50),
     out = []
     for bt in backtests:
         name, fkeys = strats.get(bt.strategy_id, (None, None))
-        gmeta = _resolve_group_meta(db, json.loads(bt.group_ids) if getattr(bt, "group_ids", None) else [])
+        gmeta = await _resolve_group_meta(db, json.loads(bt.group_ids) if getattr(bt, "group_ids", None) else [])
         out.append(_backtest_to_response(bt, strategy_name=name, factor_keys=fkeys,
                                         group_meta=gmeta, heavy=heavy))
     return out
@@ -110,12 +111,14 @@ def _universe_warning(count: int) -> str | None:
 
 
 @router.post("", response_model=BacktestResponse)
-async def create_backtest_endpoint(req: BacktestCreate, db: AsyncSession = Depends(get_db)):
+async def create_backtest_endpoint(req: BacktestCreate,
+                                   db: AsyncSession = Depends(get_private_db),
+                                   pub: AsyncSession = Depends(get_public_db)):
     from ..models.research_asset import ResearchAsset
     from ..models.research_group import ResearchGroupMember
     from ..models.strategy import Strategy
 
-    strat = (await db.execute(
+    strat = (await pub.execute(
         select(Strategy).where(Strategy.id == req.strategy_id, Strategy.version == req.strategy_version)
     )).scalar_one_or_none()
     if not strat:
@@ -126,7 +129,7 @@ async def create_backtest_endpoint(req: BacktestCreate, db: AsyncSession = Depen
     universe = list(req.universe)
 
     if not universe and group_ids:
-        rows = await db.execute(
+        rows = await pub.execute(
             select(ResearchAsset.symbol)
             .join(ResearchGroupMember, ResearchGroupMember.asset_id == ResearchAsset.id)
             .where(ResearchGroupMember.group_id.in_(group_ids),
@@ -140,7 +143,7 @@ async def create_backtest_endpoint(req: BacktestCreate, db: AsyncSession = Depen
         )
 
     if not group_ids and req.universe:
-        known = set((await db.execute(
+        known = set((await pub.execute(
             select(ResearchAsset.symbol).where(ResearchAsset.symbol.in_(req.universe))
         )).scalars().all())
         unknown = [s for s in req.universe if s not in known]
@@ -165,7 +168,7 @@ async def create_backtest_endpoint(req: BacktestCreate, db: AsyncSession = Depen
         group_ids=group_ids,
     )
 
-    gmeta = await _resolve_group_meta(db, group_ids)
+    gmeta = await _resolve_group_meta(pub, group_ids)
 
     import asyncio
     task = asyncio.create_task(_run_backtest_async(
@@ -279,7 +282,7 @@ async def get_benchmark(
 async def get_backtest_endpoint(backtest_id: str,
                                 parts: str = Query("core",
                                     description="core=轻量（指标+摘要）| all=全量（旧客户端兼容）"),
-                                db: AsyncSession = Depends(get_db)):
+                                db: AsyncSession = Depends(get_private_db)):
     """回测详情分段加载：parts=core 只回指标与轻量视图（毫秒级）；
     nav/weights/trades 等重载荷由 /{id}/part/{name} 按需拉取。"""
     bt = await get_backtest(db, backtest_id)
@@ -287,7 +290,7 @@ async def get_backtest_endpoint(backtest_id: str,
         raise HTTPException(status_code=404, detail="Backtest not found")
     # Fetch strategy name + factor_keys for detail page
     from app.models.strategy import Strategy
-    strat = (await db.execute(
+    strat = (await pub.execute(
         select(Strategy.name, Strategy.factor_keys).where(Strategy.id == bt.strategy_id)
     )).first()
     sname = strat[0] if strat else None
@@ -303,7 +306,7 @@ async def get_backtest_endpoint(backtest_id: str,
 
 @router.get("/{backtest_id}/part/{name}")
 async def get_backtest_part(backtest_id: str, name: str,
-                            db: AsyncSession = Depends(get_db)):
+                            db: AsyncSession = Depends(get_private_db)):
     """按需拉取单个重载荷：nav_series / weight_history / rebalance_records /
     factor_exposure_series / risk_view / benchmark。"""
     allowed = {"nav_series", "weight_history", "rebalance_records",
@@ -318,14 +321,14 @@ async def get_backtest_part(backtest_id: str, name: str,
 
 
 @router.get("/{backtest_id}/status")
-async def get_backtest_status_endpoint(backtest_id: str, db: AsyncSession = Depends(get_db)):
+async def get_backtest_status_endpoint(backtest_id: str, db: AsyncSession = Depends(get_private_db)):
     bt = await get_backtest(db, backtest_id)
     if not bt:
         raise HTTPException(status_code=404, detail="Backtest not found")
     return {"status": bt.status, "error": bt.error}
 
 @router.delete("/{backtest_id}")
-async def delete_backtest_endpoint(backtest_id: str, db: AsyncSession = Depends(get_db)):
+async def delete_backtest_endpoint(backtest_id: str, db: AsyncSession = Depends(get_private_db)):
     ok = await delete_backtest(db, backtest_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Backtest not found")

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
-from ..database import get_db
+from ..database import get_private_db
 from ..models.account import Account
 from ..models.transaction import Transaction
 from ..schemas.account import AccountCreate, AccountUpdate, AccountResponse, BankFormula
@@ -79,14 +79,14 @@ async def get_account_balance(account: Account, db: AsyncSession) -> float:
 
 
 @router.get("", response_model=List[AccountResponse])
-async def get_accounts(user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
+async def get_accounts(user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_private_db)):
     result = await db.execute(select(Account).where(Account.user_id == user_id).order_by(Account.sort_order))
     accounts = result.scalars().all()
     return [await _account_response(acc, db) for acc in accounts]
 
 
 @router.post("", response_model=AccountResponse)
-async def create_account(req: AccountCreate, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
+async def create_account(req: AccountCreate, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_private_db)):
     payload = req.model_dump()
     formula = payload.pop("bank_formula", None)
     account = Account(user_id=user_id, **payload)
@@ -99,7 +99,7 @@ async def create_account(req: AccountCreate, user_id: str = Depends(get_current_
 
 
 @router.put("/{account_id}", response_model=AccountResponse)
-async def update_account(account_id: str, req: AccountUpdate, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
+async def update_account(account_id: str, req: AccountUpdate, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_private_db)):
     result = await db.execute(select(Account).where(Account.id == account_id, Account.user_id == user_id))
     account = result.scalar_one_or_none()
     if not account:
@@ -118,7 +118,7 @@ async def update_account(account_id: str, req: AccountUpdate, user_id: str = Dep
 
 
 @router.delete("/{account_id}")
-async def delete_account(account_id: str, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
+async def delete_account(account_id: str, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_private_db)):
     result = await db.execute(select(Account).where(Account.id == account_id, Account.user_id == user_id))
     account = result.scalar_one_or_none()
     if not account:
@@ -129,7 +129,7 @@ async def delete_account(account_id: str, user_id: str = Depends(get_current_use
 
 
 @router.get("/balances-as-of")
-async def get_balances_as_of(year: int, month: int, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
+async def get_balances_as_of(year: int, month: int, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_private_db)):
     """截至某年某月月末，每个账户系统记录的余额（含转账）。"""
     if month < 1 or month > 12:
         raise HTTPException(status_code=422, detail="month 必须在 1-12 之间")

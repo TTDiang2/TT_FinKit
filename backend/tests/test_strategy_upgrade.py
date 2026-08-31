@@ -1,4 +1,4 @@
-﻿"""Tests for Phase P4 strategy upgrades: docstring parsing, import metadata
+"""Tests for Phase P4 strategy upgrades: docstring parsing, import metadata
 persistence, import-folder, move-all-versions, and list sort/folder filtering.
 """
 import asyncio
@@ -306,10 +306,10 @@ class TestListEndpoint:
                 ])
                 await db.commit()
 
-                resp_desc = await list_strategies_endpoint(folder=None, sort="created_at_desc", db=db)
+                resp_desc = await list_strategies_endpoint(folder=None, sort="created_at_desc", db=db, prv=db)
                 assert [s.name for s in resp_desc] == ["Gamma", "Beta", "Alpha"]
 
-                resp_asc = await list_strategies_endpoint(folder=None, sort="created_at_asc", db=db)
+                resp_asc = await list_strategies_endpoint(folder=None, sort="created_at_asc", db=db, prv=db)
                 assert [s.name for s in resp_asc] == ["Alpha", "Beta", "Gamma"]
             finally:
                 await db.close()
@@ -328,14 +328,14 @@ class TestListEndpoint:
                 ])
                 await db.commit()
 
-                resp = await list_strategies_endpoint(folder=None, sort="created_at_desc", db=db)
+                resp = await list_strategies_endpoint(folder=None, sort="created_at_desc", db=db, prv=db)
                 names = [s.name for s in resp]
                 assert names == ["Y", "X"]
                 # 去重后保最新版本
                 x_row = next(s for s in resp if s.name == "X")
                 assert x_row.version == 2
 
-                resp_q = await list_strategies_endpoint(folder="量化", sort="created_at_desc", db=db)
+                resp_q = await list_strategies_endpoint(folder="量化", sort="created_at_desc", db=db, prv=db)
                 assert [s.name for s in resp_q] == ["Y"]
             finally:
                 await db.close()
@@ -370,7 +370,7 @@ class TestListEndpoint:
                 ))
                 await db.commit()
 
-                resp = await list_strategies_endpoint(folder=None, sort="created_at_desc", db=db)
+                resp = await list_strategies_endpoint(folder=None, sort="created_at_desc", db=db, prv=db)
                 assert len(resp) == 1
                 lb = resp[0].latest_backtest
                 assert lb is not None
@@ -391,7 +391,7 @@ class TestListEndpoint:
                 base = datetime.utcnow()
                 self._seed(db, [{"id": "n1", "name": "NoBT", "created_at": base}])
                 await db.commit()
-                resp = await list_strategies_endpoint(db=db)
+                resp = await list_strategies_endpoint(db=db, prv=db)
                 assert resp[0].latest_backtest is None
                 assert resp[0].factor_keys == []
             finally:

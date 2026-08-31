@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_, func
-from ..database import get_db
+from ..database import get_private_db
 from ..models.transaction import Transaction
 from ..models.account import Account
 from ..models.category import Category
@@ -27,7 +27,7 @@ async def get_transactions(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=500),
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_private_db)
 ):
     query = select(Transaction).where(Transaction.user_id == user_id)
 
@@ -75,7 +75,7 @@ async def get_transactions(
 
 
 @router.post("", response_model=TransactionResponse)
-async def create_transaction(req: TransactionCreate, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
+async def create_transaction(req: TransactionCreate, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_private_db)):
     acc_result = await db.execute(select(Account).where(Account.id == req.account_id, Account.user_id == user_id))
     account = acc_result.scalar_one_or_none()
     if not account:
@@ -104,7 +104,7 @@ async def create_transaction(req: TransactionCreate, user_id: str = Depends(get_
 
 
 @router.put("/{transaction_id}", response_model=TransactionResponse)
-async def update_transaction(transaction_id: str, req: TransactionUpdate, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
+async def update_transaction(transaction_id: str, req: TransactionUpdate, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_private_db)):
     result = await db.execute(select(Transaction).where(Transaction.id == transaction_id, Transaction.user_id == user_id))
     txn = result.scalar_one_or_none()
     if not txn:
@@ -126,7 +126,7 @@ async def update_transaction(transaction_id: str, req: TransactionUpdate, user_i
 
 
 @router.delete("/{transaction_id}")
-async def delete_transaction(transaction_id: str, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
+async def delete_transaction(transaction_id: str, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_private_db)):
     result = await db.execute(select(Transaction).where(Transaction.id == transaction_id, Transaction.user_id == user_id))
     txn = result.scalar_one_or_none()
     if not txn:
@@ -249,7 +249,7 @@ def _default_transfer_pair(accounts_by_name: dict, account: str) -> tuple[str, s
 async def parse_import(
     file: UploadFile = File(...),
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_private_db),
 ):
     """解析导入文件，返回每行解析结果 + 重复检测，不写库。"""
     content = await file.read()
@@ -362,7 +362,7 @@ async def parse_import(
 
 
 @router.post("/import", response_model=ImportResult)
-async def commit_import(req: ImportCommitRequest, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
+async def commit_import(req: ImportCommitRequest, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_private_db)):
     """按勾选的行批量入库。前端已做查重预览，这里再次校验账户/分类存在性。"""
     if not req.rows:
         return ImportResult(inserted=0, skipped=0, errors=[])

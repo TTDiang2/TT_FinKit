@@ -16,8 +16,11 @@ from .reconciliation import ReconciliationRecord
 from .strategy import Strategy
 from .backtest import Backtest
 from .research_asset import ResearchAsset, ResearchAssetPrice
+from .research_asset_stats import ResearchAssetStats
 from .research_asset_ai_report import ResearchAssetAiReport
 from .research_asset_holding import ResearchAssetHolding
+from .research_group import ResearchGroup, ResearchGroupMember
 from .factor import Factor, FactorValue, FactorExposure
 from .factor_evaluation import FactorIcPoint, FactorEvaluation
 from .signal import Signal
+from . import _flags  # noqa: F401  side-effect import tagger

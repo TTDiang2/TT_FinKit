@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from ..database import get_db
+from ..database import get_private_db
 from ..models.asset import Asset
 from ..schemas.asset import AssetCreate, AssetUpdate, AssetResponse
 from ..middleware.auth import get_current_user_id
@@ -11,7 +11,7 @@ router = APIRouter(prefix="/api/assets", tags=["assets"])
 
 
 @router.get("", response_model=List[AssetResponse])
-async def get_assets(user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
+async def get_assets(user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_private_db)):
     result = await db.execute(select(Asset).where(Asset.user_id == user_id))
     assets = result.scalars().all()
     return [AssetResponse(
@@ -22,7 +22,7 @@ async def get_assets(user_id: str = Depends(get_current_user_id), db: AsyncSessi
 
 
 @router.post("", response_model=AssetResponse)
-async def create_asset(req: AssetCreate, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
+async def create_asset(req: AssetCreate, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_private_db)):
     asset = Asset(user_id=user_id, **req.model_dump())
     db.add(asset)
     await db.commit()
@@ -35,7 +35,7 @@ async def create_asset(req: AssetCreate, user_id: str = Depends(get_current_user
 
 
 @router.get("/{asset_id}", response_model=AssetResponse)
-async def get_asset(asset_id: str, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
+async def get_asset(asset_id: str, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_private_db)):
     result = await db.execute(select(Asset).where(Asset.id == asset_id, Asset.user_id == user_id))
     asset = result.scalar_one_or_none()
     if not asset:
@@ -48,7 +48,7 @@ async def get_asset(asset_id: str, user_id: str = Depends(get_current_user_id), 
 
 
 @router.put("/{asset_id}", response_model=AssetResponse)
-async def update_asset(asset_id: str, req: AssetUpdate, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
+async def update_asset(asset_id: str, req: AssetUpdate, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_private_db)):
     result = await db.execute(select(Asset).where(Asset.id == asset_id, Asset.user_id == user_id))
     asset = result.scalar_one_or_none()
     if not asset:
@@ -65,7 +65,7 @@ async def update_asset(asset_id: str, req: AssetUpdate, user_id: str = Depends(g
 
 
 @router.delete("/{asset_id}")
-async def delete_asset(asset_id: str, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
+async def delete_asset(asset_id: str, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_private_db)):
     result = await db.execute(select(Asset).where(Asset.id == asset_id, Asset.user_id == user_id))
     asset = result.scalar_one_or_none()
     if not asset:

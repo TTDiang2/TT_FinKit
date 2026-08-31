@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from ..database import get_db
+from ..database import get_private_db
 from ..models.ai_preset import AiPreset
 from ..schemas.ai_preset import AiPresetCreate, AiPresetUpdate, AiPresetResponse
 from ..middleware.auth import get_current_user_id
@@ -11,7 +11,7 @@ router = APIRouter(prefix="/api/ai-presets", tags=["ai-presets"])
 
 
 @router.get("", response_model=List[AiPresetResponse])
-async def get_presets(user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
+async def get_presets(user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_private_db)):
     result = await db.execute(select(AiPreset).where(AiPreset.user_id == user_id).order_by(AiPreset.created_at))
     presets = result.scalars().all()
     return [AiPresetResponse(
@@ -23,7 +23,7 @@ async def get_presets(user_id: str = Depends(get_current_user_id), db: AsyncSess
 
 
 @router.post("", response_model=AiPresetResponse)
-async def create_preset(req: AiPresetCreate, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
+async def create_preset(req: AiPresetCreate, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_private_db)):
     preset = AiPreset(user_id=user_id, name=req.name, api_url=req.api_url,
                       api_key=req.api_key, model_name=req.model_name,
                       system_prompt=req.system_prompt, is_default="true" if req.is_default else "false")
@@ -39,7 +39,7 @@ async def create_preset(req: AiPresetCreate, user_id: str = Depends(get_current_
 
 
 @router.put("/{preset_id}", response_model=AiPresetResponse)
-async def update_preset(preset_id: str, req: AiPresetUpdate, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
+async def update_preset(preset_id: str, req: AiPresetUpdate, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_private_db)):
     result = await db.execute(select(AiPreset).where(AiPreset.id == preset_id, AiPreset.user_id == user_id))
     preset = result.scalar_one_or_none()
     if not preset:
@@ -60,7 +60,7 @@ async def update_preset(preset_id: str, req: AiPresetUpdate, user_id: str = Depe
 
 
 @router.delete("/{preset_id}")
-async def delete_preset(preset_id: str, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
+async def delete_preset(preset_id: str, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_private_db)):
     result = await db.execute(select(AiPreset).where(AiPreset.id == preset_id, AiPreset.user_id == user_id))
     preset = result.scalar_one_or_none()
     if not preset:

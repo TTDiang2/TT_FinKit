@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..database import get_db
+from ..database import get_private_db
 from ..models.investment import Investment
 from ..models.investment_ai_report import InvestmentAiReport
 from ..schemas.ai_investment import AnalyzeRequest, InvestmentAnalysisResponse
@@ -45,7 +45,7 @@ def _inv_to_response(inv: Investment) -> InvestmentResponse:
 async def list_ai_reports(
     investment_id: Optional[str] = None,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_private_db),
 ):
     """List AI analysis reports for the user (optionally filtered by investment)."""
     q = select(InvestmentAiReport).where(InvestmentAiReport.user_id == user_id)
@@ -75,7 +75,7 @@ async def list_ai_reports(
 async def get_ai_report(
     report_id: str,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_private_db),
 ):
     res = await db.execute(
         select(InvestmentAiReport).where(
@@ -106,7 +106,7 @@ async def analyze(
     investment_id: str,
     request: AnalyzeRequest,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_private_db),
 ):
     """Run the search+LLM pipeline and persist a report row."""
     res = await db.execute(

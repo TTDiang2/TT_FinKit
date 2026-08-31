@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..database import get_db
+from ..database import get_private_db
 from ..models.account import Account
 from ..models.transaction import Transaction
 from ..models.reconciliation import ReconciliationRecord
@@ -334,7 +334,7 @@ async def get_account_summary(
     year: int,
     month: int,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_private_db),
 ):
     """第 1 层：月度汇总核对 —— 返回该账户该月系统侧映射后的数字。"""
     if month < 1 or month > 12:
@@ -347,7 +347,7 @@ async def get_account_summary(
 async def get_expected_balance(
     account_id: str,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_private_db),
 ):
     """第 3 层：今日余额核对 —— 系统期望余额 + 未记月份提示。"""
     account = await _get_owned_account(db, user_id, account_id)
@@ -368,7 +368,7 @@ class RecordCreate(BaseModel):
 async def create_record(
     req: RecordCreate,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_private_db),
 ):
     """保存一条校验记录（自动保存：后端重算 sys 值与差异）。"""
     account = await _get_owned_account(db, user_id, req.account_id)
@@ -432,7 +432,7 @@ async def list_records(
     year: Optional[int] = None,
     month: Optional[int] = None,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_private_db),
 ):
     query = select(ReconciliationRecord).where(ReconciliationRecord.user_id == user_id)
     if account_id:
@@ -454,7 +454,7 @@ async def list_records(
 async def delete_record(
     record_id: str,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_private_db),
 ):
     rec = (
         await db.execute(

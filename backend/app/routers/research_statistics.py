@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..database import get_db
+from ..database import get_public_db
 from ..models.research_asset import ResearchAsset, ResearchAssetPrice
 from ..middleware.auth import get_current_user_id
 
@@ -73,11 +73,93 @@ def _var_cvar(daily_rets: list[float], conf: float = VAR_CONF) -> tuple[float, f
 
 
 @router.get("/snapshot")
+async def stats_snapshot_cached(
+    days: int = Query(365, ge=30, le=3650),
+    assets: Optional[str] = Query(None),
+    refresh: int = Query(0),
+    user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_public_db),
+):
+    """统计快照（9 图数据源）+ 24h 缓存：命中直接回；过期/未命中先回旧值、
+    后台重算（serve-stale-while-revalidate）。用户拍板 2026-08-29：
+    "统计 tab 只呈现，至少隔天再重算"。"""
+    import time as _time
+    import asyncio as _asyncio
+    import sys as _sys
+    import json as _json
+    from pathlib import Path as _Path
+    key = f"{user_id}:{days}:{assets or 'all'}"
+    now = _time.time()
+    cached = _stats_cache.get(key)
+    if cached and (now - cached["ts"] < 86400) and not refresh:
+        return cached["data"]
+    if cached and not refresh:
+        # 回旧值 + 后台重算
+        if not _stats_cache.get(f"busy:{key}"):
+            _stats_cache[f"busy:{key}"] = True
+
+            async def _recompute() -> None:
+                from ..database import async_session_maker
+                try:
+                    async with async_session_maker() as db2:
+                        data = await stats_snapshot(days=days, assets=assets, user_id=user_id, db=db2)
+                    _stats_cache[key] = {"ts": _time.time(), "data": data}
+                except Exception:  # noqa: BLE001
+                    pass
+                finally:
+                    _stats_cache[f"busy:{key}"] = False
+
+            _asyncio.create_task(_recompute())
+        return cached["data"]
+    cached = _stats_cache.get(key)
+    if cached:
+        # 有旧值（哪怕过期）→ 回旧值 + 后台重算（上面分支已处理 refresh）
+        return cached["data"]
+    # 完全无缓存：返回空骨架 + 后台重算（32s 慢算绝不能挡在请求路径上）
+    if not _stats_cache.get(f"busy:{key}"):
+        _stats_cache[f"busy:{key}"] = True
+        empty = {
+            "window": {"begin": None, "end": None, "days": days},
+            "assets": [], "correlation": {"labels": [], "matrix": []},
+            "frontier": {"assets": [], "samples": []},
+            "pending": True,
+        }
+        _stats_cache[key] = {"ts": now - 86400, "data": empty}  # 标记为已过期
+
+        async def _recompute2() -> None:
+            # 子进程计算：纯 Python 循环几百万行如果在事件循环内跑会冻结整个服务
+            # （2026-08-30 事故：health 都无响应）。结果落 cache 文件再读入。
+            import subprocess as _sp
+            try:
+                proc = await _asyncio.create_subprocess_exec(
+                    _sys.executable, "scripts/compute_stats_snapshot.py",
+                    str(days), assets or "all", user_id,
+                    cwd=str(Path(__file__).resolve().parents[2] / "backend"),
+                    stdout=_asyncio.subprocess.DEVNULL, stderr=_asyncio.subprocess.DEVNULL)
+                await _asyncio.wait_for(proc.wait(), timeout=600)
+                cache_file = (_Path(__file__).resolve().parents[2] / "backend" / "cache"
+                              / f"stats_snapshot_{user_id}_{days}_{assets or 'all'}.json")
+                if cache_file.exists():
+                    data = _json.loads(cache_file.read_text(encoding="utf-8"))
+                    _stats_cache[key] = {"ts": _time.time(), "data": data}
+            except Exception:  # noqa: BLE001
+                pass
+            finally:
+                _stats_cache[f"busy:{key}"] = False
+
+        _asyncio.create_task(_recompute2())
+    return _stats_cache[key]["data"]
+
+
+_stats_cache: dict = {}
+
+
+@router.get("/snapshot/_fresh")
 async def stats_snapshot(
     days: int = Query(365, ge=30, le=3650),
     assets: Optional[str] = Query(None),       # comma-separated symbols (optional filter)
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
 ):
     end = date.today()
     begin = end - timedelta(days=days)

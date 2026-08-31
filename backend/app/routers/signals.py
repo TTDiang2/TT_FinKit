@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from ..database import get_db
+from ..database import get_private_db, get_public_db
+from ..config import _resolve_public_url as _pub_url
 from ..middleware.auth import get_current_user_id
 from ..schemas.signal import SignalResponse, SignalRunResult
 from ..services.signal_service import (
@@ -18,26 +19,82 @@ from datetime import date
 
 router = APIRouter(prefix="/api/signals", tags=["signals"])
 
-def _signal_to_response(s) -> SignalResponse:
+def _signal_to_response(s, strategy_name: str | None = None,
+                        name_by_symbol: dict[str, str] | None = None) -> SignalResponse:
+    tw = json.loads(s.target_weights or "{}")
+    detail = [
+        {"symbol": sym, "name": (name_by_symbol or {}).get(sym, sym), "weight": w}
+        for sym, w in sorted(tw.items(), key=lambda kv: -kv[1])
+    ] if tw else None
     return SignalResponse(
         id=s.id,
         strategy_id=s.strategy_id,
         strategy_version=s.strategy_version,
+        strategy_name=strategy_name,
         run_date=s.run_date,
         as_of_date=s.as_of_date,
         next_rebalance_date=s.next_rebalance_date,
-        target_weights=json.loads(s.target_weights or "{}"),
+        target_weights=tw,
+        weights_detail=detail,
         risk_status=json.loads(s.risk_status) if s.risk_status else None,
         backtest_id=s.backtest_id,
         created_at=str(s.created_at),
     )
 
+
+async def _strategy_name(pub: AsyncSession, strategy_id: str) -> str | None:
+    from app.models.strategy import Strategy as StrategyModel
+    row = await pub.get(StrategyModel, strategy_id)
+    return row.name if row else None
+
+
+async def _symbol_names(pub: AsyncSession, symbols: list[str]) -> dict[str, str]:
+    if not symbols:
+        return {}
+    rows = (await pub.execute(select(ResearchAsset).where(
+        ResearchAsset.symbol.in_(symbols)))).scalars().all()
+    # 同 symbol 多行时取任一名称即可
+    return {r.symbol: r.name for r in rows}
+
+async def _current_weights_from_holdings(db: AsyncSession, pub: AsyncSession, user_id: str) -> dict[str, float]:
+    """按最新净值把用户未清仓投资折算成 {symbol: weight}，供信号引擎做持仓感知决策。"""
+    assets = (await pub.execute(select(ResearchAsset).where(
+        ResearchAsset.user_id == user_id))).scalars().all()
+    by_symbol = {a.symbol: a for a in assets}
+    invs = (await db.execute(select(Investment).where(
+        Investment.user_id == user_id, open_position_cond()))).scalars().all()
+    holdings = [i for i in invs if (i.quantity or 0) > 0]
+    if not holdings:
+        return {}
+    needed = {i.symbol or "" for i in holdings} & set(by_symbol)
+    navs: dict[str, float] = {}
+    if needed:
+        rows = (await db.execute(
+            select(ResearchAssetPrice.asset_id, ResearchAssetPrice.close)
+            .where(ResearchAssetPrice.asset_id.in_([by_symbol[s].id for s in needed]))
+            .order_by(ResearchAssetPrice.date.asc()))).all()
+        id_to_sym = {a.id: a.symbol for a in assets}
+        for aid, close in rows:
+            navs[id_to_sym[aid]] = float(close)
+    mv: dict[str, float] = {}
+    for i in holdings:
+        sym = i.symbol or ""
+        nav = navs.get(sym) or (i.current_price or 0)
+        mv[sym] = mv.get(sym, 0) + (i.quantity or 0) * nav
+    total = sum(mv.values())
+    if total <= 0:
+        return {}
+    return {s: w / total for s, w in mv.items() if w > 0}
+
+
 @router.post("/run", response_model=SignalRunResult)
-async def run_signal_endpoint(db: AsyncSession = Depends(get_db)):
+async def run_signal_endpoint(db: AsyncSession = Depends(get_private_db),
+                              pub: AsyncSession = Depends(get_public_db),
+                              user_id: str = Depends(get_current_user_id)):
     """Run the active strategy to generate a new signal."""
     # Get active strategy (latest imported or the one set as active)
     # For now: use the most recently created strategy
-    strat = await get_active_strategy(db)
+    strat = await get_active_strategy(pub)
     if not strat:
         raise HTTPException(status_code=404, detail="No active strategy found. Please import or activate a strategy first.")
 
@@ -52,7 +109,7 @@ async def run_signal_endpoint(db: AsyncSession = Depends(get_db)):
         member_ids = select(ResearchGroupMember.asset_id).where(
             ResearchGroupMember.group_id == strat.group_id)
         universe_q = universe_q.where(ResearchAsset.id.in_(member_ids))
-    result = await db.execute(universe_q)
+    result = await pub.execute(universe_q)
     assets = list(result.scalars().all())
     universe = [a.symbol for a in assets]
     if not universe:
@@ -62,11 +119,14 @@ async def run_signal_endpoint(db: AsyncSession = Depends(get_db)):
         )
 
     try:
+        current_weights = await _current_weights_from_holdings(db, pub, user_id)
         signal_result = generate_signal(
             strategy_code=strat.code,
             params=active_params,
             universe=universe,
             rebalance_freq=strat.rebalance_freq or "monthly",
+            current_weights=current_weights,
+            db_path=_pub_url().split("///")[-1],
         )
     except Exception as e:
         return SignalRunResult(signal_id="", status="error", error=str(e))
@@ -89,24 +149,21 @@ async def run_signal_endpoint(db: AsyncSession = Depends(get_db)):
     return SignalRunResult(signal_id=sig.id, status="ok")
 
 @router.get("/current", response_model=SignalResponse | None)
-async def get_current_signal_endpoint(db: AsyncSession = Depends(get_db)):
+async def get_current_signal_endpoint(db: AsyncSession = Depends(get_private_db),
+                                      pub: AsyncSession = Depends(get_public_db)):
     sig = await get_latest_signal(db)
     if not sig:
         return None
-    return _signal_to_response(sig)
+    sname = await _strategy_name(pub, sig.strategy_id)
+    tw = json.loads(sig.target_weights or "{}")
+    names = await _symbol_names(pub, list(tw))
+    return _signal_to_response(sig, strategy_name=sname, name_by_symbol=names)
 
 @router.get("", response_model=list[SignalResponse])
-async def list_signals_endpoint(limit: int = Query(50), db: AsyncSession = Depends(get_db)):
+async def list_signals_endpoint(limit: int = Query(50), db: AsyncSession = Depends(get_private_db),
+                                pub: AsyncSession = Depends(get_public_db)):
     signals = await list_signals(db, limit)
     return [_signal_to_response(s) for s in signals]
-
-@router.get("/{signal_id}", response_model=SignalResponse)
-async def get_signal_endpoint(signal_id: str, db: AsyncSession = Depends(get_db)):
-    sig = await get_signal(db, signal_id)
-    if not sig:
-        raise HTTPException(status_code=404, detail="Signal not found")
-    return _signal_to_response(sig)
-
 
 # --------------------------------------------------------------------------- #
 # Trade plan: current holdings vs latest signal target → concrete rebalance list
@@ -143,11 +200,12 @@ def _redeem_fee_for(rules_json: str | None, holding_days: int):
     return tiers[-1][1], f"持有{holding_days}天兜底档"
 
 
-async def compute_trade_plan(db: AsyncSession, user_id: str) -> dict:
+async def compute_trade_plan(db: AsyncSession, pub: AsyncSession, user_id: str,
+                             additional_cash: float = 0.0) -> dict:
     sig = await get_latest_signal(db)
     targets: dict[str, float] = json.loads(sig.target_weights) if sig else {}
 
-    assets = (await db.execute(select(ResearchAsset).where(
+    assets = (await pub.execute(select(ResearchAsset).where(
         ResearchAsset.user_id == user_id))).scalars().all()
     by_symbol = {a.symbol: a for a in assets}
 
@@ -178,6 +236,9 @@ async def compute_trade_plan(db: AsyncSession, user_id: str) -> dict:
         inv_name.setdefault(sym, i.name)
 
     total_value = sum(mv_by_symbol.values())
+    invested_value = total_value
+    additional_cash = max(0.0, float(additional_cash or 0))
+    total_value += additional_cash
     today = date.today()
     rows_out: list[dict] = []
 
@@ -243,6 +304,8 @@ async def compute_trade_plan(db: AsyncSession, user_id: str) -> dict:
         "signal_id": sig.id if sig else None,
         "run_date": sig.run_date if sig else None,
         "next_rebalance_date": sig.next_rebalance_date if sig else None,
+        "invested_value": round(invested_value, 2),
+        "additional_cash": round(additional_cash, 2),
         "total_value": round(total_value, 2),
         "rows": rows_out,
     }
@@ -251,7 +314,24 @@ async def compute_trade_plan(db: AsyncSession, user_id: str) -> dict:
 @router.get("/trade-plan")
 async def trade_plan_endpoint(
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_private_db),
+    additional_cash: float = Query(0.0, ge=0.0, description="本次调仓计划新投入的现金金额"),
 ):
-    """调仓清单。赎回费按 purchase_date 单笔近似（未做跨笔 FIFO 混合）。"""
-    return await compute_trade_plan(db, user_id)
+    """调仓清单。赎回费按 purchase_date 单笔近似（未做跨笔 FIFO 混合）。
+
+    additional_cash > 0 时按「现有市值 + 新增现金」计算目标结构，
+    新增部分按目标权重买入（每月发工资定投场景）。
+    """
+    return await compute_trade_plan(db, pub, user_id, additional_cash=additional_cash)
+@router.get("/{signal_id}", response_model=SignalResponse)
+async def get_signal_endpoint(signal_id: str, db: AsyncSession = Depends(get_private_db),
+                              pub: AsyncSession = Depends(get_public_db)):
+    sig = await get_signal(db, signal_id)
+    if not sig:
+        raise HTTPException(status_code=404, detail="Signal not found")
+    sname = await _strategy_name(pub, sig.strategy_id)
+    tw = json.loads(sig.target_weights or "{}")
+    names = await _symbol_names(pub, list(tw))
+    return _signal_to_response(sig, strategy_name=sname, name_by_symbol=names)
+
+

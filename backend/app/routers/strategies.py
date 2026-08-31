@@ -2,7 +2,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, desc, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from ..database import get_db
+from ..database import get_public_db, get_private_db
 from ..schemas.strategy import (
     StrategyCreate, StrategyResponse,
     StrategyImportResult, StrategyParseRequest, StrategyMoveRequest,
@@ -85,7 +85,8 @@ def _strategy_to_response(s, latest_backtest: dict | None = None) -> StrategyRes
 async def list_strategies_endpoint(
     folder: str | None = None,
     sort: str = "created_at_desc",
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
+    prv: AsyncSession = Depends(get_private_db),
 ):
     """List all strategies. Returns latest version per strategy name.
 
@@ -100,7 +101,7 @@ async def list_strategies_endpoint(
             seen[s.name] = s
     result = []
     for s in seen.values():
-        lb = await _latest_backtest(db, s.id)
+        lb = await _latest_backtest(prv, s.id)
         result.append(_strategy_to_response(s, latest_backtest=lb))
     return result
 
@@ -125,7 +126,7 @@ def _merge_meta_fields(req: StrategyCreate, doc_meta: dict) -> tuple[str, str, s
 
 
 @router.post("/import", response_model=StrategyImportResult)
-async def import_strategy_endpoint(req: StrategyCreate, db: AsyncSession = Depends(get_db)):
+async def import_strategy_endpoint(req: StrategyCreate, db: AsyncSession = Depends(get_public_db)):
     valid, msg = validate_strategy_code(req.code)
     if not valid:
         raise HTTPException(status_code=400, detail=f"Invalid strategy code: {msg}")
@@ -152,7 +153,7 @@ async def parse_docstring_endpoint(req: StrategyParseRequest):
 
 
 @router.post("/import-folder")
-async def import_folder_endpoint(db: AsyncSession = Depends(get_db)):
+async def import_folder_endpoint(db: AsyncSession = Depends(get_public_db)):
     """扫描 strategies/ 目录，逐个导入 *.py 文件。
 
     返回 {imported: [{file, strategy_id, version, name}], errors: [{file, error}]}。
@@ -194,7 +195,7 @@ async def import_folder_endpoint(db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/active")
-async def set_active_strategy(req: ActiveStrategySet, db: AsyncSession = Depends(get_db)):
+async def set_active_strategy(req: ActiveStrategySet, db: AsyncSession = Depends(get_public_db)):
     """Activate a strategy (persisted; single-active — the previous one is cleared).
 
     The live signal engine (POST /api/signals/run) runs THIS strategy.
@@ -208,14 +209,14 @@ async def set_active_strategy(req: ActiveStrategySet, db: AsyncSession = Depends
     return {"status": "ok"}
 
 @router.delete("/active")
-async def clear_active_strategy(db: AsyncSession = Depends(get_db)):
+async def clear_active_strategy(db: AsyncSession = Depends(get_public_db)):
     """Deactivate whatever strategy is currently active."""
     await db.execute(update(Strategy).values(activated_at=None))
     await db.commit()
     return {"status": "ok"}
 
 @router.get("/active", response_model=ActiveStrategyResponse | None)
-async def get_active_strategy(db: AsyncSession = Depends(get_db)):
+async def get_active_strategy(db: AsyncSession = Depends(get_public_db)):
     result = await db.execute(
         select(Strategy)
         .where(Strategy.activated_at.isnot(None))
@@ -235,7 +236,7 @@ async def get_active_strategy(db: AsyncSession = Depends(get_db)):
 async def move_strategy_endpoint(
     strategy_id: str,
     req: StrategyMoveRequest,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
 ):
     """把策略（同名的所有版本）移动到指定文件夹。
 
@@ -256,7 +257,7 @@ async def move_strategy_endpoint(
 async def get_strategy_endpoint(
     strategy_id: str,
     version: int | None = None,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
 ):
     strat = await get_strategy(db, strategy_id, version)
     if not strat:
@@ -267,7 +268,7 @@ async def get_strategy_endpoint(
 @router.delete("/{strategy_id}/{version}")
 async def delete_strategy_version_endpoint(
     strategy_id: str, version: int,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
 ):
     ok = await delete_strategy_version(db, strategy_id, version)
     if not ok:

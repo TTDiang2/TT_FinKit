@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from ..database import get_db
+from ..database import get_private_db
 from ..models.category import Category
 from ..schemas.category import CategoryCreate, CategoryUpdate, CategoryResponse
 from ..middleware.auth import get_current_user_id
@@ -11,7 +11,7 @@ router = APIRouter(prefix="/api/categories", tags=["categories"])
 
 
 @router.get("", response_model=List[CategoryResponse])
-async def get_categories(user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
+async def get_categories(user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_private_db)):
     result = await db.execute(select(Category).where(Category.user_id == user_id).order_by(Category.type, Category.sort_order))
     cats = result.scalars().all()
     return [CategoryResponse(
@@ -23,7 +23,7 @@ async def get_categories(user_id: str = Depends(get_current_user_id), db: AsyncS
 
 
 @router.post("", response_model=CategoryResponse)
-async def create_category(req: CategoryCreate, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
+async def create_category(req: CategoryCreate, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_private_db)):
     cat = Category(user_id=user_id, **req.model_dump())
     db.add(cat)
     await db.commit()
@@ -37,7 +37,7 @@ async def create_category(req: CategoryCreate, user_id: str = Depends(get_curren
 
 
 @router.put("/{category_id}", response_model=CategoryResponse)
-async def update_category(category_id: str, req: CategoryUpdate, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
+async def update_category(category_id: str, req: CategoryUpdate, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_private_db)):
     result = await db.execute(select(Category).where(Category.id == category_id, Category.user_id == user_id))
     cat = result.scalar_one_or_none()
     if not cat:
@@ -55,7 +55,7 @@ async def update_category(category_id: str, req: CategoryUpdate, user_id: str = 
 
 
 @router.delete("/{category_id}")
-async def delete_category(category_id: str, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
+async def delete_category(category_id: str, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_private_db)):
     result = await db.execute(select(Category).where(Category.id == category_id, Category.user_id == user_id))
     cat = result.scalar_one_or_none()
     if not cat:

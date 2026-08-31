@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..database import get_db
+from ..database import get_private_db
 from ..models.research_asset import ResearchAsset
 from ..models.research_asset_ai_report import ResearchAssetAiReport
 from ..schemas.ai_investment import AnalyzeRequest
@@ -43,7 +43,7 @@ async def run_ai_analysis(
     asset_id: str,
     req: AnalyzeRequest,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_private_db),
 ):
     asset = await _get_owned(asset_id, user_id, db)
     try:
@@ -71,7 +71,7 @@ async def list_ai_reports(
     asset_id: str,
     limit: int = Query(50),
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_private_db),
 ):
     await _get_owned(asset_id, user_id, db)
     res = await db.execute(
@@ -87,7 +87,7 @@ async def list_ai_reports(
 async def get_ai_report(
     report_id: str,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_private_db),
 ):
     res = await db.execute(
         select(ResearchAssetAiReport).where(
@@ -105,7 +105,7 @@ async def get_ai_report(
 async def delete_ai_report(
     report_id: str,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_private_db),
 ):
     res = await db.execute(
         select(ResearchAssetAiReport).where(

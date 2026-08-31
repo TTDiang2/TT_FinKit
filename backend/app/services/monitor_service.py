@@ -81,14 +81,14 @@ async def update_monitor_settings(db: AsyncSession, user_id: str, payload: dict)
     return _parse_thresholds(row)
 
 
-async def _portfolio_context(db: AsyncSession, user_id: str) -> dict:
+async def _portfolio_context(db: AsyncSession, pub: AsyncSession, user_id: str) -> dict:
     """Shared context: research assets, open holdings, market values, weights.
 
     Holding market value = shares (investments.quantity) x latest nav
     (research_prices.close, mapped symbol -> research_assets). Falls back to
     investments.current_price for symbols not in the research pool.
     """
-    assets = (await db.execute(
+    assets = (await pub.execute(
         select(ResearchAsset).where(ResearchAsset.user_id == user_id)
     )).scalars().all()
     symbol_to_asset = {a.symbol: a for a in assets}
@@ -97,7 +97,7 @@ async def _portfolio_context(db: AsyncSession, user_id: str) -> dict:
     latest_close: dict[str, float] = {}
     asset_ids = [a.id for a in assets]
     if asset_ids:
-        rows = (await db.execute(
+        rows = (await pub.execute(
             select(ResearchAssetPrice.asset_id, ResearchAssetPrice.date, ResearchAssetPrice.close)
             .where(ResearchAssetPrice.asset_id.in_(asset_ids))
             .order_by(ResearchAssetPrice.date.asc())
@@ -198,14 +198,14 @@ async def _zone1_portfolio(db: AsyncSession, user_id: str, thresholds: dict, ctx
     }
 
 
-async def _zone2_risk(db: AsyncSession, user_id: str, thresholds: dict, ctx: dict) -> dict:
+async def _zone2_risk(db: AsyncSession, pub: AsyncSession, user_id: str, thresholds: dict, ctx: dict) -> dict:
     shares_by_symbol = ctx["shares_by_symbol"]
     symbol_to_asset = ctx["symbol_to_asset"]
     held = [(sym, symbol_to_asset[sym].id) for sym in shares_by_symbol if symbol_to_asset.get(sym)]
 
     series_map: dict[str, list[tuple[str, float]]] = {}
     if held:
-        rows = (await db.execute(
+        rows = (await pub.execute(
             select(ResearchAssetPrice.asset_id, ResearchAssetPrice.date, ResearchAssetPrice.close)
             .where(ResearchAssetPrice.asset_id.in_([aid for _, aid in held]))
             .order_by(ResearchAssetPrice.date.asc())
@@ -247,11 +247,11 @@ async def _zone2_risk(db: AsyncSession, user_id: str, thresholds: dict, ctx: dic
         "annualized_volatility": round(annualized_volatility(nav_series), 6) if len(rets) >= 2 else None,
         "var_95": round(var_95, 6),
         "cvar_95": round(cvar_95, 6),
-        "factor_exposures": await _portfolio_factor_exposures(db, ctx),
+        "factor_exposures": await _portfolio_factor_exposures(pub, ctx),
     }
 
 
-async def _portfolio_factor_exposures(db: AsyncSession, ctx: dict) -> list[dict]:
+async def _portfolio_factor_exposures(pub: AsyncSession, ctx: dict) -> list[dict]:
     weight_by_asset: dict[str, float] = {}
     for sym, w in ctx["actual_weight"].items():
         a = ctx["symbol_to_asset"].get(sym)
@@ -261,7 +261,7 @@ async def _portfolio_factor_exposures(db: AsyncSession, ctx: dict) -> list[dict]
     if not asset_ids:
         return []
 
-    exp_rows = (await db.execute(
+    exp_rows = (await pub.execute(
         select(FactorExposure, Factor)
         .join(Factor, FactorExposure.factor_id == Factor.id)
         .where(FactorExposure.asset_id.in_(asset_ids))
@@ -282,7 +282,7 @@ async def _portfolio_factor_exposures(db: AsyncSession, ctx: dict) -> list[dict]
     sigmas: dict[str, float] = {}
     factor_ids = list(weighted)
     if factor_ids:
-        fv_rows = (await db.execute(
+        fv_rows = (await pub.execute(
             select(FactorValue.factor_id, FactorValue.value)
             .where(FactorValue.factor_id.in_(factor_ids), FactorValue.kind == "return")
         )).all()
@@ -309,7 +309,7 @@ async def _portfolio_factor_exposures(db: AsyncSession, ctx: dict) -> list[dict]
     return out
 
 
-async def _zone3_deviation(db: AsyncSession, user_id: str, thresholds: dict, ctx: dict) -> dict:
+async def _zone3_deviation(db: AsyncSession, pub: AsyncSession, user_id: str, thresholds: dict, ctx: dict) -> dict:
     sig = await _latest_signal(db)
     last_signal_date = sig.run_date if sig else None
     next_rebalance_date = sig.next_rebalance_date if sig else None
@@ -330,7 +330,7 @@ async def _zone3_deviation(db: AsyncSession, user_id: str, thresholds: dict, ctx
         continuity_status = "ok"
 
     return {
-        "factor_drifts": await _factor_drift(db, ctx, thresholds),
+        "factor_drifts": await _factor_drift(pub, ctx, thresholds),
         "last_signal_date": last_signal_date,
         "next_rebalance_date": next_rebalance_date,
         "days_since_signal": days_since_signal,
@@ -338,7 +338,7 @@ async def _zone3_deviation(db: AsyncSession, user_id: str, thresholds: dict, ctx
     }
 
 
-async def _factor_drift(db: AsyncSession, ctx: dict, thresholds: dict) -> list[dict]:
+async def _factor_drift(pub: AsyncSession, ctx: dict, thresholds: dict) -> list[dict]:
     weight_by_asset: dict[str, float] = {}
     for sym, w in ctx["actual_weight"].items():
         a = ctx["symbol_to_asset"].get(sym)
@@ -348,7 +348,7 @@ async def _factor_drift(db: AsyncSession, ctx: dict, thresholds: dict) -> list[d
     if not asset_ids:
         return []
 
-    exp_rows = (await db.execute(
+    exp_rows = (await pub.execute(
         select(FactorExposure, Factor)
         .join(Factor, FactorExposure.factor_id == Factor.id)
         .where(FactorExposure.asset_id.in_(asset_ids))
@@ -398,12 +398,12 @@ async def _factor_drift(db: AsyncSession, ctx: dict, thresholds: dict) -> list[d
     return drifts
 
 
-async def get_monitor_overview(db: AsyncSession, user_id: str) -> dict:
+async def get_monitor_overview(db: AsyncSession, pub: AsyncSession, user_id: str) -> dict:
     thresholds = await get_monitor_settings(db, user_id)
-    ctx = await _portfolio_context(db, user_id)
+    ctx = await _portfolio_context(db, pub, user_id)
     zone1 = await _zone1_portfolio(db, user_id, thresholds, ctx)
-    zone2 = await _zone2_risk(db, user_id, thresholds, ctx)
-    zone3 = await _zone3_deviation(db, user_id, thresholds, ctx)
+    zone2 = await _zone2_risk(db, pub, user_id, thresholds, ctx)
+    zone3 = await _zone3_deviation(db, pub, user_id, thresholds, ctx)
 
     portfolio_alerts = len(zone1["alerts"])
     risk_alerts = 1 if zone2["drawdown_alert"] else 0

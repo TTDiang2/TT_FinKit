@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, delete, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..database import get_db
+from ..database import get_private_db
 from ..models.investment import Investment, open_position_cond
 from ..models.investment_transaction import InvestmentTransaction
 from ..models.investment_cash_flow import InvestmentCashFlow
@@ -177,7 +177,7 @@ async def _recompute_legacy_fields(db: AsyncSession, investment: Investment) -> 
 @router.get("", response_model=List[InvestmentResponse])
 async def get_investments(
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_private_db),
 ):
     res = await db.execute(
         select(Investment).where(Investment.user_id == user_id).order_by(Investment.created_at.desc())
@@ -223,7 +223,7 @@ async def get_investments(
 async def create_investment(
     req: InvestmentCreate,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_private_db),
 ):
     payload = req.model_dump()
     purchase_fee = float(payload.pop("purchase_fee", 0.0) or 0.0)
@@ -303,7 +303,7 @@ async def create_investment(
 @router.get("/portfolio-health")
 async def get_portfolio_health(
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_private_db),
 ):
     """组合体检：未平仓持仓的整体浮盈亏 + 逐基金浮亏预警（带名称）。
 
@@ -331,7 +331,7 @@ async def get_portfolio_health(
 @router.get("/closed-positions", response_model=ClosedPositionsResponse)
 async def get_closed_positions(
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_private_db),
 ):
     """已平仓产品：实现盈亏与年化收益。
 
@@ -609,7 +609,7 @@ async def _consistency_core(db: AsyncSession, user_id: str) -> dict:
 @router.get("/consistency")
 async def get_investment_consistency(
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_private_db),
 ):
     """投资 tab ↔ 记账 tab 一致性校验（前端 OverviewTab 调用）。"""
     return await _consistency_core(db, user_id)
@@ -618,7 +618,7 @@ async def get_investment_consistency(
 @router.get("/reconciliation")
 async def get_reconciliation(
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_private_db),
 ):
     """勾稽 Tab 数据：恒等式展示结构（纯只读，复用 _consistency_core）。
 
@@ -786,7 +786,7 @@ async def get_reconciliation(
 async def lookup_symbol(
     symbol: str = Query(..., min_length=1, max_length=16),
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_private_db),
 ):
     """按代码跨市场查找产品（名称 + 现价），用于「输代码自动补全」。
 
@@ -833,7 +833,7 @@ async def lookup_symbol(
 @router.get("/portfolio-metrics", response_model=PortfolioOverview)
 async def get_portfolio_metrics(
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_private_db),
 ):
     return await compute_portfolio_overview(db, user_id)
 
@@ -966,7 +966,7 @@ async def _build_portfolio_series(
 async def get_portfolio_nav(
     days: int = 365,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_private_db),
 ):
     """组合净值指数曲线（现金流免疫）+ 年化收益/波动率/夏普/最大回撤。
 
@@ -1058,7 +1058,7 @@ async def get_pnl_history(
     granularity: str = Query("day", pattern="^(day|month|year)$"),
     days: int = 365,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_private_db),
 ):
     """盈亏柱状图数据：日盈亏 = Δtotal_value − 当日净入金。
 
@@ -1114,7 +1114,7 @@ async def get_pnl_history(
 @router.post("/cash-flows/sync-from-bookkeeping")
 async def sync_cash_flows_from_bookkeeping(
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_private_db),
 ):
     """把记账 tab 投资账户的转入/转出转账同步为投资 tab 的入金/出金流水。
 
@@ -1205,7 +1205,7 @@ async def sync_cash_flows_from_bookkeeping(
 @router.post("/sync-pnl-to-bookkeeping")
 async def sync_pnl_to_bookkeeping(
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_private_db),
 ):
     """按月拆分入账（投资分类、全 income）。
 
@@ -1394,7 +1394,7 @@ def _month_last_day(month_key: str) -> str:
 @router.get("/cash-flows", response_model=List[CashFlowResponse])
 async def list_cash_flows(
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_private_db),
 ):
     res = await db.execute(
         select(InvestmentCashFlow)
@@ -1408,7 +1408,7 @@ async def list_cash_flows(
 async def create_cash_flow(
     req: CashFlowCreate,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_private_db),
 ):
     flow = InvestmentCashFlow(user_id=user_id, **req.model_dump())
     db.add(flow)
@@ -1423,7 +1423,7 @@ async def update_cash_flow(
     flow_id: str,
     req: CashFlowUpdate,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_private_db),
 ):
     res = await db.execute(
         select(InvestmentCashFlow).where(
@@ -1445,7 +1445,7 @@ async def update_cash_flow(
 async def delete_cash_flow(
     flow_id: str,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_private_db),
 ):
     res = await db.execute(
         select(InvestmentCashFlow).where(
@@ -1465,7 +1465,7 @@ async def delete_cash_flow(
 async def get_investment(
     investment_id: str,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_private_db),
 ):
     inv = await _load_investment(db, investment_id, user_id)
     return _to_response(inv)
@@ -1476,7 +1476,7 @@ async def update_investment(
     investment_id: str,
     req: InvestmentUpdate,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_private_db),
 ):
     inv = await _load_investment(db, investment_id, user_id)
     update_payload = req.model_dump(exclude_unset=True)
@@ -1529,7 +1529,7 @@ async def update_investment(
 async def delete_investment(
     investment_id: str,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_private_db),
 ):
     inv = await _load_investment(db, investment_id, user_id)
     await db.delete(inv)
@@ -1546,7 +1546,7 @@ async def delete_investment(
 async def list_transactions(
     investment_id: str,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_private_db),
 ):
     await _load_investment(db, investment_id, user_id)
     res = await db.execute(
@@ -1562,7 +1562,7 @@ async def create_transaction(
     investment_id: str,
     req: InvestmentTransactionCreate,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_private_db),
 ):
     inv = await _load_investment(db, investment_id, user_id)
     # Sign convention: buys positive, sells negative; amount excludes fee (fee is a separate column)
@@ -1604,7 +1604,7 @@ async def update_transaction(
     tx_id: str,
     req: InvestmentTransactionUpdate,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_private_db),
 ):
     inv = await _load_investment(db, investment_id, user_id)
     res = await db.execute(
@@ -1647,7 +1647,7 @@ async def delete_transaction(
     investment_id: str,
     tx_id: str,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_private_db),
 ):
     inv = await _load_investment(db, investment_id, user_id)
     res = await db.execute(
@@ -1674,7 +1674,7 @@ async def delete_transaction(
 async def get_metrics(
     investment_id: str,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_private_db),
 ):
     inv = await _load_investment(db, investment_id, user_id)
     return await compute_investment_metrics(db, inv)
@@ -1683,7 +1683,7 @@ async def get_metrics(
 @router.get("/metrics/all", response_model=List[dict])
 async def get_all_metrics(
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_private_db),
 ):
     """Return per-investment metrics for the user's portfolio."""
     res = await db.execute(
@@ -1715,7 +1715,7 @@ def _invalidate_portfolio_nav_cache(user_id: str) -> None:
 async def refresh_price(
     investment_id: str,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_private_db),
 ):
     inv = await _load_investment(db, investment_id, user_id)
     if not inv.symbol or not inv.exchange:
@@ -1757,7 +1757,7 @@ async def refresh_price(
 @router.post("/refresh-prices/all", response_model=List[dict])
 async def refresh_all_prices(
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_private_db),
 ):
     """Refresh prices for every investment. Items without symbol/exchange are
     reported as skipped (ok=false) instead of silently vanishing from the result."""
@@ -1803,7 +1803,7 @@ async def get_nav_history(
     investment_id: str,
     days: int = 365,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_private_db),
 ):
     """Return the daily close series + transaction events + cost basis for the
     per-product detail drawer (净值曲线 + 买卖点).
@@ -1912,7 +1912,7 @@ async def get_nav_history(
 async def list_snapshots(
     investment_id: str,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_private_db),
 ):
     await _load_investment(db, investment_id, user_id)
     res = await db.execute(
@@ -1941,7 +1941,7 @@ async def migrate_entry(
     investment_id: str,
     req: MigrationRequest,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_private_db),
 ):
     """半自动迁移：用户输入历史投资记录（date+amount），后端用 iFinD 拉历史
     单位净值（ths_unit_nv_fund）反推份额。commit=false 仅预览；commit=true 生成 buy 流水。

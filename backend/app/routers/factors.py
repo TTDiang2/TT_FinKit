@@ -7,10 +7,14 @@ from calendar import monthrange
 from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import select, text
+
+import logging as _importlog
+_importlog.getLogger("uvicorn.error").info("[factors] MODULE IMPORTED (new code)")
+print("[factors] MODULE IMPORTED (new code)", flush=True)
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..database import get_db, async_session_maker
+from ..database import get_public_db, async_session_maker
 from ..models.factor import Factor, FactorValue, FactorExposure
 from ..models.research_asset import ResearchAsset
 from ..schemas.factor import (
@@ -107,7 +111,7 @@ async def _get_factor(factor_id: str, db: AsyncSession) -> Factor:
 @router.get("", response_model=List[FactorResponse])
 async def list_factors(
     category: Optional[str] = Query(None),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
 ):
     await seed_preset_factors(db)
     q = select(Factor).order_by(Factor.category, Factor.created_at)
@@ -120,7 +124,7 @@ async def list_factors(
 @router.post("", response_model=FactorResponse)
 async def create_factor(
     body: FactorCreate,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
 ):
     exists = (await db.execute(select(Factor).where(Factor.name == body.name))).scalar_one_or_none()
     if exists:
@@ -145,7 +149,7 @@ async def create_factor(
 @router.post("/refresh-all", response_model=List[FactorSyncResult])
 async def refresh_all(
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
 ):
     await seed_preset_factors(db)
     ifind_user, ifind_pass = await ifind_client.get_credentials(db, user_id)
@@ -164,22 +168,62 @@ async def refresh_all(
 
 
 @router.get("/exposure-matrix", response_model=ExposureMatrix)
+@router.get("/exposure-months")
+async def exposure_months(user_id: str = Depends(get_current_user_id),
+                          db: AsyncSession = Depends(get_public_db)):
+    """可用的暴露快照月份（倒序）——供前端月份选择器。"""
+    rows = (await db.execute(
+        text("SELECT as_of_date, COUNT(*) AS n FROM factor_exposures GROUP BY as_of_date "
+             "HAVING n >= 1000 ORDER BY as_of_date DESC")
+    )).all()
+    months = sorted({str(r[0])[:7] for r in rows}, reverse=True)
+    latest = rows[0][0] if rows else None
+    return {"months": months, "latest": latest}
+
+
 async def exposure_matrix(
     as_of: Optional[str] = Query(None, description="YYYY-MM（该月任一月末）或 YYYY-MM-DD；默认最新"),
+    symbols: Optional[str] = Query(None, description="逗号分隔标的代码，优先于 group/search/limit"),
+    group_id: Optional[str] = Query(None, description="标的组合 id"),
+    search: Optional[str] = Query(None, description="名称/代码模糊搜索"),
+    limit: int = Query(50, ge=1, le=500, description="单页资产数（矩阵行数）"),
+    offset: int = Query(0, ge=0),
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
 ):
+    from ..services.matrix_debug import debug_log
+    debug_log(f"called as_of={as_of!r} symbols={symbols!r} group={group_id!r} search={search!r} limit={limit} offset={offset}")
     await seed_preset_factors(db)
     factors = (await db.execute(
         select(Factor).where(Factor.active.is_(True)).order_by(Factor.category, Factor.created_at)
     )).scalars().all()
+    debug_log(f"factors={len(factors)}")
+
+    # 资产筛选：symbols > group_id > search，全部命中后按 limit/offset 分页。
+    # 全池 3813 资产 × 70 因子的全量矩阵曾把响应撑到几十 MB/分钟级（UI 15s 必超时，
+    # 用户看到的是"暂无暴露数据"——实为 axios 静默吞了超时）。
+    aq = select(ResearchAsset).where(
+        ResearchAsset.user_id == user_id, ResearchAsset.status == "pooled")
+    sym_list = [x.strip() for x in (symbols or "").split(",") if x.strip()]
+    if sym_list:
+        aq = aq.where(ResearchAsset.symbol.in_(sym_list))
+    elif group_id:
+        from app.models.research_group import ResearchGroupMember
+        member_ids = select(ResearchGroupMember.asset_id).where(
+            ResearchGroupMember.group_id == group_id)
+        aq = aq.where(ResearchAsset.id.in_(member_ids))
+    elif search:
+        like = f"%{search}%"
+        aq = aq.where((ResearchAsset.name.like(like)) | (ResearchAsset.symbol.like(like)))
+    total_assets = (await db.execute(
+        select(func.count()).select_from(aq.subquery()))).scalar_one()
     assets = (await db.execute(
-        select(ResearchAsset).where(
-            ResearchAsset.user_id == user_id, ResearchAsset.status == "pooled"
-        ).order_by(ResearchAsset.created_at)
+        aq.order_by(ResearchAsset.created_at).offset(offset).limit(limit)
     )).scalars().all()
+    debug_log(f"total_assets={total_assets} page_assets={len(assets)}")
     if not factors or not assets:
-        return ExposureMatrix()
+        return ExposureMatrix(as_of=as_of, factors=list(factors), assets=[],
+                              total_assets=total_assets)
 
     q = select(FactorExposure).where(FactorExposure.asset_id.in_([a.id for a in assets]))
     if as_of and _MONTH_RE.match(as_of):
@@ -191,8 +235,11 @@ async def exposure_matrix(
     elif as_of:
         q = q.where(FactorExposure.as_of_date == as_of)
     else:
+        # "最新"= 行数充足的最大日期（每日自动补录会造出只有几行的杂散 as_of，
+        # 直接 MAX 会选中它们导致矩阵看似为空）
         latest = (await db.execute(
-            select(FactorExposure.as_of_date).order_by(FactorExposure.as_of_date.desc()).limit(1)
+            text("SELECT as_of_date FROM factor_exposures GROUP BY as_of_date "
+                 "HAVING COUNT(*) >= 1000 ORDER BY as_of_date DESC LIMIT 1")
         )).scalar()
         if latest is None:
             return ExposureMatrix()
@@ -225,6 +272,7 @@ async def exposure_matrix(
         as_of=used_as_of,
         factors=[await _respond(db, f) for f in factors],
         assets=[r for r in by_asset.values() if r.cells],
+        total_assets=total_assets,
     )
 
 
@@ -232,7 +280,7 @@ async def exposure_matrix(
 async def exposure_history(
     asset_id: str = Query(...),
     factor_id: Optional[str] = Query(None),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
 ):
     q = (
         select(FactorExposure, Factor)
@@ -263,7 +311,7 @@ async def recompute_exposures_endpoint(
                             description="OLS 回归窗口长度 (trading days)。默认 252 ≈ 1 年"),
     asset_symbols: str = Query("", description="逗号分隔的标的 symbol；空 = 全部入池标的"),
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
 ):
     symbols = [s.strip() for s in asset_symbols.split(",") if s.strip()] or None
     result = await recompute_exposures(db, user_id, full=full, window_days=window_days,
@@ -282,7 +330,7 @@ async def recompute_exposures_endpoint(
 @router.post("/evaluate-all")
 async def evaluate_all_factors_endpoint(
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
 ):
     from ..services.factor_evaluation import evaluate_all_factors
     return await evaluate_all_factors(db, user_id)
@@ -291,7 +339,7 @@ async def evaluate_all_factors_endpoint(
 @router.get("/evaluations")
 async def list_evaluations(
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
 ):
     from ..services.factor_evaluation import evaluation_to_dict, DEFAULT_THRESHOLDS
     from ..models.factor_evaluation import FactorEvaluation
@@ -310,7 +358,7 @@ async def contribution(
     start: str = Query(...),
     end: str = Query(...),
     view: str = Query("return", pattern="^(return|risk)$"),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
 ):
     # 'YYYY-MM' month semantics: start -> month first day, end -> month LAST day
     # (exposures live at month-end trading days; a first-of-month end would find
@@ -351,7 +399,7 @@ _AGENT_SYSTEM_PROMPT = """你是基金研究系统的因子构建助手。用户
 async def agent_generate(
     body: AgentGenerateRequest,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
 ):
     from ..services.ai_investment import _call_llm, _pick_preset
 
@@ -425,7 +473,7 @@ async def _preview_config(
 async def agent_preview(
     body: AgentPreviewRequest,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
 ):
     ifind_user, ifind_pass = await ifind_client.get_credentials(db, user_id)
     return await _preview_config(body.candidate.config, ifind_user, ifind_pass)
@@ -435,7 +483,7 @@ async def agent_preview(
 async def agent_confirm(
     body: AgentPreviewRequest,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
 ):
     candidate = body.candidate
     exists = (await db.execute(select(Factor).where(Factor.name == candidate.name))).scalar_one_or_none()
@@ -517,7 +565,7 @@ async def sync_status():
 async def factor_detail(
     factor_id: str,
     days: int = Query(365, ge=30, le=10000),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
 ):
     factor = await _get_factor(factor_id, db)
     base = await _respond(db, factor)
@@ -538,7 +586,7 @@ async def factor_detail(
 async def update_factor(
     factor_id: str,
     body: FactorUpdate,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
 ):
     factor = await _get_factor(factor_id, db)
     definition_changed = False
@@ -562,7 +610,7 @@ async def update_factor(
 @router.delete("/{factor_id}", response_model=FactorResponse)
 async def deactivate_factor(
     factor_id: str,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
 ):
     factor = await _get_factor(factor_id, db)
     factor.active = False
@@ -575,7 +623,7 @@ async def refresh_factor(
     factor_id: str,
     full: bool = Query(False),
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
 ):
     factor = await _get_factor(factor_id, db)
     ifind_user, ifind_pass = await ifind_client.get_credentials(db, user_id)

@@ -64,7 +64,7 @@ class TestTradePlan:
                 ])
                 await db.commit()
 
-                plan = await sg.compute_trade_plan(db, u.id)
+                plan = await sg.compute_trade_plan(db, db, u.id)
                 assert plan["total_value"] == 20000.0
                 rows = {r["symbol"]: r for r in plan["rows"]}
 
@@ -104,7 +104,7 @@ class TestTradePlan:
                     _mk_signal({"A": 0.996}),   # Δ ≈ -4元 → hold via buffer band
                 ])
                 await db.commit()
-                plan = await sg.compute_trade_plan(db, u.id)
+                plan = await sg.compute_trade_plan(db, db, u.id)
                 assert plan["rows"][0]["action"] == "hold"
             finally:
                 await db.close()
@@ -122,7 +122,7 @@ class TestTradePlan:
                                   symbol="X", exchange="FUND_CN", quantity=10,
                                   current_price=5.0, purchase_date="2026-01-01"))
                 await db.commit()
-                plan = await sg.compute_trade_plan(db, u.id)
+                plan = await sg.compute_trade_plan(db, db, u.id)
                 assert plan["signal_id"] is None
                 row = plan["rows"][0]
                 assert row["symbol"] == "X" and row["target_weight"] == 0

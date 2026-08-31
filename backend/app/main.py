@@ -49,10 +49,35 @@ app.include_router(monitor.router)
 
 @app.on_event("startup")
 async def on_startup():
-    from .database import engine
+    from .database import (
+        Base, public_engine, private_engine, _resolve_public_url, _resolve_private_url
+    )
     from .migrations import run_lightweight_migrations
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+
+    # 标记公开表（在模型 import 完毕、create_all 之前）
+    from .models._flags import _mark_public_tables
+    _mark_public_tables()
+
+    # 双库模式检测：两个 URL 都设置了且不等 → 按 public/private flag 分发建表
+    pub_url = _resolve_public_url()
+    prv_url = _resolve_private_url()
+    is_split = bool(pub_url and prv_url and pub_url != prv_url)
+
+    public_tables = [t for t in Base.metadata.sorted_tables if t.info.get("public")]
+    private_tables = [t for t in Base.metadata.sorted_tables if t not in public_tables]
+
+    import asyncio as _aio
+    if is_split:
+        for tbl in public_tables:
+            await _aio.to_thread(tbl.create, public_engine.sync_engine, checkfirst=True)
+        for tbl in private_tables:
+            await _aio.to_thread(tbl.create, private_engine.sync_engine, checkfirst=True)
+    else:
+        for tbl in Base.metadata.sorted_tables:
+            await _aio.to_thread(tbl.create, private_engine.sync_engine, checkfirst=True)
+
+    async with private_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.reflect)
         await run_lightweight_migrations(conn)
 
     # 每日自动信号（用户拍板 2026-08-29）：当日未跑过且有持仓 → 后台补跑。

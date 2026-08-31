@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from datetime import datetime
 from calendar import monthrange
-from ..database import get_db
+from ..database import get_private_db
 from ..models.report_archive import ReportArchive
 from ..models.transaction import Transaction
 from ..models.account import Account
@@ -50,7 +50,7 @@ async def get_profit_loss(
     quarter: int | None = None,
     period_type: str = Query(default="monthly", regex="^(monthly|quarterly|annual)$"),
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_private_db)
 ):
     now = datetime.now()
     year = year or now.year
@@ -141,7 +141,7 @@ async def get_balance_sheet(
     quarter: int | None = None,
     period_type: str = Query(default="monthly", regex="^(monthly|quarterly|annual)$"),
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_private_db)
 ):
     now = datetime.now()
     year = year or now.year
@@ -269,7 +269,7 @@ async def get_cash_flow(
     quarter: int | None = None,
     period_type: str = Query(default="monthly", regex="^(monthly|quarterly|annual)$"),
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_private_db)
 ):
     now = datetime.now()
     year = year or now.year
@@ -355,7 +355,7 @@ async def get_cash_flow(
 
 
 @router.get("/archives", response_model=List[ReportArchiveResponse])
-async def get_archives(user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
+async def get_archives(user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_private_db)):
     result = await db.execute(
         select(ReportArchive).where(ReportArchive.user_id == user_id).order_by(ReportArchive.generated_at.desc())
     )
@@ -367,7 +367,7 @@ async def get_archives(user_id: str = Depends(get_current_user_id), db: AsyncSes
 
 
 @router.post("/archives", response_model=ReportArchiveResponse)
-async def create_archive(req: ReportArchiveCreate, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
+async def create_archive(req: ReportArchiveCreate, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_private_db)):
     archive = ReportArchive(user_id=user_id, **req.model_dump())
     db.add(archive)
     await db.commit()
@@ -379,7 +379,7 @@ async def create_archive(req: ReportArchiveCreate, user_id: str = Depends(get_cu
 
 
 @router.get("/archives/{archive_id}")
-async def get_archive(archive_id: str, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
+async def get_archive(archive_id: str, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_private_db)):
     result = await db.execute(
         select(ReportArchive).where(ReportArchive.id == archive_id, ReportArchive.user_id == user_id)
     )
@@ -390,7 +390,7 @@ async def get_archive(archive_id: str, user_id: str = Depends(get_current_user_i
 
 
 @router.delete("/archives/{archive_id}")
-async def delete_archive(archive_id: str, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
+async def delete_archive(archive_id: str, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_private_db)):
     result = await db.execute(
         select(ReportArchive).where(ReportArchive.id == archive_id, ReportArchive.user_id == user_id)
     )

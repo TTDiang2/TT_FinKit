@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
-from ..database import get_db
+from ..database import get_private_db
 from ..models.user_settings import UserSettings
 from ..models.user import User
 from ..schemas.settings import SettingsUpdate, SettingsResponse
@@ -14,7 +14,7 @@ router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 
 @router.get("", response_model=SettingsResponse)
-async def get_settings(user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
+async def get_settings(user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_private_db)):
     result = await db.execute(select(UserSettings).where(UserSettings.user_id == user_id))
     settings = result.scalar_one_or_none()
     if not settings:
@@ -34,7 +34,7 @@ async def get_settings(user_id: str = Depends(get_current_user_id), db: AsyncSes
 
 
 @router.put("", response_model=SettingsResponse)
-async def update_settings(req: SettingsUpdate, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
+async def update_settings(req: SettingsUpdate, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_private_db)):
     result = await db.execute(select(UserSettings).where(UserSettings.user_id == user_id))
     settings = result.scalar_one_or_none()
     if not settings:
@@ -91,7 +91,7 @@ async def test_ifind(req: IFindTestRequest):
 async def change_password(
     req: PasswordChangeRequest,
     user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_private_db)
 ):
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
@@ -106,7 +106,7 @@ async def change_password(
 
 
 @router.delete("/account")
-async def delete_account(user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
+async def delete_account(user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_private_db)):
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if not user:
