@@ -2,7 +2,10 @@ import axios from 'axios'
 import { useAuthStore } from '@/stores/auth'
 import router from '@/router'
 
-const api = axios.create({ baseURL: '/api', timeout: 15000 })
+const api = axios.create({ baseURL: '/api', timeout: 30000 })
+
+// 重接口（批量操作/统计重算/详情分段）走长超时：调用处用 api.long
+export const apiLong = axios.create({ baseURL: '/api', timeout: 180000 })
 
 api.interceptors.request.use((config) => {
   const authStore = useAuthStore()

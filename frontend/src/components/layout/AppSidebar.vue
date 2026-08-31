@@ -39,7 +39,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { Home, Edit3, Wallet, TrendingUp, BarChart2, FileText, Settings, ChevronLeft, ChevronRight } from 'lucide-vue-next'
+import { Home, Edit3, Wallet, TrendingUp, BarChart2, FileText, Bot, Settings, ChevronLeft, ChevronRight } from 'lucide-vue-next'
 import { useSettingsStore } from '@/stores/settings'
 
 const route = useRoute()
@@ -51,6 +51,7 @@ const navItems = [
   { path: '/investments', label: '投资', icon: TrendingUp },
   { path: '/statistics', label: '统计', icon: BarChart2 },
   { path: '/reports', label: '报表', icon: FileText },
+  { path: '/ai-advisor', label: 'AI 咨询', icon: Bot },
   { path: '/settings', label: '设置', icon: Settings },
 ]
 const expanded = ref(settingsStore.settings.sidebar_expanded)

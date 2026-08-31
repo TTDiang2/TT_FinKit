@@ -440,6 +440,9 @@ async def evaluate_all_factors(
         ev.screen_result = json.dumps(screen(outcome, thresholds), ensure_ascii=False)
         ev.computed_at = datetime.utcnow().isoformat()
         evaluated.append(f.key)
+        # 分因子提交：整个作业一个巨型事务会长时间持有 SQLite 写锁，
+        # 把 UI 的所有写请求卡到 busy timeout（实际事故 2026-08-29）
+        await db.commit()
 
     await db.commit()
     return {"evaluated": evaluated, "skipped": skipped}

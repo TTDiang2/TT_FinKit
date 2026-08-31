@@ -5,10 +5,12 @@ class SignalResponse(BaseModel):
     id: str
     strategy_id: str
     strategy_version: int
+    strategy_name: Optional[str] = None  # 便于前端展示信号来自哪个策略
     run_date: str
     as_of_date: str
     next_rebalance_date: Optional[str] = None
-    target_weights: dict  # {asset_id: weight}
+    target_weights: dict  # {symbol: weight}
+    weights_detail: Optional[list] = None  # [{symbol, name, weight}] 按权重降序
     risk_status: Optional[dict] = None
     backtest_id: Optional[str] = None
     created_at: str

@@ -54,7 +54,13 @@
 
       <!-- Factor evaluation summary (IC/ICIR) -->
       <div v-if="evaluations.length" class="bg-white rounded-lg shadow-sm overflow-hidden mb-4">
-        <div class="px-3 py-2 bg-bg-tertiary text-sm font-medium">因子评估（IC/ICIR/胜率/多空夏普）</div>
+        <div class="px-3 py-2 bg-bg-tertiary text-sm font-medium">
+          因子评估（IC/ICIR/胜率/多空夏普）
+          <span class="text-xs text-text-muted font-normal ml-2">
+            判定=严谨选股门槛，需全部满足：|RankIC|&gt;0.05 · ICIR年化&gt;0.5 · 胜率&gt;60% · 多空夏普&gt;0.8；
+            鼠标悬停"未达"可看分项明细
+          </span>
+        </div>
         <table class="w-full text-xs">
           <thead class="bg-bg-secondary text-left">
             <tr>
@@ -77,7 +83,9 @@
               <td class="px-2 py-1.5 text-right">{{ ev.ls_sharpe?.toFixed(2) ?? '—' }}</td>
               <td class="px-2 py-1.5 text-center">
                 <span v-if="ev.passed" class="px-1 py-0.5 rounded bg-income-bg text-income-color">通过</span>
-                <span v-else class="px-1 py-0.5 rounded bg-bg-tertiary text-text-muted">未达</span>
+                <span v-else
+                  :title="screenDetail(ev.screen_result)"
+                  class="px-1 py-0.5 rounded bg-bg-tertiary text-text-muted cursor-help">未达</span>
               </td>
             </tr>
           </tbody>
@@ -100,7 +108,7 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="f in filteredFactors" :key="f.id" class="border-t border-border-default">
+          <tr v-for="f in pagedFactors" :key="f.id" class="border-t border-border-default">
             <td class="px-3 py-2">
               <div class="font-medium text-text-primary">{{ f.name }}</div>
               <div class="text-xs text-text-muted">{{ f.definition?.slice(0, 60) }}</div>
@@ -132,6 +140,14 @@
           </tr>
         </tbody>
       </table>
+      <div v-if="filteredFactors.length > factorPageSize" class="flex items-center justify-end gap-2 px-3 py-2 text-xs">
+        <button @click="factorPage = Math.max(1, factorPage - 1)" :disabled="factorPage === 1"
+          class="px-2 py-1 border border-border-default rounded disabled:opacity-40">上一页</button>
+        <span>{{ factorPage }} / {{ Math.ceil(filteredFactors.length / factorPageSize) }}</span>
+        <button @click="factorPage = Math.min(Math.ceil(filteredFactors.length / factorPageSize), factorPage + 1)"
+          :disabled="factorPage >= Math.ceil(filteredFactors.length / factorPageSize)"
+          class="px-2 py-1 border border-border-default rounded disabled:opacity-40">下一页</button>
+      </div>
     </div>
     </div>
 
@@ -141,8 +157,20 @@
       <h3 class="text-sm font-medium mb-2">暴露矩阵</h3>
       <div class="flex gap-3 mb-3 items-center flex-wrap">
         <div class="text-sm text-text-secondary">月份：</div>
-        <input v-model="matrixAsOf" type="month" class="px-3 py-1.5 text-sm border border-border-default rounded-md" />
-        <button @click="loadMatrix" class="btn-secondary">查询</button>
+        <select v-model="matrixAsOf" class="px-3 py-1.5 text-sm border border-border-default rounded-md">
+          <option value="">最新（{{ latestMonth }}）</option>
+          <option v-for="m in availableMonths" :key="m" :value="m">{{ m }}</option>
+        </select>
+        <div class="text-sm text-text-secondary">标的：</div>
+        <input v-model="matrixSymbols" type="text" placeholder="代码，逗号分隔如 000217,005963"
+          class="w-56 px-2 py-1.5 text-sm border border-border-default rounded-md font-mono" />
+        <select v-model="matrixGroupId" class="px-3 py-1.5 text-sm border border-border-default rounded-md max-w-[10rem]">
+          <option value="">全部组合</option>
+          <option v-for="g in assetGroups" :key="g.id" :value="g.id">{{ g.name }}</option>
+        </select>
+        <input v-model="matrixSearch" type="text" placeholder="名称搜索"
+          class="w-32 px-2 py-1.5 text-sm border border-border-default rounded-md" />
+        <button @click="loadMatrix(0)" class="btn-secondary">查询</button>
         <div class="text-sm text-text-secondary">窗口：</div>
         <select v-model="windowDays" class="px-3 py-1.5 text-sm border border-border-default rounded-md focus:outline-none focus:ring-1 focus:ring-accent-primary">
           <option :value="63">3 个月</option>
@@ -164,7 +192,10 @@
         <div class="text-xs text-text-muted ml-auto">Beta 色阶：正红负绿 | 粗体 = |t|&gt;1.5 显著 | 岭回归标黄</div>
       </div>
       <div v-if="matrixLoading" class="text-sm text-text-muted py-4 text-center">加载中…</div>
-      <div v-else-if="!matrix.assets?.length" class="text-sm text-text-muted py-4 text-center">暂无暴露数据，请先在标的池入池产品后重算</div>
+      <div v-else-if="matrixLoadError" class="text-sm text-expense-color py-4 text-center">{{ matrixLoadError }}</div>
+      <div v-else-if="!matrix.assets?.length" class="text-sm text-text-muted py-4 text-center">
+        当前筛选条件下没有暴露数据。若从未重算过暴露，点右上「重算暴露」；否则调整月份/标的筛选。
+      </div>
       <div v-else class="bg-white rounded-lg shadow-sm overflow-auto">
         <table class="w-full text-sm">
           <thead class="bg-bg-tertiary text-left">
@@ -437,6 +468,16 @@ const evaluations = ref<any[]>([])
 const matrix = ref<ExposureMatrix>({ as_of: null, factors: [], assets: [] })
 const matrixLoading = ref(false)
 const matrixAsOf = ref('')
+const availableMonths = ref<string[]>([])
+const latestMonth = ref('')
+const matrixSymbols = ref('')
+const matrixGroupId = ref('')
+const matrixSearch = ref('')
+const matrixOffset = ref(0)
+const matrixTotal = ref(0)
+const matrixLimit = 50
+const matrixLoadError = ref('')
+const assetGroups = ref<{ id: string; name: string; asset_ids: string[] }[]>([])
 const recomputing = ref(false)
 const windowDays = ref(252)
 const matrixCategoryFilter = ref('')          // '' = 全部因子，否则按 category 过滤暴露矩阵列
@@ -493,6 +534,18 @@ function colorClass(v: number | null | undefined) {
   if (v == null) return 'text-text-muted'
   return v >= 0 ? 'text-income-color' : 'text-expense-color'
 }
+function screenDetail(raw: any): string {
+  if (!raw) return '无分项数据'
+  try {
+    const d = typeof raw === 'string' ? JSON.parse(raw) : raw
+    const label: Record<string, string> = {
+      rank_ic_mean: '|RankIC|>0.05', icir_annualized: 'ICIR年化>0.5',
+      win_rate: '胜率>60%', ls_sharpe: '多空夏普>0.8',
+    }
+    return Object.entries(d).map(([k, v]) => `${label[k] || k}: ${v ? '✓' : '✗'}`).join(' · ')
+  } catch { return '无分项数据' }
+}
+
 function pct(v: number | null | undefined): string {
   return v === null || v === undefined ? '—' : (v * 100).toFixed(2) + '%'
 }
@@ -502,8 +555,17 @@ function fmt4(n: number): string {
 
 const categories = computed(() => [...new Set(factors.value.map(f => f.category).filter(Boolean))] as string[])
 const exposureCategories = computed(() => [...new Set(matrix.value.factors.map(f => f.category).filter(Boolean))] as string[])
-const filteredFactors = computed(() =>
-  categoryFilter.value ? factors.value.filter(f => f.category === categoryFilter.value) : factors.value)
+const filteredFactors = computed(
+  () => categoryFilter.value
+    ? factors.value.filter(f => f.category === categoryFilter.value)
+    : factors.value
+)
+const factorPage = ref(1)
+const factorPageSize = 25
+const pagedFactors = computed(() => {
+  const start = (factorPage.value - 1) * factorPageSize
+  return filteredFactors.value.slice(start, start + factorPageSize)
+})
 
 function categoryLabel(c: string): string {
   const m: Record<string, string> = { style: '风格', industry: '行业', country: '国家/地区', macro: '宏观', statistical: '统计', alpha: 'Alpha信号', asset_class: '资产类', custom: '自定义' }
@@ -598,21 +660,40 @@ function historyCell(month: string, factorId: string): number | null {
   return hit ? hit.beta : null
 }
 
-async function loadMatrix() {
+async function loadMatrix(offset = matrixOffset.value) {
   matrixLoading.value = true
+  matrixLoadError.value = ''
+  matrixOffset.value = offset
   try {
-    const params: Record<string, string> = {}
+    const params: Record<string, string | number> = { limit: matrixLimit, offset }
     if (matrixAsOf.value) params.as_of = matrixAsOf.value + '-01'
+    if (matrixSymbols.value.trim()) params.symbols = matrixSymbols.value.trim()
+    if (matrixGroupId.value) params.group_id = matrixGroupId.value
+    if (matrixSearch.value.trim()) params.search = matrixSearch.value.trim()
     matrix.value = (await api.get<ExposureMatrix>('/research/factors/exposure-matrix', { params })).data
+    matrixTotal.value = matrix.value.total_assets ?? matrix.value.assets?.length ?? 0
     if (!matrixAsOf.value && matrix.value.as_of) {
       matrixAsOf.value = matrix.value.as_of!.slice(0, 7)
     }
   } catch (e: any) {
+    matrix.value = { as_of: null, factors: [], assets: [] }
     const msg = e?.response?.data?.detail || e?.message || '查询失败'
-    toast.show(`暴露矩阵查询失败：${msg}`, 'error')
+    matrixLoadError.value = `暴露矩阵查询失败：${msg}（可尝试缩小标的范围）`
   } finally {
     matrixLoading.value = false
   }
+}
+
+async function loadMatrixMeta() {
+  try {
+    const { data } = await api.get<{ months: string[]; latest: string | null }>('/research/factors/exposure-months')
+    availableMonths.value = data.months
+    latestMonth.value = (data.latest || '').slice(0, 7)
+  } catch { /* 选择器退化为手动输入月份 */ }
+  try {
+    const { data } = await api.get<{ id: string; name: string; asset_ids: string[] }[]>('/research/assets/groups')
+    assetGroups.value = data
+  } catch { assetGroups.value = [] }
 }
 
 async function recomputeExposures() {
@@ -727,8 +808,8 @@ function openAgentModal() {
 }
 
 onMounted(async () => {
-  await Promise.all([loadFactors(), loadPooledAssets(), loadEvaluations()])
-  await loadMatrix()
+  await Promise.all([loadFactors(), loadPooledAssets(), loadEvaluations(), loadMatrixMeta()])
+  await loadMatrix(0)
   // Default contribution range: last 3 full months ending at the CURRENT month
   // (exposures are recomputed at the latest month-end; a first-of-month end for
   // a past month would find no exposure rows on or before it).

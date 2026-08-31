@@ -63,7 +63,9 @@ def get_next_rebalance_date(current_date: str, rebalance_freq: str) -> str:
 
 
 def generate_signal(strategy_code: str, params: dict, universe: list[str],
-                    db_path: str = "finkit.db", rebalance_freq: str = "monthly") -> dict:
+                    db_path: str = "finkit.db", rebalance_freq: str = "monthly",
+                    current_weights: dict | None = None, timeout: int = 60,
+                    max_history_days: int = 750) -> dict:
     """Generate signal by running strategy on up-to-today data.
 
     Uses the same subprocess runner pattern as finkit_strategy/runner.py.
@@ -73,11 +75,18 @@ def generate_signal(strategy_code: str, params: dict, universe: list[str],
     import tempfile, os, sqlite3
 
     today = date.today().isoformat()
+    # 信号只需要回看窗口（动量/波动），不载全部历史——池子扩到数千只时
+    # 全量加载会让 JSON 与子进程时间爆炸。750 天覆盖 min_history≤500+252 窗。
+    from datetime import timedelta
+    history_floor = (date.today() - timedelta(days=max_history_days)).isoformat()
 
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
 
-        # Pool: pooled research assets, keyed by symbol for the strategy
+        # Pool: pooled research assets, keyed by symbol for the strategy.
+        # When the strategy binds a universe (universe 非空), ONLY load those —
+        # 否则绑定组合的策略会在全池上跑出错误信号。
+        uni_set = {u for u in (universe or []) if u}
         pool = []
         symbol_to_id: dict[str, str] = {}
         arows = conn.execute(
@@ -86,6 +95,8 @@ def generate_signal(strategy_code: str, params: dict, universe: list[str],
             "WHERE status = 'pooled'"
         ).fetchall()
         for a in arows:
+            if uni_set and a["symbol"] not in uni_set:
+                continue
             symbol_to_id[a["symbol"]] = a["id"]
             pool.append({
                 "id": a["id"], "symbol": a["symbol"], "name": a["name"],
@@ -105,9 +116,9 @@ def generate_signal(strategy_code: str, params: dict, universe: list[str],
             id_placeholders = ",".join("?" for _ in ids)
             rows = conn.execute(
                 "SELECT asset_id, date, COALESCE(nav, close) AS px FROM research_prices "
-                f"WHERE asset_id IN ({id_placeholders}) AND date <= ? "
+                f"WHERE asset_id IN ({id_placeholders}) AND date <= ? AND date >= ? "
                 "ORDER BY asset_id, date",
-                [*ids, today],
+                [*ids, today, history_floor],
             ).fetchall()
             for r in rows:
                 sym = id_to_symbol.get(r["asset_id"])
@@ -160,7 +171,8 @@ def generate_signal(strategy_code: str, params: dict, universe: list[str],
         "returns": returns,
         "factor_values": {},
         "factor_exposures": factor_exposures,
-        "current_weights": {},
+        # 真实持仓权重（按最新净值计），让缓冲带等持仓感知逻辑在线上同样生效
+        "current_weights": current_weights or {},
         "rebalance_dates": rebalance_dates,
     }
 
@@ -169,12 +181,18 @@ def generate_signal(strategy_code: str, params: dict, universe: list[str],
         input_path = f.name
 
     try:
-        result = run_strategy_in_subprocess(input_path, timeout=30)
+        result = run_strategy_in_subprocess(input_path, timeout=timeout)
 
         if result["status"] != "ok":
             return {"status": "error", "error": result.get("error", "Strategy execution failed")}
 
         weights = result["weights"].get(today, {})
+        # 与回测引擎同口径归一化：负权重截 0 后除以总和，防止信号权重超 100%
+        gross = sum(max(0.0, float(v)) for v in weights.values())
+        if gross > 0:
+            weights = {k: max(0.0, float(v)) / gross for k, v in weights.items()}
+        else:
+            weights = {k: 0.0 for k in weights}
 
         # Compute risk status
         risk_status = compute_risk_status(weights, factor_exposures)

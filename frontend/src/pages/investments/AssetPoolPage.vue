@@ -11,6 +11,22 @@
         <button @click="activeTab = 'stats'" :class="['px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px', activeTab === 'stats' ? 'border-accent-primary text-accent-primary' : 'border-transparent text-text-secondary hover:text-text-primary']">
           统计
         </button>
+        <button
+          :class="['px-4 py-2 text-sm font-medium border-b-2 -mb-px', activeTab === 'hot' ? 'border-accent-primary text-accent-primary' : 'border-transparent text-text-secondary hover:text-text-primary']"
+          @click="activeTab = 'hot'"
+        >热点</button>
+        <select v-if="activeTab !== 'stats'" v-model="serverSort"
+          @change="page = 1; load()"
+          class="ml-auto px-2 py-1.5 text-xs border border-border-default rounded-md text-text-secondary"
+          title="全库级排序（基于预计算指标）">
+          <option value="">默认排序</option>
+          <option value="sharpe_1y">近1年夏普 高→低</option>
+          <option value="ret_252d">近1年收益 高→低</option>
+          <option value="ret_63d">近3月收益 高→低</option>
+          <option value="ret_21d">近1月收益 高→低</option>
+          <option value="mdd_1y">近1年回撤 小→大</option>
+          <option value="vol_1y">近1年波动 低→高</option>
+        </select>
       </div>
       <div class="flex gap-2 pb-2" v-if="activeTab !== 'stats'">
         <button @click="refreshAll" :disabled="refreshing" class="px-4 py-2 text-sm rounded-md border border-border-default text-text-secondary hover:bg-bg-tertiary flex items-center gap-1 disabled:opacity-50">
@@ -34,6 +50,7 @@
 
     <!-- 统计子 tab -->
     <AssetStatsTab v-if="activeTab === 'stats'" />
+    <HotTab v-if="activeTab === 'hot'" />
 
     <template v-else>
     <div class="flex items-center gap-3 mb-4">
@@ -771,6 +788,7 @@ import { Plus, RefreshCw, Search, X, Eye, PackagePlus, PackageMinus, Trash2, Edi
 import { Line } from 'vue-chartjs'
 import { Chart as ChartJS, LineElement, PointElement, CategoryScale, LinearScale, Tooltip, Legend, Filler } from 'chart.js'
 import { useApi } from '@/composables/useApi'
+import { apiLong } from '@/composables/useApi'
 import { useToast } from '@/composables/useToast'
 import BaseModal from '@/components/common/BaseModal.vue'
 import AssetStatsTab from './AssetStatsTab.vue'
@@ -787,7 +805,7 @@ const EXCHANGE_LABELS: Record<string, string> = { SH: '沪市', SZ: '深市', FU
 interface AssetRow extends ResearchAsset { _syncing?: boolean }
 
 const assets = ref<AssetRow[]>([])
-const activeTab = ref<'watchlist' | 'pooled' | 'stats'>('watchlist')
+const activeTab = ref<'watchlist' | 'pooled' | 'stats' | 'hot'>('watchlist')
 const search = ref('')
 const categoryFilter = ref('')
 const kindFilter = ref('')
@@ -802,6 +820,9 @@ const pageSize = ref(50)
 const total = ref(0)
 const pages = ref(1)
 const loading = ref(false)
+const statsById = ref<Record<string, any>>({})
+const serverSort = ref('')
+const serverOrder = ref<'asc' | 'desc'>('desc')
 const refreshing = ref(false)
 
 const watchCount = ref(0)
@@ -817,31 +838,6 @@ async function loadCounts() {
 }
 
 // 每日首次打开自动入池体检：刷新档案→硬违规/档案缺失踢回自选，toast 汇总
-const AUDIT_KEY = 'finkit_pool_audit_date'
-async function maybeAutoAudit() {
-  const today = new Date().toISOString().slice(0, 10)
-  if (localStorage.getItem(AUDIT_KEY) === today) return
-  localStorage.setItem(AUDIT_KEY, today)
-  if (!pooledCount.value) return
-  try {
-    const res = await api.post('/research/assets/batch-audit-pooled')
-    const rs = res.data as { status: string; reasons?: string[]; name: string }[]
-    if (!rs.length) return
-    const isQuota = (r: { reasons?: string[] }) => r.reasons?.some(x => x.includes('限额') || x.includes('申购状态'))
-    const kickedQuota = rs.filter(r => r.status === 'demoted' && isQuota(r))
-    const kickedStale = rs.filter(r => r.status === 'demoted' && !isQuota(r))
-    const failed = rs.filter(r => r.status === 'failed')
-    const kicked = kickedQuota.length + kickedStale.length
-    if (kicked || failed.length) {
-      const parts = [`踢出 ${kicked}`]
-      if (kickedQuota.length) parts.push(`额度受限 ${kickedQuota.length}`)
-      if (kickedStale.length) parts.push(`信息无法更新 ${kickedStale.length}`)
-      if (failed.length) parts.push(`刷新失败 ${failed.length}`)
-      show(`入池体检完成：${parts.join(' · ')}`, kicked ? 'warning' : 'info')
-      await load()
-    }
-  } catch { /* 自动体检失败不打扰 */ }
-}
 
 let searchTimer: ReturnType<typeof setTimeout> | null = null
 watch([activeTab, categoryFilter, kindFilter, classFilter, regionFilter, limitFilter, groupFilter], () => {
@@ -970,6 +966,11 @@ async function load() {
   try {
     const params: Record<string, unknown> = {
       page: page.value, page_size: pageSize.value, status: activeTab.value,
+      with_stats: 1,
+    }
+    if (serverSort.value) {
+      params.sort_by = serverSort.value
+      params.order = serverOrder.value
     }
     if (categoryFilter.value) params.category = categoryFilter.value
     if (kindFilter.value) params.fund_kind = kindFilter.value
@@ -979,7 +980,8 @@ async function load() {
     if (groupFilter.value) params.group_id = groupFilter.value
     if (search.value.trim()) params.search = search.value.trim()
     const res = await api.get('/research/assets', { params })
-    const env = res.data as { items: ResearchAsset[]; total: number; pages: number }
+    const env = res.data as { items: ResearchAsset[]; total: number; pages: number; stats?: Record<string, any> }
+    statsById.value = env.stats || {}
     assets.value = env.items as AssetRow[]
     total.value = env.total
     pages.value = env.pages
@@ -1466,7 +1468,7 @@ async function syncOne(a: AssetRow) {
     const [priceRes, profRes] = await Promise.all([
       api.post(`/research/assets/${a.id}/sync`),
       isFund
-        ? api.post('/research/assets/batch-refresh-profiles', { ids: [a.id] }).catch(() => null)
+        ? apiLong.post('/research/assets/batch-refresh-profiles', { ids: [a.id] }).catch(() => null)
         : Promise.resolve(null),
     ])
     const r = priceRes.data as SyncResult
@@ -1492,7 +1494,7 @@ async function refreshAll() {
     // 行情 + 档案（费率/限购/申购状态，跳过持仓抓取提速）并行
     const [pricesRes, profRes] = await Promise.all([
       api.post('/research/assets/refresh-prices'),
-      api.post('/research/assets/batch-refresh-profiles', { skip_holdings: true }, { timeout: 180000 }).catch(() => null),
+      apiLong.post('/research/assets/batch-refresh-profiles', { skip_holdings: true }).catch(() => null),
     ])
     const results = pricesRes.data as SyncResult[]
     const ok = results.filter(r => !r.error)
@@ -1726,6 +1728,6 @@ function fmtDate(v?: string): string {
   return v ? v.slice(0, 10) : '—'
 }
 
-onMounted(() => { load(); loadGroups(); loadCounts().then(maybeAutoAudit) })
+onMounted(() => { load(); loadGroups(); loadCounts() })
 onUnmounted(() => { if (pollTimer) clearTimeout(pollTimer) })
 </script>

@@ -152,6 +152,7 @@ def _main(argv: list[str] | None = None) -> int:
         "custom_factor_analysis": result.get("custom_factor_analysis"),
         "benchmark": result.get("benchmark"),
         "portfolio_factor_exposures": result.get("portfolio_factor_exposures"),
+        "factor_exposure_series": result.get("factor_exposure_series"),
         "rebalance_freq": args.freq,
         "params": params,
         "universe": universe,

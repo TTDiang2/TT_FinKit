@@ -262,18 +262,20 @@ async def recompute_exposures(
             for fid in res["betas"]:
                 key = (asset.id, me, fid)
                 existing = existing_map.get(key)
+                # params 快照不再逐行存储：同一配置 2.96M 行 × 2.2KB 曾吃掉 6.6GB
+                # （2026-08-29 事故）。回归配置由 window_days 列 + 调用参数可完全还原。
                 if existing is not None:
                     existing.beta = res["betas"][fid]
                     existing.t_stat = res["t_stats"][fid]
                     existing.r2 = res["r2"]
                     existing.method = res["method"]
                     existing.window_days = res["n_samples"]
-                    existing.params = params_snapshot
+                    existing.params = None
                 else:
                     new_row = FactorExposure(
                         asset_id=asset.id, as_of_date=me, factor_id=fid,
                         beta=res["betas"][fid], t_stat=res["t_stats"][fid], r2=res["r2"],
-                        method=res["method"], window_days=res["n_samples"], params=params_snapshot,
+                        method=res["method"], window_days=res["n_samples"], params=None,
                     )
                     db.add(new_row)
                     existing_map[key] = new_row

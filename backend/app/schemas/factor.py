@@ -99,6 +99,7 @@ class ExposureMatrix(BaseModel):
     as_of: Optional[str] = None
     factors: List[FactorResponse] = []
     assets: List[AssetExposureRow] = []
+    total_assets: Optional[int] = None  # 筛选口径下的总资产数（分页用）
 
 
 class ExposureHistoryPoint(BaseModel):

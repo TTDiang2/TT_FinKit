@@ -92,18 +92,40 @@
           </select>
         </div>
         <div>
-          <label class="block text-sm font-medium mb-1">标的范围（多选组合，限 ≤500 只）</label>
-          <div class="border border-border-default rounded-md p-2 max-h-32 overflow-y-auto bg-bg-primary">
+          <label class="block text-sm font-medium mb-1">标的范围（组合可多选，数量不限）</label>
+
+          <!-- 全部入池标的：一键全选，不受组合划分影响 -->
+          <label class="flex items-center gap-2 px-2 py-1.5 mb-1 text-sm rounded cursor-pointer bg-bg-tertiary hover:bg-accent-light border border-border-default">
+            <input type="checkbox" :checked="newForm.all_pooled" @change="toggleAllPooled" class="accent-accent-primary" />
+            <span class="flex-1 font-medium">全部入池标的</span>
+            <span class="text-xs text-text-muted">{{ pooledAssets.length || '—' }} 只</span>
+          </label>
+
+          <div class="border border-border-default rounded-md p-2 max-h-32 overflow-y-auto bg-bg-primary"
+               :class="newForm.all_pooled ? 'opacity-50' : ''">
             <label v-if="!assetGroups.length" class="text-xs text-text-muted px-1 py-1">无可用组合，先在标的面板创建</label>
-            <label v-for="g in assetGroups" :key="g.id" class="flex items-center gap-2 px-1 py-0.5 text-sm hover:bg-bg-tertiary rounded cursor-pointer">
+            <label v-for="g in assetGroups" :key="g.id" class="flex items-center gap-2 px-1 py-0.5 text-sm hover:bg-bg-tertiary rounded"
+                   :class="newForm.all_pooled ? 'cursor-not-allowed' : 'cursor-pointer'">
               <input type="checkbox" :checked="newForm.scope_group_ids.includes(g.id)"
+                :disabled="newForm.all_pooled"
                 @change="toggleScopeGroup(g.id)" class="accent-accent-primary" />
               <span class="flex-1 truncate">{{ g.name }}</span>
               <span class="text-xs text-text-muted">{{ g.asset_ids.length }}</span>
             </label>
           </div>
-          <div v-if="newForm.scope_group_ids.length" class="text-xs text-text-muted mt-1">
+
+          <div v-if="newForm.all_pooled" class="text-xs text-text-muted mt-1">
+            已选全部入池标的，下方组合选择已忽略
+          </div>
+          <div v-else-if="newForm.scope_group_ids.length" class="text-xs text-text-muted mt-1">
             已选 {{ newForm.scope_group_ids.length }} 个组合（去重后的标的池将在回测详情页冻结显示）
+          </div>
+
+          <div v-if="scopeUniverseCount > 0" class="text-xs mt-1" :class="scopeWarning ? 'text-warning' : 'text-text-muted'">
+            回测标的池约 {{ scopeUniverseCount }} 只
+          </div>
+          <div v-if="scopeWarning" class="text-xs mt-1 text-warning leading-relaxed">
+            {{ scopeWarning }}
           </div>
         </div>
         <div class="grid grid-cols-2 gap-3">
@@ -165,15 +187,45 @@ const newForm = ref({
   end_date: '',
   rebalance_freq: 'monthly',
   scope_group_ids: [] as string[],
+  all_pooled: false,
   universe: [] as string[],
   params: {},
 })
 
 function toggleScopeGroup(gid: string) {
+  if (newForm.value.all_pooled) return
   const i = newForm.value.scope_group_ids.indexOf(gid)
   if (i >= 0) newForm.value.scope_group_ids.splice(i, 1)
   else newForm.value.scope_group_ids.push(gid)
 }
+
+function toggleAllPooled() {
+  newForm.value.all_pooled = !newForm.value.all_pooled
+  // 勾上「全部入池」时清空组合选择，避免两路 scope 叠加歧义
+  if (newForm.value.all_pooled) newForm.value.scope_group_ids = []
+}
+
+// 预估池子大小：全池 -> 入池标的数；否则按所选组合去重合并
+const scopeUniverseCount = computed(() => {
+  if (newForm.value.all_pooled) return pooledAssets.value.length
+  const set = new Set<string>()
+  for (const gid of newForm.value.scope_group_ids) {
+    const g = assetGroups.value.find(x => x.id === gid)
+    if (g) for (const a of g.asset_ids) set.add(a)
+  }
+  return set.size
+})
+
+// 数量大只提示，不阻止——阈值与后端 _universe_warning 保持一致
+const scopeWarning = computed(() => {
+  const n = scopeUniverseCount.value
+  if (n > 10000) {
+    return `⚠ ${n} 只接近全市场，预计占用 4GB 以上内存、耗时可能达数十分钟。期间请勿关闭窗口；内存不足 16GB 建议分批跑。`
+  }
+  if (n > 2000) return `⚠ ${n} 只较大，可能占用 1~4GB 内存，回测耗时分钟级。`
+  if (n > 500) return `${n} 只较多，预计耗时数十秒到数分钟。`
+  return ''
+})
 
 // ---- 按策略分组（组内按创建时间倒序，组间按最近创建倒序） ----
 const strategyGroups = computed(() => {
@@ -257,8 +309,8 @@ async function createBacktest() {
   try {
     const strat = strategies.value.find(s => s.id === newForm.value.strategy_id)
     const groupIds = newForm.value.scope_group_ids
-    if (!groupIds.length) {
-      createError.value = '请至少选择一个标的组合'
+    if (!newForm.value.all_pooled && !groupIds.length) {
+      createError.value = '请选择标的范围：勾选「全部入池标的」或至少选择一个组合'
       return
     }
     const res = await api.post<BacktestResponse>('/backtests', {
@@ -267,12 +319,14 @@ async function createBacktest() {
       params: {},
       universe: [],
       group_ids: groupIds,
+      all_pooled: newForm.value.all_pooled,
       start_date: newForm.value.start_date,
       end_date: newForm.value.end_date,
       rebalance_freq: newForm.value.rebalance_freq,
     })
     showNew.value = false
     newForm.value.scope_group_ids = []
+    newForm.value.all_pooled = false
     if (res.data.warning) {
       createError.value = res.data.warning
     }

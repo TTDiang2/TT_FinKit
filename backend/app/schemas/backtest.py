@@ -8,6 +8,7 @@ class BacktestCreate(BaseModel):
     universe: list[str] = []  # symbols; 空 + group_id 时由后端展开
     group_id: Optional[str] = None  # 单组合模式（保留兼容）
     group_ids: list[str] = []      # 多组合模式（新）
+    all_pooled: bool = False       # True = 全部入池标的（无需前端传 18891 个代码）
     start_date: str  # YYYY-MM-DD
     end_date: str
     rebalance_freq: str = "monthly"

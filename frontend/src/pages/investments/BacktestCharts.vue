@@ -66,7 +66,16 @@
 
       <!-- 归因瀑布图 -->
       <div class="bg-white rounded-lg shadow-sm p-4">
-        <h3 class="text-sm font-medium mb-3">收益归因瀑布 <span class="text-xs text-text-muted font-normal">· 各标的累计贡献（总收益拆解）</span></h3>
+        <h3 class="text-sm font-medium mb-3">
+          收益归因瀑布
+          <span class="text-xs text-text-muted font-normal">
+            · 各标的累计贡献（每日权重×每日收益近似）·
+            <template v-if="waterfallStats">
+              净值总收益 {{ fmtPct(waterfallStats.totalRet) }} / 归因合计 {{ fmtPct(waterfallStats.attrSum) }}
+              （差额为费用与换仓残差）
+            </template>
+          </span>
+        </h3>
         <div style="height: 240px"><Bar v-if="waterfallData" :data="waterfallData" :options="wfOpts" /></div>
       </div>
 
@@ -81,9 +90,18 @@
 
       <!-- 组合因子暴露 -->
       <div class="bg-white rounded-lg shadow-sm p-4">
-        <h3 class="text-sm font-medium mb-3">组合因子暴露 <span class="text-xs text-text-muted font-normal">· 全程平均加权 β（时间均值）</span></h3>
+        <h3 class="text-sm font-medium mb-3">
+          组合因子暴露
+          <span class="text-xs text-text-muted font-normal">
+            · β=组合权重对各因子的敏感度 ·
+            <template v-if="expoSeriesData">每日时序（前 4 大因子，图例为因子均值）</template>
+            <template v-else>全程平均加权 β（时间均值）</template>
+            · 暴露高说明该因子是组合波动的主要来源
+          </span>
+        </h3>
         <div style="height: 260px">
-          <Bar v-if="expoData" :data="expoData" :options="expoOpts" />
+          <Line v-if="expoSeriesData" :data="expoSeriesData" :options="expoSeriesOpts" />
+          <Bar v-else-if="expoData" :data="expoData" :options="expoOpts" />
           <div v-else class="h-full flex items-center justify-center text-text-muted text-sm">无因子暴露数据（旧回测重新运行后自动生成）</div>
         </div>
       </div>
@@ -102,7 +120,7 @@ import type { BacktestResponse } from '@/types'
 
 ChartJS.register(LineElement, BarElement, PointElement, CategoryScale, LinearScale, Tooltip, Legend, Filler)
 
-const props = defineProps<{ backtest: BacktestResponse | null }>()
+const props = defineProps<{ backtest: BacktestResponse | null; factorNames?: Record<string, string> }>()
 const r = computed(() => props.backtest?.results)
 const RED = '#F44336'
 const GREEN = '#4CAF50'
@@ -334,6 +352,28 @@ const utilData = computed(() => {
 })
 
 // ---- 归因瀑布 ----
+const nameBySymbol = computed(() => {
+  const map: Record<string, string> = {}
+  for (const rec of r.value?.rebalance_records || []) {
+    for (const a of rec.period_stats?.attribution || []) {
+      if (a.symbol && a.name) map[a.symbol] = a.name
+    }
+  }
+  return map
+})
+function dispName(sym: string): string {
+  const n = nameBySymbol.value[sym] || props.factorNames?.[sym] || sym
+  return n.length > 9 ? n.slice(0, 9) + '…' : n
+}
+const waterfallStats = computed(() => {
+  const ns = navs.value
+  if (ns.length < 2) return null
+  const totalRet = ns[ns.length - 1].nav / ns[0].nav - 1
+  const recs = r.value?.rebalance_records || []
+  let attrSum = 0
+  for (const rec of recs) for (const a of rec.period_stats?.attribution || []) attrSum += a.contribution
+  return { totalRet, attrSum }
+})
 const waterfallData = computed(() => {
   const recs = r.value?.rebalance_records || []
   const agg = new Map<string, number>()
@@ -345,11 +385,13 @@ const waterfallData = computed(() => {
   if (!agg.size) return null
   const entries = [...agg.entries()].sort((a, b) => b[1] - a[1])
   const top = entries.slice(0, 5)
-  const rest = entries.slice(5).reduce((a, e) => a + e[1], 0)
-  const rows = top.map(e => ({ label: e[0], v: e[1] }))
-  if (entries.length > 5) rows.push({ label: '其他', v: rest })
+  const bottom = entries.slice(-3).filter(e => e[1] < 0 && !top.includes(e))
+  const mid = entries.filter(e => !top.includes(e) && !bottom.includes(e))
+  const rows = top.map(e => ({ label: dispName(e[0]), v: e[1] }))
+  if (mid.length) rows.push({ label: '其他', v: mid.reduce((a, e) => a + e[1], 0) })
+  rows.push(...bottom.reverse().map(e => ({ label: dispName(e[0]), v: e[1] })))
   const total = entries.reduce((a, e) => a + e[1], 0)
-  rows.push({ label: '合计', v: total })
+  rows.push({ label: '归因合计', v: total })
   let cum = 0
   const data: { y: number[]; label: string }[] = []
   const colors: string[] = []
@@ -414,5 +456,41 @@ const expoOpts = {
   responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
   scales: { ...baseScales, x: { ...baseScales.x, indexAxis: undefined } },
   indexAxis: 'y' as const,
+}
+
+// 因子暴露时序：取 |均值| 最大的前 4 个因子画每日 β 曲线
+const expoSeriesData = computed(() => {
+  const series = r.value?.factor_exposure_series || []
+  if (series.length < 10) return null
+  const sums: Record<string, number> = {}
+  for (const pt of series) {
+    for (const [k, v] of Object.entries(pt.exposures || {})) {
+      sums[k] = (sums[k] || 0) + (v || 0)
+    }
+  }
+  const topKeys = Object.entries(sums)
+    .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
+    .slice(0, 4)
+    .map(e => e[0])
+  if (!topKeys.length) return null
+  const palette = ['#f59e0b', '#3b82f6', '#10b981', '#a855f7']
+  return {
+    labels: series.map(pt => pt.date),
+    datasets: topKeys.map((k, i) => ({
+      label: `${props.factorNames?.[k] || k}（均值 ${(sums[k] / series.length).toFixed(2)}）`,
+      data: series.map(pt => pt.exposures?.[k] ?? null),
+      borderColor: palette[i % palette.length],
+      backgroundColor: 'transparent',
+      borderWidth: 1.2, pointRadius: 0, tension: 0.2,
+    })),
+  }
+})
+const expoSeriesOpts = {
+  responsive: true, maintainAspectRatio: false,
+  plugins: { legend: { labels: { boxWidth: 12, font: { size: 10 } } } },
+  scales: {
+    x: { ticks: { maxTicksLimit: 10, font: { size: 9 }, maxRotation: 0, autoSkipPadding: 15 }, grid: { display: false } },
+    y: { ticks: { font: { size: 9 } }, grid: { color: 'rgba(0,0,0,0.05)' } },
+  },
 }
 </script>

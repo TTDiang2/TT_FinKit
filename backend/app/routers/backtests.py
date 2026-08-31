@@ -95,18 +95,32 @@ async def _resolve_group_meta(db: AsyncSession, group_ids: list[str]) -> list[di
     return sorted(out, key=lambda x: group_ids.index(x["id"]) if x["id"] in group_ids else 999)
 
 
-_UNIVERSE_HARD_CAP = 5000
+def _universe_hard_cap() -> int:
+    """回测标的池硬上限，可用环境变量 FINKIT_BACKTEST_UNIVERSE_CAP 覆盖。
+
+    默认 25000：覆盖当前全池（18891 只）并留余量。
+    数量大不再禁止，只给提示；这里拦的是明显手误/异常量级。
+    """
+    import os
+    try:
+        return max(1000, int(os.environ.get("FINKIT_BACKTEST_UNIVERSE_CAP", "25000")))
+    except ValueError:
+        return 25000
 
 
 def _universe_warning(count: int) -> str | None:
-    """返回 >2000 标的时的提示文案，否则 None。"""
+    """标的数量分级提示——只如实告知耗时/内存，不阻止执行。"""
+    if count > 10000:
+        return (
+            f"⚠ 标的池 {count} 只（接近全市场），预计占用 4GB 以上内存、"
+            f"耗时可能达数十分钟。期间请勿关闭窗口；内存不足 16GB 建议分批回测。"
+        )
     if count > 2000:
         return (
             f"⚠ 标的池 {count} 只较大，可能占用 1~4GB 内存，回测耗时分钟级。"
-            f"建议拆成多个小组合对比验证而非一次跑全库。"
         )
     if count > 500:
-        return f"标的池 {count} 只已超过保守默认（500），预计耗时数十秒。"
+        return f"标的池 {count} 只较多，预计耗时数十秒到数分钟。"
     return None
 
 
@@ -128,7 +142,13 @@ async def create_backtest_endpoint(req: BacktestCreate,
     group_ids: list[str] = list(req.group_ids) if req.group_ids else ([req.group_id] if req.group_id else [])
     universe = list(req.universe)
 
-    if not universe and group_ids:
+    # 「全部入池标的」：直接按状态展开，前端不必传上万个代码
+    if req.all_pooled:
+        rows = await pub.execute(
+            select(ResearchAsset.symbol).where(ResearchAsset.status == "pooled")
+        )
+        universe = sorted({r[0] for r in rows.all()})
+    elif not universe and group_ids:
         rows = await pub.execute(
             select(ResearchAsset.symbol)
             .join(ResearchGroupMember, ResearchGroupMember.asset_id == ResearchAsset.id)
@@ -142,7 +162,7 @@ async def create_backtest_endpoint(req: BacktestCreate,
             detail="universe 为空：请选择至少一个组合，或确认所选组合内有已入池标的",
         )
 
-    if not group_ids and req.universe:
+    if not group_ids and not req.all_pooled and req.universe:
         known = set((await pub.execute(
             select(ResearchAsset.symbol).where(ResearchAsset.symbol.in_(req.universe))
         )).scalars().all())
@@ -153,10 +173,11 @@ async def create_backtest_endpoint(req: BacktestCreate,
                 detail=f"标的代码不存在或未入池：{', '.join(unknown)}（universe 请使用标的代码如 000300）",
             )
 
-    if len(universe) > _UNIVERSE_HARD_CAP:
+    cap = _universe_hard_cap()
+    if len(universe) > cap:
         raise HTTPException(
             status_code=400,
-            detail=f"标的池 {len(universe)} 只超过硬上限 {_UNIVERSE_HARD_CAP}（引擎内存 OOM 风险）。请缩小组合或分批回测。",
+            detail=f"标的池 {len(universe)} 只超过硬上限 {cap}。",
         )
 
     warning = _universe_warning(len(universe))

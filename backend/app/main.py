@@ -10,7 +10,22 @@ from .routers import auth, accounts, categories, tags, transactions, statistics,
 # runs on a single port (http://127.0.0.1:8100). Used by the desktop build.
 # Ports are offset from TT_Calendar (backend 8000 / Vite 5173) so both apps
 # can run side by side.
-FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+# 冻结包（PyInstaller）里 dist 被打进 _MEIPASS/frontend/dist，路径随之改变；
+# 桌面壳 FinKit.exe 打开的正是这个端口，所以这里必须能找到 SPA。
+def _resolve_frontend_dist() -> Path:
+    import sys
+    candidates = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidates.append(Path(meipass) / "frontend" / "dist")
+    candidates.append(Path(__file__).resolve().parent.parent.parent / "frontend" / "dist")
+    for c in candidates:
+        if c.is_dir() and (c / "index.html").is_file():
+            return c
+    return candidates[-1]
+
+
+FRONTEND_DIST = _resolve_frontend_dist()
 
 app = FastAPI(title="FinKit API", version="2.0.0")
 
@@ -61,6 +76,9 @@ async def on_startup():
     # 双库模式检测：两个 URL 都设置了且不等 → 按 public/private flag 分发建表
     pub_url = _resolve_public_url()
     prv_url = _resolve_private_url()
+    from .config import describe_db_mode
+    print(describe_db_mode(), flush=True)
+
     is_split = bool(pub_url and prv_url and pub_url != prv_url)
 
     public_tables = [t for t in Base.metadata.sorted_tables if t.info.get("public")]

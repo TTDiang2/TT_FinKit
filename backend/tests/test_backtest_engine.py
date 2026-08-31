@@ -436,7 +436,10 @@ class EqualWeight(Strategy):
             assert len(result["nav_series"]) == len(TRADING_DAYS)
             assert result["nav_series"][0]["nav"] == 1.0
             assert result["metrics"]["ann_return"] != 0.0
-            assert len(result["rebalance_records"]) == 2
+            # first-day deployment rebalance (warmup era) + 2 month-end rebalances
+            assert len(result["rebalance_records"]) == 3
+            assert result["rebalance_records"][0]["date"] == TRADING_DAYS[0]
+            assert any(t["side"] == "buy" for t in result["rebalance_records"][0]["trades"])
 
     def test_no_price_data_returns_error(self):
         with tempfile.TemporaryDirectory() as tmp:

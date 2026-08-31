@@ -81,13 +81,16 @@ async def maybe_run_daily_signal(max_wait_s: int = 90) -> dict:
     """
     import asyncio
     await asyncio.sleep(min(30, max_wait_s))  # 等价格更新/DB 就绪
-    from ..database import async_session_maker
+    # 双库：private（Signal/Investment）与 public（Strategy/ResearchAsset）分开取会话
+    from ..database import async_session_maker as private_maker, public_session_maker
 
     # 阶段 1：检查是否需要跑
-    async with async_session_maker() as db:
-        strat, user_id = await _active_strategy_user(db)
-        if not strat or not user_id:
-            return {"status": "skipped", "reason": "no active strategy"}
+    async with public_session_maker() as pub1:
+        strat, user_id = await _active_strategy_user(pub1)
+    if not strat or not user_id:
+        return {"status": "skipped", "reason": "no active strategy"}
+
+    async with private_maker() as db:
         today = date.today().isoformat()
         latest = (await db.execute(
             select(Signal).order_by(Signal.created_at.desc()).limit(1)
@@ -101,14 +104,14 @@ async def maybe_run_daily_signal(max_wait_s: int = 90) -> dict:
         if n_pos == 0:
             return {"status": "skipped", "reason": "no open positions"}
 
-    # 阶段 2：持仓层数据每日自动拉（独立短会话）
+    # 阶段 2：持仓层数据每日自动拉（独立短会话，跨库需两个 session）
     try:
-        async with async_session_maker() as db2:
+        async with private_maker() as db2, public_session_maker() as pub2:
             from .hot_movers import refresh_holdings_prices
-            await refresh_holdings_prices(db2, user_id)
+            await refresh_holdings_prices(db2, user_id, pub=pub2)
     except Exception:  # noqa: BLE001 — 数据层失败不影响信号
         pass
 
     # 阶段 3：跑信号（独立短会话）
-    async with async_session_maker() as db3, public_session_maker() as pub3:
+    async with private_maker() as db3, public_session_maker() as pub3:
         return await run_signal_for_user(db3, pub3, user_id)

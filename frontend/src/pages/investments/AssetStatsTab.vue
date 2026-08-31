@@ -240,6 +240,10 @@ async function load() {
       assets: selectedSymbols.value.join(','),
     }
     const res = await api.get('/research/stats/snapshot', { params })
+    if ((res.data as any)?.pending) {
+      // 后台重算中：10 秒后自动重试（serve-stale 模式，算完自动出图）
+      setTimeout(() => { if (!loading.value) load() }, 10000)
+    }
     snapshot.value = res.data
   } catch (e) {
     console.warn('stats snapshot failed', e)

@@ -35,6 +35,7 @@ const router = createRouter({
           ],
         },
         { path: 'reports', name: 'reports', component: () => import('@/pages/reports/ReportsPage.vue') },
+        { path: 'ai-advisor', name: 'ai-advisor', component: () => import('@/pages/advisor/AiAdvisorPage.vue') },
         { path: 'settings', name: 'settings', component: () => import('@/pages/settings/SettingsPage.vue') },
       ]
     }
