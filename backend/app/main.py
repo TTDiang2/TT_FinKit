@@ -101,6 +101,19 @@ async def on_startup():
         await conn.run_sync(Base.metadata.reflect)
         await run_lightweight_migrations(conn)
 
+    # 发行包 public 库认领：把带原作者 user_id 的标的/组合/因子数据改挂到
+    # 本机主用户名下（开发环境作者即主用户 → 天然 no-op）。
+    # 注册接口也会触发；这里兜底覆盖"已注册用户重启后端"的场景。
+    try:
+        import asyncio as _adopt_asyncio
+        from .services.db_adopt import adopt_public_assets
+        adopt = await _adopt_asyncio.to_thread(adopt_public_assets)
+        if adopt.get("changed"):
+            print(f"[adopt] public 库数据已认领: {adopt}", flush=True)
+    except Exception:  # noqa: BLE001 — 认领失败不阻塞启动
+        import traceback as _tb
+        print("[adopt] 认领失败（不影响启动）:\n" + _tb.format_exc(), flush=True)
+
     # 每日自动信号（用户拍板 2026-08-29）：当日未跑过且有持仓 → 后台补跑。
     # 延迟执行不阻塞启动；失败静默（信号页可手动重跑）。
     import asyncio as _asyncio

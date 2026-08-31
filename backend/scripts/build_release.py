@@ -46,14 +46,21 @@ def build_backend_exe(out_dir: Path) -> None:
     frontend/dist 必须一起打进去：桌面壳 FinKit.exe 只是个浏览器窗口，
     打开 http://127.0.0.1:8100，页面由后端自己 serve。少了这一步就是
     「127.0.0.1 拒绝连接」或者 "Frontend not built"。
+
+    PyInstaller 输出到独立 staging 目录（而非直接写 out_dir）：它覆盖同名
+    旧 exe 时要先删除，大文件删除容易被回收站拒绝（safe-delete/同名冲突），
+    staging 每次都是新目录就没有这个问题。打包完再复制进 out_dir。
     """
     entry = BACKEND / "entry_desktop.py"
     if not (FRONTEND_DIST / "index.html").is_file():
         raise SystemExit("frontend/dist/index.html 不存在——先 npm run build")
+    staging = ROOT / "build" / "pyinstaller" / "dist"
+    if staging.exists():
+        shutil.rmtree(staging, ignore_errors=True)
     run([
         sys.executable, "-m", "PyInstaller",
         "--onefile", "--name", "FinKitBackend",
-        "--distpath", str(out_dir),
+        "--distpath", str(staging),
         "--workpath", str(ROOT / "build" / "pyinstaller"),
         "--specpath", str(ROOT / "build" / "pyinstaller"),
         "--collect-all", "app",
@@ -66,13 +73,16 @@ def build_backend_exe(out_dir: Path) -> None:
         "--noconfirm",
         str(entry),
     ], cwd=str(BACKEND))
+    out_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(staging / "FinKitBackend.exe", out_dir / "FinKitBackend.exe")
 
 
 def prepare_dest(dest: Path) -> None:
     """增量清理：只删应用文件，保留 data/finkit_public.db（2.6GB，重拷很慢）。
 
     不做 rmtree —— release 目录里既有大文件也有对方的个人库，整目录删除
-    风险高且没必要。
+    风险高且没必要。将被 copy2 覆盖的应用文件删除失败时直接忽略
+    （覆盖写不需要先删；删不掉通常只是回收站拒绝同名文件）。
     """
     dest.mkdir(parents=True, exist_ok=True)
     for rel in ("FinKit.exe", "FinKit.pyw", "FinKit-Desktop.bat", "README.txt",
@@ -80,10 +90,16 @@ def prepare_dest(dest: Path) -> None:
                 "backend/backend.log"):
         p = dest / rel
         if p.is_file():
-            p.unlink()
+            try:
+                p.unlink()
+            except OSError:
+                pass  # copy2 会覆盖之
     # 误启动时产生的临时 sqlite 伴生文件
     for p in (dest / "data").glob("finkit_private.db-*"):
-        p.unlink()
+        try:
+            p.unlink()
+        except OSError:
+            pass
 
 
 def assemble(version: str, skip_backend_build: bool = False) -> Path:
@@ -120,6 +136,14 @@ def assemble(version: str, skip_backend_build: bool = False) -> Path:
         shutil.copy2(pub_src, pub_dst)
     else:
         print("[release] 复用已有 data/finkit_public.db（加 --refresh-data 可强制更新）", flush=True)
+
+    # 发行包绝不能带 private 库（本机测试/开发时可能已被后端生成过）
+    for junk in ("finkit_private.db", "finkit_private.db-shm", "finkit_private.db-wal",
+                 "finkit_public.db-shm", "finkit_public.db-wal", "backend.log"):
+        p = data / junk
+        if p.exists():
+            p.unlink()
+            print(f"[release] 清理发行包内的 {junk}", flush=True)
 
     readme = dest / "README.txt"
     readme.write_text(

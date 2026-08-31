@@ -25,6 +25,15 @@ async def register(req: RegisterRequest, db: AsyncSession = Depends(get_private_
     db.add(settings_model)
     await db.commit()
 
+    # 发行包场景：首个用户注册后立刻认领 public 库数据（标的/组合/因子），
+    # 否则要等下次重启才可见。开发环境作者即主用户 → no-op。
+    try:
+        from fastapi.concurrency import run_in_threadpool
+        from ..services.db_adopt import adopt_public_assets
+        await run_in_threadpool(adopt_public_assets)
+    except Exception:  # noqa: BLE001 — 认领失败不阻塞注册
+        pass
+
     token = create_access_token({"sub": user.id})
     return TokenResponse(access_token=token)
 
