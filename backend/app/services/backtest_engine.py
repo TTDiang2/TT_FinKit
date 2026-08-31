@@ -16,6 +16,7 @@ import os
 import sqlite3
 import subprocess
 import threading
+import time
 import sys
 import tempfile
 
@@ -1186,14 +1187,30 @@ input_path = sys.argv[1]
 output_path = sys.argv[2]
 progress_path = sys.argv[3] if len(sys.argv) > 3 else None
 
+_progress_value = [0.0]
+
 def _write_progress(p: float):
+    p = max(0.0, min(1.0, p))
+    _progress_value[0] = p
     if not progress_path:
         return
     try:
         with open(progress_path, "w", encoding="utf-8") as f:
-            f.write(str(max(0.0, min(1.0, p))))
+            f.write(str(p))
     except Exception:
         pass
+
+# 常驻心跳：每 5s 重写进度文件（即使值不变也刷 mtime）。
+# 父进程按 mtime 判活——长跑阶段（run_simulation 内部）无法细粒度回报，
+# 但只要线程在刷，父进程就不会误杀。
+def _heartbeat_loop():
+    import time as _time
+    while True:
+        _write_progress(_progress_value[0])
+        _time.sleep(5)
+
+import threading
+threading.Thread(target=_heartbeat_loop, daemon=True).start()
 
 _write_progress(0.02)  # 子进程已起，回报 2%
 
@@ -1325,7 +1342,8 @@ def _run_backtest_sync(
     rebalance_freq: str,
     db_path: str,
     cost_config: dict | None = None,
-    timeout: int = 120,
+    timeout: int = 180,
+    max_total_s: int = 3600,
     backtest_id: str | None = None,
     on_progress: "callable | None" = None,
 ) -> dict:
@@ -1378,12 +1396,34 @@ def _run_backtest_sync(
                 daemon=True,
             )
             poller.start()
-        try:
-            proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
-            return _error_result(f"Backtest execution timed out after {timeout}s")
+
+        # 心跳感知等待：progress 文件 mtime 持续更新 = 子进程活着（大池子
+        # run_simulation 阶段可能远超固定 timeout，只要心跳在就继续等）。
+        # 心跳中断超过 timeout 秒 → 判卡死 kill；总时长硬顶 max_total_s。
+        start_ts = time.monotonic()
+        last_alive = time.time()
+        while True:
+            ret = proc.poll()
+            if ret is not None:
+                break
+            now = time.time()
+            try:
+                mtime = os.path.getmtime(progress_path)
+                if mtime > last_alive:
+                    last_alive = mtime
+            except OSError:
+                pass
+            if now - last_alive > timeout:
+                proc.kill()
+                proc.wait()
+                return _error_result(
+                    f"回测心跳中断超过 {timeout}s（子进程可能卡死），已终止")
+            if time.monotonic() - start_ts > max_total_s:
+                proc.kill()
+                proc.wait()
+                return _error_result(
+                    f"回测总时长超过 {max_total_s}s 硬上限，已终止")
+            time.sleep(2)
         if poller:
             poller.join(timeout=2)
         with open(output_path, "r", encoding="utf-8") as f:
@@ -1434,7 +1474,8 @@ async def run_backtest_in_subprocess(
     rebalance_freq: str,
     db_path: str = "",
     cost_config: dict | None = None,
-    timeout: int = 120,
+    timeout: int = 180,
+    max_total_s: int = 3600,
     backtest_id: str | None = None,
     on_progress: "callable | None" = None,
 ) -> dict:
@@ -1449,6 +1490,6 @@ async def run_backtest_in_subprocess(
         db_path = public_db_path()
     return await asyncio.to_thread(
         _run_backtest_sync, strategy_code, params, universe, start_date,
-        end_date, rebalance_freq, db_path, cost_config, timeout,
+        end_date, rebalance_freq, db_path, cost_config, timeout, max_total_s,
         backtest_id, on_progress,
     )

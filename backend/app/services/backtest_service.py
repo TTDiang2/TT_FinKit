@@ -61,3 +61,15 @@ async def delete_backtest(db: AsyncSession, backtest_id: str) -> bool:
     await db.delete(bt)
     await db.commit()
     return True
+
+
+async def update_backtest_progress(db: AsyncSession, backtest_id: str, progress: float):
+    """心跳专用：只更新 progress/last_heartbeat，绝不触碰 status——
+    否则与完成时的 done 写入竞态，会把已完成的回测覆盖回 running。"""
+    from datetime import datetime
+    bt = await get_backtest(db, backtest_id)
+    if not bt:
+        return
+    bt.progress = progress
+    bt.last_heartbeat = datetime.utcnow()
+    await db.commit()

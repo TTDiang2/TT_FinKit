@@ -216,27 +216,23 @@ async def _run_backtest_async(backtest_id: str, strategy_code: str, params: dict
     """
     import threading
     import time
-    progress_state = {"value": 0.0}
+    progress_state = {"value": 0.0, "stop": False}
 
     def _on_progress(p: float):
         progress_state["value"] = p
 
     def _persist_loop():
         last = -1.0
-        while True:
+        while not progress_state["stop"]:
             time.sleep(3)
             p = progress_state["value"]
             if p == last:
-                if p >= 1.0:
-                    break
                 continue
             last = p
             try:
                 await_progress(backtest_id, p)
             except Exception:
                 pass
-            if p >= 1.0:
-                break
 
     progress_thread = threading.Thread(target=_persist_loop, daemon=True)
     progress_thread.start()
@@ -244,6 +240,8 @@ async def _run_backtest_async(backtest_id: str, strategy_code: str, params: dict
     from ..database import async_session_maker
     async with async_session_maker() as db:
         try:
+            # 进入执行即标 running（心跳函数不再碰 status，避免竞态覆盖 done）
+            await update_backtest_status(db, backtest_id, "running", progress=0.0)
             result = await run_backtest_in_subprocess(
                 strategy_code=strategy_code,
                 params=params,
@@ -257,13 +255,17 @@ async def _run_backtest_async(backtest_id: str, strategy_code: str, params: dict
                 backtest_id=backtest_id,
                 on_progress=_on_progress,
             )
+            # 先停心跳线程（等它退出），再写终态——防止 running 覆盖 done
             progress_state["value"] = 1.0
+            progress_state["stop"] = True
+            progress_thread.join(timeout=5)
             if result.get("status") == "ok":
                 await update_backtest_status(db, backtest_id, "done", results=result, progress=1.0)
             else:
                 await update_backtest_status(db, backtest_id, "failed",
                                               error=result.get("error", "backtest failed"))
         except Exception as e:
+            progress_state["stop"] = True
             await update_backtest_status(db, backtest_id, "failed", error=str(e))
 
 
@@ -272,14 +274,14 @@ def await_progress(backtest_id: str, progress: float) -> None:
     父协程被 to_thread 阻塞，无法 await；这里起一次性 loop 直连 DB。"""
     import asyncio as _aio
     from ..database import async_session_maker
-    from ..services.backtest_service import update_backtest_status
     from datetime import datetime
     from sqlalchemy import select
     from ..models.backtest import Backtest
 
     async def _go():
         async with async_session_maker() as db:
-            await update_backtest_status(db, backtest_id, "running", progress=progress)
+            from ..services.backtest_service import update_backtest_progress
+            await update_backtest_progress(db, backtest_id, progress)
             bt = (await db.execute(
                 select(Backtest).where(Backtest.id == backtest_id)
             )).scalar_one_or_none()
