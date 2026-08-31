@@ -66,15 +66,18 @@ async def on_startup():
     public_tables = [t for t in Base.metadata.sorted_tables if t.info.get("public")]
     private_tables = [t for t in Base.metadata.sorted_tables if t not in public_tables]
 
-    import asyncio as _aio
+    def _create_subset_sync(conn, tables):
+        for tbl in tables:
+            tbl.create(conn, checkfirst=True)
+
     if is_split:
-        for tbl in public_tables:
-            await _aio.to_thread(tbl.create, public_engine.sync_engine, checkfirst=True)
-        for tbl in private_tables:
-            await _aio.to_thread(tbl.create, private_engine.sync_engine, checkfirst=True)
+        async with public_engine.begin() as conn:
+            await conn.run_sync(_create_subset_sync, public_tables)
+        async with private_engine.begin() as conn:
+            await conn.run_sync(_create_subset_sync, private_tables)
     else:
-        for tbl in Base.metadata.sorted_tables:
-            await _aio.to_thread(tbl.create, private_engine.sync_engine, checkfirst=True)
+        async with private_engine.begin() as conn:
+            await conn.run_sync(_create_subset_sync, Base.metadata.sorted_tables)
 
     async with private_engine.begin() as conn:
         await conn.run_sync(Base.metadata.reflect)

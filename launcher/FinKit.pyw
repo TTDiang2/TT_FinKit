@@ -9,6 +9,7 @@ Runs without any console window (invoke via pythonw.exe / .pyw).
 4. When the app closes, stop the backend we started
 """
 import ctypes
+import os
 import subprocess
 import sys
 import time
@@ -22,6 +23,16 @@ EXE = APP_DIR / "FinKit.exe"
 PORT = 8000
 HEALTH_URL = f"http://127.0.0.1:{PORT}/api/health"
 LOG_FILE = APP_DIR / "backend.log"
+
+# release 布局检测: APP_DIR/backend/FinKitBackend.exe + APP_DIR/data/
+BACKEND_EXE = APP_DIR / "backend" / "FinKitBackend.exe"
+DATA_DIR = APP_DIR / "data"
+IS_RELEASE = BACKEND_EXE.exists() and DATA_DIR.exists()
+
+if IS_RELEASE:
+    # 数据库指向 data/ 下的双库文件；private.db 首次启动由后端 create_all 自动生成空库
+    os.environ.setdefault("PUBLIC_DATABASE_URL", f"sqlite+aiosqlite:///{(DATA_DIR / 'finkit_public.db').as_posix()}")
+    os.environ.setdefault("PRIVATE_DATABASE_URL", f"sqlite+aiosqlite:///{(DATA_DIR / 'finkit_private.db').as_posix()}")
 
 CREATE_NO_WINDOW = 0x08000000
 DETACHED_PROCESS = 0x00000008
@@ -50,13 +61,21 @@ def main():
     if not health_ok():
         try:
             with open(LOG_FILE, "ab") as log:
-                backend_proc = subprocess.Popen(
-                    [sys.executable, "-m", "uvicorn", "app.main:app",
-                     "--host", "127.0.0.1", "--port", str(PORT)],
-                    cwd=str(BACKEND_DIR),
-                    stdout=log, stderr=subprocess.STDOUT,
-                    creationflags=CREATE_NO_WINDOW | DETACHED_PROCESS,
-                )
+                if IS_RELEASE:
+                    backend_proc = subprocess.Popen(
+                        [str(BACKEND_EXE), "--host", "127.0.0.1", "--port", str(PORT)],
+                        cwd=str(APP_DIR),
+                        stdout=log, stderr=subprocess.STDOUT,
+                        creationflags=CREATE_NO_WINDOW | DETACHED_PROCESS,
+                    )
+                else:
+                    backend_proc = subprocess.Popen(
+                        [sys.executable, "-m", "uvicorn", "app.main:app",
+                         "--host", "127.0.0.1", "--port", str(PORT)],
+                        cwd=str(BACKEND_DIR),
+                        stdout=log, stderr=subprocess.STDOUT,
+                        creationflags=CREATE_NO_WINDOW | DETACHED_PROCESS,
+                    )
         except Exception as e:
             msgbox("FinKit", f"启动后端失败:\n{e}")
             return
