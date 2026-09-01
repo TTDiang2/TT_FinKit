@@ -11,10 +11,11 @@ rem    sync_db.bat pull       - download latest data from data repo
 rem    sync_db.bat restore    - restore local db from a backup snapshot
 rem
 rem  What gets synced:
-rem    - backend\finkit.db   (ALL app data: accounts, transactions,
-rem      investments, research assets/pool, factors, strategies,
-rem      backtests, signals, user settings ...)
-rem    - strategies\*.py     (strategy files, they live OUTSIDE the db)
+rem    - backend\finkit_private.db (accounts, transactions, investments,
+rem      backtests, signals, user settings -- personal data ONLY)
+rem    - strategies\*.py           (strategy files, live OUTSIDE the db)
+rem  NOTE: finkit_public.db (assets/factors/prices) is NOT synced here;
+rem  sync it with your own cloud drive.
 rem
 rem  Safety:
 rem    - SQLite WAL is checkpointed before every copy so no recent
@@ -31,7 +32,7 @@ set "ROOT=%~dp0"
 set "ROOT=%ROOT:~0,-1%"
 set "DATA_REPO_URL=https://github.com/TTDiang2/TT_FinKit_Data.git"
 set "DATA_DIR=%ROOT%\..\TT_FinKit_Data"
-set "LOCAL_DB=%ROOT%\backend\finkit.db"
+set "LOCAL_DB=%ROOT%\backend\finkit_private.db"
 set "STRATEGIES_DIR=%ROOT%\strategies"
 set "BACKUP_DIR=%DATA_DIR%\backups"
 set "REMOTE_BRANCH=main"
@@ -96,7 +97,7 @@ if not "%BACKEND_RUNNING%"=="0" (
 )
 
 rem ---- flush SQLite WAL into the main db file before copying ----
-echo [PREP] Flushing SQLite WAL (ensuring all data is inside finkit.db) ...
+echo [PREP] Flushing SQLite WAL (ensuring all data is inside finkit_private.db) ...
 python -c "import sqlite3; c = sqlite3.connect(r'%LOCAL_DB%'); c.execute('PRAGMA wal_checkpoint(TRUNCATE)'); c.close()" >nul 2>&1
 if errorlevel 1 echo   [WARN] WAL checkpoint skipped (python or db not available).
 
@@ -138,10 +139,16 @@ goto :conflict_keep_local
 echo [2/4] Keeping local - resetting data repo to remote state ...
 git -C "%DATA_DIR%" reset --hard origin/%REMOTE_BRANCH% >nul 2>&1
 echo [3/4] Copying local database + strategies ...
-copy /Y "%LOCAL_DB%" "%DATA_DIR%\finkit.db" >nul
+copy /Y "%LOCAL_DB%" "%DATA_DIR%\finkit_private.db" >nul
 call :sync_strategies_to_datarepo
+rem    - backend\finkit_private.db (accounts, transactions, investments,
+inkit.db" (
+    git -C "%DATA_DIR%" rm -q --cached finkit.db >nul 2>&1
+rem    - backend\finkit_private.db (accounts, transactions, investments,
+inkit.db" >nul 2>&1
+)
 echo [4/4] Force pushing local database ...
-git -C "%DATA_DIR%" add finkit.db strategies
+git -C "%DATA_DIR%" add finkit_private.db strategies
 git -C "%DATA_DIR%" commit -m "sync: local db wins" >nul 2>&1
 git -C "%DATA_DIR%" push --force-with-lease origin %REMOTE_BRANCH%
 if errorlevel 1 (
@@ -159,7 +166,7 @@ exit /b 0
 echo [2/4] Keeping remote - resetting data repo ...
 git -C "%DATA_DIR%" reset --hard origin/%REMOTE_BRANCH% >nul 2>&1
 echo [3/4] Copying remote database + strategies into local ...
-copy /Y "%DATA_DIR%\finkit.db" "%LOCAL_DB%" >nul
+copy /Y "%DATA_DIR%\finkit_private.db" "%LOCAL_DB%" >nul
 call :sync_strategies_from_datarepo
 echo [4/4] Done.
 echo.
@@ -170,16 +177,23 @@ exit /b 0
 
 :push_clean
 echo [2/4] Copying local database + strategies into data repo ...
-copy /Y "%LOCAL_DB%" "%DATA_DIR%\finkit.db" >nul
+copy /Y "%LOCAL_DB%" "%DATA_DIR%\finkit_private.db" >nul
 if errorlevel 1 (
     echo [ERROR] Cannot copy %LOCAL_DB%. Does it exist?
     pause
     exit /b 1
 )
 call :sync_strategies_to_datarepo
+rem drop legacy single-db file from data repo tree (kept in history anyway)
+rem    - backend\finkit_private.db (accounts, transactions, investments,
+inkit.db" (
+    git -C "%DATA_DIR%" rm -q --cached finkit.db >nul 2>&1
+rem    - backend\finkit_private.db (accounts, transactions, investments,
+inkit.db" >nul 2>&1
+)
 echo [3/4] Committing ...
-git -C "%DATA_DIR%" add finkit.db strategies
-git -C "%DATA_DIR%" commit -m "sync: finkit.db + strategies" >nul 2>&1
+git -C "%DATA_DIR%" add finkit_private.db strategies
+git -C "%DATA_DIR%" commit -m "sync: finkit_private.db + strategies" >nul 2>&1
 echo [4/4] Pushing ...
 git -C "%DATA_DIR%" push origin %REMOTE_BRANCH%
 if errorlevel 1 (
@@ -206,7 +220,7 @@ if errorlevel 1 (
     exit /b 1
 )
 echo [3/3] Copying database + strategies into local ...
-copy /Y "%DATA_DIR%\finkit.db" "%LOCAL_DB%" >nul
+copy /Y "%DATA_DIR%\finkit_private.db" "%LOCAL_DB%" >nul
 call :sync_strategies_from_datarepo
 echo.
 echo Done. Database restored from private repo.
@@ -258,7 +272,7 @@ if not exist "%LOCAL_DB%" (
     exit /b 0
 )
 for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "Get-Date -Format yyyyMMdd_HHmmss"`) do set "TS=%%i"
-set "BK=%BACKUP_DIR%\finkit.db.%TS%.bak"
+set "BK=%BACKUP_DIR%\finkit_private.db.%TS%.bak"
 copy /Y "%LOCAL_DB%" "%BK%" >nul
 echo   backed up: %BK%
 rem keep only latest 20 backups

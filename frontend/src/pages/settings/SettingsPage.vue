@@ -229,6 +229,37 @@
       </div>
     </div>
 
+    <!-- 数据同步（私有库） -->
+    <div class="bg-white rounded-lg shadow-sm p-6 mt-6">
+      <h2 class="font-semibold mb-1">数据同步（私有库 → GitHub）</h2>
+      <p class="text-xs text-text-muted mb-4">多台电脑间同步个人数据（finkit_private.db + strategies 策略文件）。公开库（标的/因子/价格）不在此同步，请用你自己的网盘。快照走 GitHub Releases 滚动保留最新 4 份；Token 需要该仓库的读写权限（PAT）。</p>
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+        <div><label class="block text-sm font-medium mb-1">仓库</label>
+          <input v-model="syncForm.repo" placeholder="用户名/仓库名（私有仓库）" class="w-full px-3 py-2 border border-border-default rounded-md" />
+        </div>
+        <div><label class="block text-sm font-medium mb-1">Release Tag</label>
+          <input v-model="syncForm.tag" placeholder="db-snapshot" class="w-full px-3 py-2 border border-border-default rounded-md" />
+        </div>
+        <div><label class="block text-sm font-medium mb-1">GitHub Token</label>
+          <input v-model="syncForm.token" type="password" autocomplete="new-password"
+            :placeholder="syncCfg.token_set ? `已配置（…${syncCfg.token_tail}，留空保持不变）` : 'ghp_…'"
+            class="w-full px-3 py-2 border border-border-default rounded-md" />
+        </div>
+      </div>
+      <div class="flex items-center gap-3 flex-wrap">
+        <button @click="saveSyncConfig" :disabled="syncBusy" class="px-4 py-2 bg-accent-primary text-white text-sm rounded-md hover:bg-accent-hover disabled:opacity-50">保存配置</button>
+        <button @click="checkRemote" :disabled="syncBusy" class="px-4 py-2 border border-border-default text-sm rounded-md hover:bg-bg-tertiary disabled:opacity-50">查看云端快照</button>
+        <button @click="doPush" :disabled="syncBusy" class="px-4 py-2 border border-border-default text-sm rounded-md hover:bg-bg-tertiary disabled:opacity-50">推送快照</button>
+        <button @click="doPull" :disabled="syncBusy" class="px-4 py-2 border border-expense-color text-expense-color text-sm rounded-md hover:bg-red-50 disabled:opacity-50">从云端拉取</button>
+      </div>
+      <div v-if="syncRemote && syncRemote.asset" class="mt-3 text-sm text-text-secondary">
+        云端最新：<span class="font-medium">{{ syncRemote.asset.name }}</span>
+        （{{ syncRemote.asset.size_mb }} MB，推送于 {{ new Date(syncRemote.asset.created_at).toLocaleString('zh-CN') }}）
+      </div>
+      <div v-else-if="syncRemote" class="mt-3 text-sm text-text-muted">云端还没有任何快照（可先「推送快照」）。</div>
+      <div v-if="syncMsg" class="mt-2 text-sm text-text-secondary">{{ syncMsg }}</div>
+    </div>
+
     <!-- 账户编辑弹窗（含校验口径公式编辑器） -->
     <BaseModal v-if="showAccModal" :title="editAcc ? '编辑账户' : '添加账户'" @close="showAccModal = false">
       <div class="space-y-3">
@@ -617,6 +648,61 @@ async function setDefaultPreset(id: string) {
   catch (e: any) { show(e.response?.data?.detail || '设置失败', 'error') }
 }
 
+// ---- 数据同步（私有库） ----
+const syncForm = ref({ repo: '', tag: 'db-snapshot', token: '' })
+const syncCfg = ref<{ token_set: boolean; token_tail: string; private_db?: string }>({ token_set: false, token_tail: '' })
+const syncRemote = ref<any>(null)
+const syncBusy = ref(false)
+const syncMsg = ref('')
+
+async function loadSyncConfig() {
+  try {
+    const { data } = await api.get('/sync/config')
+    syncForm.value.repo = data.repo || ''
+    syncForm.value.tag = data.tag || 'db-snapshot'
+    syncCfg.value = data
+  } catch { /* 未登录等场景静默 */ }
+}
+async function saveSyncConfig() {
+  if (!syncForm.value.token && !syncCfg.value.token_set) {
+    show('首次配置需要填写 GitHub Token（需该仓库读写权限）', 'warning'); return
+  }
+  try {
+    const { data } = await api.put('/sync/config', {
+      repo: syncForm.value.repo, tag: syncForm.value.tag, token: syncForm.value.token || null,
+    })
+    syncCfg.value = data
+    syncForm.value.token = ''
+    show('同步配置已保存', 'success')
+  } catch (e: any) { show(e.response?.data?.detail || '保存失败', 'error') }
+}
+async function checkRemote() {
+  syncBusy.value = true; syncRemote.value = null; syncMsg.value = ''
+  try {
+    const { data } = await api.get('/sync/remote')
+    syncRemote.value = data
+  } catch (e: any) { show(e.response?.data?.detail || '查询失败', 'error') }
+  finally { syncBusy.value = false }
+}
+async function doPush() {
+  syncBusy.value = true; syncMsg.value = '正在生成快照并上传…'
+  try {
+    const { data } = await api.post('/sync/push', {}, { timeout: 300000 })
+    syncMsg.value = `已推送 ${data.asset}（${data.size_mb} MB），云端滚动保留最新 4 份`
+    checkRemote()
+  } catch (e: any) { show(e.response?.data?.detail || '推送失败', 'error'); syncMsg.value = '' }
+  finally { syncBusy.value = false }
+}
+async function doPull() {
+  if (!confirm('将从云端拉取最新快照并覆盖本机私有库（原库自动备份到 backups/ 目录），确定继续？')) return
+  syncBusy.value = true; syncMsg.value = '正在下载并还原…'
+  try {
+    const { data } = await api.post('/sync/pull', {}, { timeout: 300000 })
+    syncMsg.value = `已还原 ${data.asset}；原库备份：${data.backup || '—'}；还原策略 ${data.strategies_restored} 个。如页面数据未刷新，请刷新浏览器/重启应用。`
+  } catch (e: any) { show(e.response?.data?.detail || '拉取失败', 'error'); syncMsg.value = '' }
+  finally { syncBusy.value = false }
+}
+
 onMounted(async () => {
   form.value = { ...form.value, ...settingsStore.settings, ifind_password: '' }
   hasIfindPwd.value = !!settingsStore.settings.has_ifind_password
@@ -624,7 +710,7 @@ onMounted(async () => {
     ai_search_backend: (settingsStore.settings.ai_search_backend as string) || 'duckduckgo',
     ai_search_api_key: (settingsStore.settings.ai_search_api_key as string) || ''
   }
-  await Promise.all([accStore.fetchAccounts(), catStore.fetchCategories(), tagStore.fetchTags(), aiPresetsStore.fetchPresets()])
+  await Promise.all([accStore.fetchAccounts(), catStore.fetchCategories(), tagStore.fetchTags(), aiPresetsStore.fetchPresets(), loadSyncConfig()])
   if (!catStore.categories.length) {
     const defaults: { type: 'income' | 'expense'; name: string; color: string; is_necessary?: boolean }[] = [
       { type: 'expense', name: '餐饮', color: '#F44336', is_necessary: true }, { type: 'expense', name: '交通', color: '#2196F3', is_necessary: true },

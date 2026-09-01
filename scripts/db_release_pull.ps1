@@ -1,9 +1,12 @@
-# Pull the newest finkit.db snapshot from the data repo's GitHub Release,
-# backing up the local DB first. Restart the backend afterwards.
+# Pull the newest finkit_private.db snapshot from the data repo's GitHub
+# Release, backing up the local DB first. Restart the backend afterwards.
+# Dual-db mode: only the PRIVATE db (+ strategies/*.py) is synced here.
+# finkit_public.db (assets/factors/prices) is NOT synced -- use your cloud drive.
 param(
     [string]$Repo = "TTDiang2/TT_FinKit_Data",
     [string]$Tag = "db-snapshot",
     [string]$BackendDir = "$PSScriptRoot\..\backend",
+    [string]$StrategiesDir = "$PSScriptRoot\..\strategies",
     [switch]$Force
 )
 $ErrorActionPreference = "Stop"
@@ -28,16 +31,24 @@ if (-not $asset) { Write-Error "Release '$Tag' has no assets."; exit 1 }
 Write-Host "[1/3] downloading $($asset.name) ($([math]::Round($asset.size/1MB,1)) MB, pushed $($asset.created_at))..."
 
 $tmpZip = Join-Path $env:TEMP "finkit_pull.zip"
+$exDir = Join-Path $env:TEMP "finkit_pull"
 Invoke-WebRequest -Uri $asset.url -Headers $headers -OutFile $tmpZip
 
 # --- backup local db, replace ---
-$db = Join-Path $BackendDir "finkit.db"
+$db = Join-Path $BackendDir "finkit_private.db"
 $backup = "$db.bak-$(Get-Date -Format yyyyMMdd_HHmmss)"
 Move-Item $db $backup -ErrorAction SilentlyContinue
 foreach ($side in @("$db-wal", "$db-shm")) { Remove-Item $side -Force -ErrorAction SilentlyContinue }
-Expand-Archive -Path $tmpZip -DestinationPath (Join-Path $env:TEMP "finkit_pull") -Force
-Move-Item (Join-Path (Join-Path $env:TEMP "finkit_pull") "finkit.db") $db -Force
-Remove-Item $tmpZip -Force; Remove-Item (Join-Path $env:TEMP "finkit_pull") -Recurse -Force -ErrorAction SilentlyContinue
+Expand-Archive -Path $tmpZip -DestinationPath $exDir -Force
+Move-Item (Join-Path $exDir "finkit_private.db") $db -Force
+
+# --- restore strategies/*.py if the snapshot carries them ---
+if (Test-Path (Join-Path $exDir "strategies")) {
+    if (-not (Test-Path $StrategiesDir)) { New-Item -ItemType Directory -Path $StrategiesDir -Force | Out-Null }
+    Copy-Item (Join-Path $exDir "strategies\*") $StrategiesDir -Recurse -Force
+    Write-Host "      strategies/*.py restored"
+}
+Remove-Item $tmpZip -Force; Remove-Item $exDir -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host "[2/3] restored. old db kept at: $backup"
 Write-Host "[3/3] done. PLEASE RESTART the FinKit backend so SQLite reopens cleanly."
