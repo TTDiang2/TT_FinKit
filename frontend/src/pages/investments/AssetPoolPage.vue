@@ -545,6 +545,17 @@
           <button @click="submitNewGroup" :disabled="!newGroupName.trim()"
             class="px-4 py-2 text-sm rounded-md bg-accent-primary text-white hover:bg-accent-hover disabled:opacity-50 flex items-center gap-1"><Plus :size="14" /> 创建空组合</button>
         </div>
+        <div class="flex items-start gap-2 border-t border-border-default pt-3">
+          <div class="flex-1 space-y-1">
+            <input v-model="codeGroupName" placeholder="按代码创建：组合名称" class="w-full px-3 py-2 text-sm border border-border-default rounded-md" />
+            <textarea v-model="codeGroupSymbols" rows="2"
+              placeholder="逗号/空格/换行分隔标的代码，如：000217, 006485, 023145&#10;（不存在的代码会被忽略并提示）"
+              class="w-full px-3 py-2 text-sm border border-border-default rounded-md font-mono"></textarea>
+          </div>
+          <button @click="createGroupFromCodes" :disabled="!codeGroupName.trim() || !codeGroupSymbols.trim() || creatingFromCodes"
+            class="px-4 py-2 text-sm rounded-md bg-accent-primary text-white hover:bg-accent-hover disabled:opacity-50 mt-0.5">
+            {{ creatingFromCodes ? '创建中…' : '按代码创建' }}</button>
+        </div>
         <div class="border border-border-default rounded-md divide-y divide-border-default max-h-80 overflow-y-auto">
           <div v-for="g in groups" :key="g.id" class="px-3 py-2">
             <div class="flex items-center gap-3">
@@ -1069,6 +1080,43 @@ const groups = ref<ResearchGroup[]>([])
 const showGroupsModal = ref(false)
 const newGroupName = ref('')
 const newGroupNote = ref('')
+const codeGroupName = ref('')
+const codeGroupSymbols = ref('')
+const creatingFromCodes = ref(false)
+
+async function createGroupFromCodes() {
+  const name = codeGroupName.value.trim()
+  const raw = codeGroupSymbols.value.trim()
+  if (!name || !raw) return
+  const syms = [...new Set(raw.split(/[\s,，;；]+/).map(s => s.trim()).filter(Boolean))]
+  if (!syms.length) return
+  creatingFromCodes.value = true
+  try {
+    // 当前列表（分页内）可能不含全部代码——用 ids 全集端点按代码精确解析
+    const res = await api.get('/research/assets/ids', { params: { search: '' } })
+    const all = res.data.items as { id: string; symbol: string; name: string }[]
+    const bySym = new Map(all.map(a => [a.symbol, a]))
+    const found: string[] = []
+    const missing: string[] = []
+    for (const s of syms) {
+      const a = bySym.get(s)
+      if (a) found.push(a.id); else missing.push(s)
+    }
+    if (!found.length) {
+      show(`没有任何代码匹配到标的（缺失：${syms.slice(0, 5).join('、')}${syms.length > 5 ? '…' : ''}）`, 'error')
+      return
+    }
+    const r = await api.post('/research/assets/groups', { name, note: `按代码创建 ${found.length} 只`, asset_ids: found })
+    await loadGroups()
+    show(`组合「${(r.data as ResearchGroup).name}」已创建（${found.length} 只${missing.length ? `，忽略未匹配 ${missing.length} 个代码` : ''}）`, 'success')
+    codeGroupName.value = ''
+    codeGroupSymbols.value = ''
+  } catch (e) {
+    show(errDetail(e), 'error')
+  } finally {
+    creatingFromCodes.value = false
+  }
+}
 const batchGroupPick = ref('')
 const batchNewGroupName = ref('')
 
