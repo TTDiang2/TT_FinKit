@@ -73,3 +73,9 @@ docs/example_cashflow/
 # debug artifacts
 backend/portfolio_nav_365d.csv
 backend/export_nav_csv.py
+
+# local credentials / temp outputs
+backend/token.txt
+smoke_out.txt
+smoke_err.txt
+tune_out.txt
