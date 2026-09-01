@@ -69,10 +69,28 @@
         <h3 class="text-sm font-medium mb-3">
           持仓变化
           <span class="text-xs text-text-muted font-normal">
-            · 按权重堆叠 · 权重均值 Top10 标的，其余并入「其他」；「现金/未配置」为空仓部分 · 悬停看各期明细
+            · 全部持仓标的逐层堆叠 · 点击右侧图例可隐藏/显示对应层 · 「现金/未配置」为空仓部分
           </span>
         </h3>
-        <div style="height: 300px"><Line v-if="weightsAreaData" :data="weightsAreaData" :options="weightsAreaOpts" /></div>
+        <div class="flex gap-3">
+          <div class="flex-1 min-w-0" style="height: 320px"><Line v-if="weightsAreaData" :data="weightsAreaData" :options="weightsAreaOpts" /></div>
+          <div class="w-56 shrink-0 max-h-[320px] overflow-y-auto border border-border-default rounded-md p-2">
+            <div class="flex flex-wrap gap-x-2 gap-y-0.5">
+              <label v-for="it in weightsLegendItems" :key="it.sym"
+                class="flex items-center gap-1 text-xs cursor-pointer select-none w-[calc(50%-4px)]"
+                :class="it.hidden ? 'opacity-35 line-through' : ''"
+                :title="it.hidden ? '点击显示' : '点击隐藏'">
+                <input type="checkbox" :checked="!it.hidden" @change="toggleWeightLayer(it.sym)" class="accent-accent-primary w-3 h-3" />
+                <span class="inline-block w-2.5 h-2.5 rounded-sm shrink-0" :style="{ background: it.color }"></span>
+                <span class="truncate">{{ it.label }}</span>
+              </label>
+              <label class="flex items-center gap-1 text-xs cursor-pointer select-none w-[calc(50%-4px)]">
+                <span class="inline-block w-2.5 h-2.5 rounded-sm shrink-0 bg-slate-300"></span>
+                <span class="truncate text-text-muted">现金/未配置</span>
+              </label>
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- 归因瀑布图 -->
@@ -351,33 +369,37 @@ const histData = computed(() => {
 
 // ---- 持仓变化堆叠面积图 ----
 const AREA_COLORS = ["#6366f1","#ef4444","#10b981","#f59e0b","#8b5cf6","#06b6d4","#ec4899","#84cc16","#f97316","#3b82f6"]
+const weightsHidden = ref<Set<string>>(new Set())
+
+// 图例色：全部标的按索引均分 HSL 色环（数量不定，PALETTE 不够用）
+function hslFor(i: number, total: number): string {
+  const hue = Math.round((i * 360) / Math.max(1, total))
+  return `hsl(${hue}, 65%, ${i % 2 ? 55 : 45}%)`
+}
+
+const weightsOrder = computed(() => {
+  const wh = r.value?.weight_history || []
+  if (wh.length < 2) return [] as string[]
+  const sums: Record<string, number> = {}
+  for (const p of wh) for (const [sym, w] of Object.entries(p.weights || {})) sums[sym] = (sums[sym] || 0) + (w as number)
+  return Object.entries(sums).sort((a, b) => b[1] - a[1]).map(e => e[0])
+})
+
 const weightsAreaData = computed(() => {
   const wh = r.value?.weight_history || []
   if (wh.length < 2) return null
-  // 标的按全期平均权重排序取 Top10，其余合并为「其他」
-  const sums: Record<string, number> = {}
-  for (const p of wh) for (const [sym, w] of Object.entries(p.weights || {})) sums[sym] = (sums[sym] || 0) + (w as number)
-  const top = Object.entries(sums).sort((a, b) => b[1] - a[1]).slice(0, 10).map(e => e[0])
-  const topSet = new Set(top)
+  // 全部持仓标的逐层显示（用户要求不合并「其他」），按平均权重降序
+  const all = weightsOrder.value
+  const visible = all.filter(s => !weightsHidden.value.has(s))
   const labels = wh.map(p => p.date)
-  const ds = top.map((sym, i) => ({
+  const ds = visible.map((sym, i) => ({
     label: dispName(sym),
     data: wh.map(p => +(((p.weights || {})[sym] || 0) * 100).toFixed(2)),
-    backgroundColor: AREA_COLORS[i % AREA_COLORS.length],
-    borderColor: AREA_COLORS[i % AREA_COLORS.length],
+    backgroundColor: hslFor(all.indexOf(sym), all.length),
+    borderColor: hslFor(all.indexOf(sym), all.length),
     borderWidth: 0.5, pointRadius: 0, fill: true, tension: 0.15,
   }))
   // 现金/未配置 = 100% - 各标的权重和（可能为负=杠杆，夹 0）
-  // Top10 之外的标的权重层——曾漏画此层导致图上仓位虚低 ~30%（2026-09-01）
-  ds.push({
-    label: "其他标的",
-    data: wh.map(p => {
-      const all = Object.values(p.weights || {}).reduce((a: number, b) => a + (b as number), 0)
-      const topSum = top.reduce((a: number, s2: string) => a + (((p.weights || {})[s2] || 0) as number), 0)
-      return +((all - topSum) * 100).toFixed(2)
-    }),
-    backgroundColor: "rgba(148,163,184,0.45)", borderColor: "#94a3b8", borderWidth: 0.5, pointRadius: 0, fill: true, tension: 0.15,
-  })
   ds.push({
     label: "现金/未配置",
     data: wh.map(p => {
@@ -389,12 +411,29 @@ const weightsAreaData = computed(() => {
   return { labels, datasets: ds }
 })
 
+function toggleWeightLayer(sym: string) {
+  const s = new Set(weightsHidden.value)
+  if (s.has(sym)) s.delete(sym)
+  else s.add(sym)
+  weightsHidden.value = s
+}
+
+const weightsLegendItems = computed(() => {
+  const all = weightsOrder.value
+  return all.map((sym, i) => ({
+    sym,
+    label: dispName(sym),
+    color: hslFor(i, all.length),
+    hidden: weightsHidden.value.has(sym),
+  }))
+})
+
 const weightsAreaOpts = {
   responsive: true, maintainAspectRatio: false,
   interaction: { mode: "index" as const, intersect: false },
-  plugins: { legend: { position: "bottom" as const, labels: { boxWidth: 10, font: { size: 10 } } } },
+  plugins: { legend: { display: false } },
   scales: {
-    x: { ticks: { maxTicksLimit: 10, font: { size: 10 } } },
+    x: { stacked: true, ticks: { maxTicksLimit: 10, font: { size: 10 } } },
     y: { stacked: true, max: 100, ticks: { callback: (v: any) => v + "%" } },
   },
 }
