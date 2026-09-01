@@ -40,9 +40,10 @@ async def events_collect_endpoint():
 
 @router.get("/strategy-health")
 async def strategy_health_endpoint(user_id: str = Depends(get_current_user_id),
-                                   db: AsyncSession = Depends(get_private_db)):
+                                   db: AsyncSession = Depends(get_private_db),
+                                   pub: AsyncSession = Depends(get_public_db)):
     """实盘策略健康：失效判定（默认阈值）/ 调仓冷却 / 数据新鲜度提醒。"""
-    return await strategy_health(db, user_id)
+    return await strategy_health(db, pub, user_id)
 
 
 @router.post("/rebalance-log")

@@ -32,7 +32,7 @@
           <h3 class="font-medium">
             当前信号
             <span v-if="currentSignal.strategy_name" class="ml-2 text-xs px-2 py-0.5 rounded bg-bg-tertiary text-text-secondary align-middle">
-              {{ currentSignal.strategy_name }} · v{{ currentSignal.strategy_version }}
+              {{ currentSignal.strategy_name }} · {{ currentSignal.strategy_version_note ? `v${currentSignal.strategy_version_note}` : `v${currentSignal.strategy_version}` }}
             </span>
           </h3>
         </div>

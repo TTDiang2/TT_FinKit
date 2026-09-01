@@ -20,7 +20,8 @@ from datetime import date
 router = APIRouter(prefix="/api/signals", tags=["signals"])
 
 def _signal_to_response(s, strategy_name: str | None = None,
-                        name_by_symbol: dict[str, str] | None = None) -> SignalResponse:
+                        name_by_symbol: dict[str, str] | None = None,
+                        strategy_version_note: str | None = None) -> SignalResponse:
     tw = json.loads(s.target_weights or "{}")
     detail = [
         {"symbol": sym, "name": (name_by_symbol or {}).get(sym, sym), "weight": w}
@@ -31,6 +32,7 @@ def _signal_to_response(s, strategy_name: str | None = None,
         strategy_id=s.strategy_id,
         strategy_version=s.strategy_version,
         strategy_name=strategy_name,
+        strategy_version_note=strategy_version_note,
         run_date=s.run_date,
         as_of_date=s.as_of_date,
         next_rebalance_date=s.next_rebalance_date,
@@ -42,10 +44,11 @@ def _signal_to_response(s, strategy_name: str | None = None,
     )
 
 
-async def _strategy_name(pub: AsyncSession, strategy_id: str) -> str | None:
+async def _strategy_meta(pub: AsyncSession, strategy_id: str) -> tuple[str | None, str | None]:
+    """(name, version_note) —— version_note 是作者声明的语义版本，如 v3.0-balanced-50-45。"""
     from app.models.strategy import Strategy as StrategyModel
     row = await pub.get(StrategyModel, strategy_id)
-    return row.name if row else None
+    return (row.name if row else None, row.version_note if row else None)
 
 
 async def _symbol_names(pub: AsyncSession, symbols: list[str]) -> dict[str, str]:
@@ -69,7 +72,7 @@ async def _current_weights_from_holdings(db: AsyncSession, pub: AsyncSession, us
     needed = {i.symbol or "" for i in holdings} & set(by_symbol)
     navs: dict[str, float] = {}
     if needed:
-        rows = (await db.execute(
+        rows = (await pub.execute(
             select(ResearchAssetPrice.asset_id, ResearchAssetPrice.close)
             .where(ResearchAssetPrice.asset_id.in_([by_symbol[s].id for s in needed]))
             .order_by(ResearchAssetPrice.date.asc()))).all()
@@ -154,10 +157,11 @@ async def get_current_signal_endpoint(db: AsyncSession = Depends(get_private_db)
     sig = await get_latest_signal(db)
     if not sig:
         return None
-    sname = await _strategy_name(pub, sig.strategy_id)
+    sname, vnote = await _strategy_meta(pub, sig.strategy_id)
     tw = json.loads(sig.target_weights or "{}")
     names = await _symbol_names(pub, list(tw))
-    return _signal_to_response(sig, strategy_name=sname, name_by_symbol=names)
+    return _signal_to_response(sig, strategy_name=sname, name_by_symbol=names,
+                               strategy_version_note=vnote)
 
 @router.get("", response_model=list[SignalResponse])
 async def list_signals_endpoint(limit: int = Query(50), db: AsyncSession = Depends(get_private_db),
@@ -219,7 +223,7 @@ async def compute_trade_plan(db: AsyncSession, pub: AsyncSession, user_id: str,
     wanted_ids = [by_symbol[s].id for s in needed if s in by_symbol]
     navs: dict[str, float] = {}
     if wanted_ids:
-        rows = (await db.execute(
+        rows = (await pub.execute(
             select(ResearchAssetPrice.asset_id, ResearchAssetPrice.close)
             .where(ResearchAssetPrice.asset_id.in_(wanted_ids))
             .order_by(ResearchAssetPrice.date.asc()))).all()
@@ -315,6 +319,7 @@ async def compute_trade_plan(db: AsyncSession, pub: AsyncSession, user_id: str,
 async def trade_plan_endpoint(
     user_id: str = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_private_db),
+    pub: AsyncSession = Depends(get_public_db),
     additional_cash: float = Query(0.0, ge=0.0, description="本次调仓计划新投入的现金金额"),
 ):
     """调仓清单。赎回费按 purchase_date 单笔近似（未做跨笔 FIFO 混合）。
@@ -329,9 +334,10 @@ async def get_signal_endpoint(signal_id: str, db: AsyncSession = Depends(get_pri
     sig = await get_signal(db, signal_id)
     if not sig:
         raise HTTPException(status_code=404, detail="Signal not found")
-    sname = await _strategy_name(pub, sig.strategy_id)
+    sname, vnote = await _strategy_meta(pub, sig.strategy_id)
     tw = json.loads(sig.target_weights or "{}")
     names = await _symbol_names(pub, list(tw))
-    return _signal_to_response(sig, strategy_name=sname, name_by_symbol=names)
+    return _signal_to_response(sig, strategy_name=sname, name_by_symbol=names,
+                               strategy_version_note=vnote)
 
 

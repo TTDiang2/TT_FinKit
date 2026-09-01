@@ -52,7 +52,11 @@ async def _canonical_backtest(db: AsyncSession, strategy_id: str) -> Backtest | 
 
 
 async def _last_rebalance_date(db: AsyncSession, user_id: str) -> tuple[str | None, str]:
-    """最近一次调仓：手动记录 vs 投资流水自动检测，取较新者。"""
+    """最近一次调仓：手动记录 vs 投资流水自动检测，取较新者。
+
+    投资流水全在 private 库（investments 本就是用户自己的持仓），
+    双库拆分后原 research_assets 过滤已无意义（认领后用户持有全部入池标的）。
+    """
     from ..models.user_settings import UserSettings
     row = (await db.execute(select(UserSettings).where(
         UserSettings.user_id == user_id))).scalar_one_or_none()
@@ -66,14 +70,11 @@ async def _last_rebalance_date(db: AsyncSession, user_id: str) -> tuple[str | No
     # 流水自动检测：持仓标的上的买/卖流水（近 90 天足够）
     auto_row = (await db.execute(text(
         """
-        SELECT MAX(date) FROM (
-            SELECT substr(it.event_date, 1, 10) AS date
-            FROM investment_transactions it
-            JOIN investments i ON i.id = it.investment_id
-            JOIN research_assets ra ON ra.symbol = i.symbol AND ra.user_id = :u
-            WHERE i.user_id = :u
-              AND it.event_type IN ('buy', 'sell', 'purchase', 'redeem', 'subscribe')
-        )
+        SELECT MAX(substr(it.event_date, 1, 10))
+        FROM investment_transactions it
+        JOIN investments i ON i.id = it.investment_id
+        WHERE i.user_id = :u
+          AND it.event_type IN ('buy', 'sell', 'purchase', 'redeem', 'subscribe')
         """
     ), {"u": user_id})).scalar()
     candidates = [x for x in (manual, auto_row) if x]
@@ -84,12 +85,15 @@ async def _last_rebalance_date(db: AsyncSession, user_id: str) -> tuple[str | No
     return latest, src
 
 
-async def strategy_health(db: AsyncSession, user_id: str) -> dict:
-    """监控页核心负载：策略健康 + 调仓冷却 + 数据新鲜度。"""
+async def strategy_health(db: AsyncSession, pub: AsyncSession, user_id: str) -> dict:
+    """监控页核心负载：策略健康 + 调仓冷却 + 数据新鲜度。
+
+    db = private（回测/信号/持仓/设置），pub = public（策略/标的/价格）。
+    """
     today = date.today()
     out: dict = {"as_of": today.isoformat()}
 
-    strat = await _active_strategy(db)
+    strat = await _active_strategy(pub)
     out["strategy"] = {"id": strat.id, "name": strat.name, "version": strat.version} if strat else None
 
     # ---- 基准：最近一次完成回测的指标 + 失效扫描 ----
@@ -117,7 +121,7 @@ async def strategy_health(db: AsyncSession, user_id: str) -> dict:
         held = [s for s, w in tw.items() if w and w > 1e-6]
         if held and sig.run_date:
             since = max(sig.run_date, (today - timedelta(days=ROLL_WINDOW + 30)).isoformat())
-            rows = (await db.execute(
+            rows = (await pub.execute(
                 select(ResearchAsset.symbol, ResearchAssetPrice.date, ResearchAssetPrice.close)
                 .join(ResearchAsset, ResearchAsset.id == ResearchAssetPrice.asset_id)
                 .where(ResearchAsset.symbol.in_(held),
@@ -193,7 +197,7 @@ async def strategy_health(db: AsyncSession, user_id: str) -> dict:
                         "in_cooldown": bool(cooldown_until and today.isoformat() <= cooldown_until)}
 
     # ---- 数据新鲜度（月度全量更新提醒）----
-    max_row = (await db.execute(text(
+    max_row = (await pub.execute(text(
         "SELECT MAX(rp.date) FROM research_prices rp "
         "JOIN research_assets ra ON ra.id = rp.asset_id WHERE ra.status='pooled'"
     ))).scalar()

@@ -639,6 +639,7 @@ export interface SignalResponse {
   strategy_id: string
   strategy_version: number
   strategy_name?: string | null
+  strategy_version_note?: string | null
   run_date: string
   as_of_date: string
   next_rebalance_date: string | null
