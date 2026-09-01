@@ -46,6 +46,14 @@ def main() -> int:
     uid = sqlite3.connect(PRIVATE_DB).execute(
         "SELECT id FROM users ORDER BY created_at ASC LIMIT 1").fetchone()[0]
     TOKEN = create_access_token({"sub": uid})
+
+    # 前置清理：脚本断言的是"首次配置"语义（缺 token 应 400），
+    # 若上次运行残留了 sync_config.json 会让该断言误报，先删掉。
+    cfg_pre = PRIVATE_DB.parent / "sync_config.json"
+    if cfg_pre.exists():
+        cfg_pre.unlink()
+        print(f"[prep] 清理残留测试配置 {cfg_pre}")
+
     ok = True
 
     code, cfg = req("GET", "/api/sync/config")
