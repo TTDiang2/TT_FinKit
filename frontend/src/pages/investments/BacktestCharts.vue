@@ -368,13 +368,23 @@ const weightsAreaData = computed(() => {
     borderWidth: 0.5, pointRadius: 0, fill: true, tension: 0.15,
   }))
   // 现金/未配置 = 100% - 各标的权重和（可能为负=杠杆，夹 0）
+  // Top10 之外的标的权重层——曾漏画此层导致图上仓位虚低 ~30%（2026-09-01）
+  ds.push({
+    label: "其他标的",
+    data: wh.map(p => {
+      const all = Object.values(p.weights || {}).reduce((a: number, b) => a + (b as number), 0)
+      const topSum = top.reduce((a: number, s2: string) => a + (((p.weights || {})[s2] || 0) as number), 0)
+      return +((all - topSum) * 100).toFixed(2)
+    }),
+    backgroundColor: "rgba(148,163,184,0.45)", borderColor: "#94a3b8", borderWidth: 0.5, pointRadius: 0, fill: true, tension: 0.15,
+  })
   ds.push({
     label: "现金/未配置",
     data: wh.map(p => {
       const s2 = Object.values(p.weights || {}).reduce((a: number, b) => a + (b as number), 0)
       return +(Math.max(0, 1 - s2) * 100).toFixed(2)
     }),
-    backgroundColor: "rgba(148,163,184,0.35)", borderColor: "#94a3b8", borderWidth: 0.5, pointRadius: 0, fill: true, tension: 0.15,
+    backgroundColor: "rgba(203,213,225,0.4)", borderColor: "#cbd5e1", borderWidth: 0.5, pointRadius: 0, fill: true, tension: 0.15,
   })
   return { labels, datasets: ds }
 })
