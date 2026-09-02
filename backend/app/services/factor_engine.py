@@ -8,11 +8,10 @@ statsmodels dependency, closed-form OLS/ridge with classic standard-error estima
 """
 from __future__ import annotations
 
-import json
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import numpy as np
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.factor import Factor, FactorExposure, FactorValue
@@ -164,11 +163,34 @@ async def recompute_exposures(
         return {"assets": 0, "factors": len(factors), "months": 0, "regressions": 0, "skipped": []}
 
     factor_ids = [f.id for f in factors]
-    fv_rows = (await db.execute(
+
+    # 池内最早/最晚价格日（SQL 聚合，不全量加载）：最早价格日是因子值查询的
+    # 精确下界——共同交易日必须同时是资产收益日，早于它的因子行永远进不了
+    # 任何回归窗口（full 回填也成立）。
+    asset_filter = [ResearchAsset.user_id == user_id, ResearchAsset.status == "pooled"]
+    if asset_symbols:
+        asset_filter.append(ResearchAsset.symbol.in_(asset_symbols))
+    aid_subq = select(ResearchAsset.id).where(*asset_filter)
+    bounds = (await db.execute(
+        select(func.min(ResearchAssetPrice.date), func.max(ResearchAssetPrice.date))
+        .where(ResearchAssetPrice.asset_id.in_(aid_subq))
+    )).first()
+    min_price_date, max_price_date = (bounds[0], bounds[1]) if bounds else (None, None)
+
+    fv_q = (
         select(FactorValue.factor_id, FactorValue.date, FactorValue.value)
         .where(FactorValue.factor_id.in_(factor_ids), FactorValue.kind == "return")
         .order_by(FactorValue.date)
-    )).all()
+    )
+    if min_price_date:
+        fv_q = fv_q.where(FactorValue.date >= min_price_date)
+    if not full and max_price_date:
+        # 只回填最新月末：窗口最多回看 window_days 个交易日（≈ window_days*1.16
+        # 日历天），因子行留 2 倍日历余量即可完整覆盖，再早的行裁掉
+        # （26.8 万行全量 → 数万行；2026-09-02 用户选 5 只标的卡死 300s 的另一根因）。
+        cut = (datetime.fromisoformat(max_price_date) - timedelta(days=window_days * 2)).date().isoformat()
+        fv_q = fv_q.where(FactorValue.date >= cut)
+    fv_rows = (await db.execute(fv_q)).all()
     factor_series: dict[str, list[tuple[str, float]]] = {fid: [] for fid in factor_ids}
     for fid, d, v in fv_rows:
         factor_series[fid].append((d, float(v)))
@@ -194,97 +216,100 @@ async def recompute_exposures(
         (e.asset_id, e.as_of_date, e.factor_id): e for e in exp_rows
     }
 
-    for asset in assets:
-        price_rows = (await db.execute(
-            select(ResearchAssetPrice.date, ResearchAssetPrice.close)
-            .where(ResearchAssetPrice.asset_id == asset.id)
-            .order_by(ResearchAssetPrice.date)
+    # 价格分块批量加载（N+1 → 每 chunk 一条 IN 查询，内存只保留一个 chunk）
+    CHUNK = 200
+    for ci in range(0, len(assets), CHUNK):
+        chunk = assets[ci:ci + CHUNK]
+        prows = (await db.execute(
+            select(ResearchAssetPrice.asset_id, ResearchAssetPrice.date, ResearchAssetPrice.close)
+            .where(ResearchAssetPrice.asset_id.in_([a.id for a in chunk]))
+            .order_by(ResearchAssetPrice.asset_id, ResearchAssetPrice.date)
         )).all()
-        if len(price_rows) < 2:
-            skipped.append({"symbol": asset.symbol, "name": asset.name, "reason": "无价格数据（先到标的页同步历史净值）"})
-            continue
-        closes = [(d, float(c)) for d, c in price_rows]
-        asset_returns: list[tuple[str, float]] = []
-        prev_c = closes[0][1]
-        for d, c in closes[1:]:
-            if prev_c > 0:
-                asset_returns.append((d, c / prev_c - 1.0))
-            prev_c = c
-        asset_map = dict(asset_returns)
-
-        use_factors = {fid: factor_series[fid] for fid in (market_ids if (asset.is_money_market and market_ids) else factor_ids) if factor_series[fid]}
-        if not use_factors:
-            skipped.append({"symbol": asset.symbol, "name": asset.name, "reason": "因子无收益数据（先同步因子库）"})
-            continue
-
-        factor_maps = {fid: dict(s) for fid, s in use_factors.items()}
-        sample_floor = int(window_days * MIN_SAMPLE_RATIO)
-        # 贪心因子选择：覆盖天数多的因子先纳入；纳入某因子会使
-        # (资产∩已选因子) 交集跌破最小样本时跳过该稀疏因子，
-        # 避免"一个坏因子掏空整个交集"（全量 intersection 的副作用）
-        common_set = set(asset_map)
-        selected: dict[str, dict[str, float]] = {}
-        for fid in sorted(factor_maps, key=lambda f: -len(factor_maps[f])):
-            fm = factor_maps[fid]
-            if not fm:
+        price_by_asset: dict[str, list[tuple[str, float]]] = {}
+        for aid, d, c in prows:
+            price_by_asset.setdefault(aid, []).append((d, float(c)))
+        for asset in chunk:
+            price_rows = price_by_asset.get(asset.id, [])
+            if len(price_rows) < 2:
+                skipped.append({"symbol": asset.symbol, "name": asset.name, "reason": "无价格数据（先到标的页同步历史净值）"})
                 continue
-            trial = common_set & set(fm)
-            if not selected or len(trial) >= sample_floor:
-                common_set = trial
-                selected[fid] = fm
-        factor_maps = selected
-        use_factor_ids = set(selected.keys())
-        common_dates = sorted(common_set)
-        if len(common_dates) < sample_floor or not factor_maps:
-            skipped.append({"symbol": asset.symbol, "name": asset.name,
-                            "reason": f"与因子共同交易日不足{sample_floor}"})
-            continue
-        # month-end as_of candidates whose trailing window can still meet the sample floor
-        cd_index = {d: i for i, d in enumerate(common_dates)}
-        as_of_candidates = []
-        for me in _month_ends(common_dates):
-            idx = cd_index.get(me)
-            if idx is not None and idx + 1 >= sample_floor:
-                as_of_candidates.append((me, idx + 1))
-        if not as_of_candidates:
-            skipped.append({"symbol": asset.symbol, "name": asset.name, "reason": f"共同交易日不足{sample_floor}（历史太短）"})
-            continue
-        if not full:
-            as_of_candidates = as_of_candidates[-1:]
+            closes = [(d, float(c)) for d, c in price_rows]
+            asset_returns: list[tuple[str, float]] = []
+            prev_c = closes[0][1]
+            for d, c in closes[1:]:
+                if prev_c > 0:
+                    asset_returns.append((d, c / prev_c - 1.0))
+                prev_c = c
+            asset_map = dict(asset_returns)
 
-        params_snapshot = json.dumps({
-            "window_days": window_days, "ridge_alpha": ridge_alpha,
-            "factor_ids": sorted(use_factor_ids),
-        })
-        for me, n_avail in as_of_candidates:
-            window_slice = common_dates[max(0, n_avail - window_days):n_avail]
-            ar = [(d, asset_map[d]) for d in window_slice]
-            fr = {fid: [(d, fm[d]) for d in window_slice] for fid, fm in factor_maps.items()}
-            res = compute_exposure(ar, fr, window_days=window_days, ridge_alpha=ridge_alpha)
-            if res is None:
+            use_factors = {fid: factor_series[fid] for fid in (market_ids if (asset.is_money_market and market_ids) else factor_ids) if factor_series[fid]}
+            if not use_factors:
+                skipped.append({"symbol": asset.symbol, "name": asset.name, "reason": "因子无收益数据（先同步因子库）"})
                 continue
-            months_done.add((asset.id, me))
-            for fid in res["betas"]:
-                key = (asset.id, me, fid)
-                existing = existing_map.get(key)
-                # params 快照不再逐行存储：同一配置 2.96M 行 × 2.2KB 曾吃掉 6.6GB
-                # （2026-08-29 事故）。回归配置由 window_days 列 + 调用参数可完全还原。
-                if existing is not None:
-                    existing.beta = res["betas"][fid]
-                    existing.t_stat = res["t_stats"][fid]
-                    existing.r2 = res["r2"]
-                    existing.method = res["method"]
-                    existing.window_days = res["n_samples"]
-                    existing.params = None
-                else:
-                    new_row = FactorExposure(
-                        asset_id=asset.id, as_of_date=me, factor_id=fid,
-                        beta=res["betas"][fid], t_stat=res["t_stats"][fid], r2=res["r2"],
-                        method=res["method"], window_days=res["n_samples"], params=None,
-                    )
-                    db.add(new_row)
-                    existing_map[key] = new_row
-                written += 1
+
+            factor_maps = {fid: dict(s) for fid, s in use_factors.items()}
+            sample_floor = int(window_days * MIN_SAMPLE_RATIO)
+            # 贪心因子选择：覆盖天数多的因子先纳入；纳入某因子会使
+            # (资产∩已选因子) 交集跌破最小样本时跳过该稀疏因子，
+            # 避免"一个坏因子掏空整个交集"（全量 intersection 的副作用）
+            common_set = set(asset_map)
+            selected: dict[str, dict[str, float]] = {}
+            for fid in sorted(factor_maps, key=lambda f: -len(factor_maps[f])):
+                fm = factor_maps[fid]
+                if not fm:
+                    continue
+                trial = common_set & set(fm)
+                if not selected or len(trial) >= sample_floor:
+                    common_set = trial
+                    selected[fid] = fm
+            factor_maps = selected
+            common_dates = sorted(common_set)
+            if len(common_dates) < sample_floor or not factor_maps:
+                skipped.append({"symbol": asset.symbol, "name": asset.name,
+                                "reason": f"与因子共同交易日不足{sample_floor}"})
+                continue
+            # month-end as_of candidates whose trailing window can still meet the sample floor
+            cd_index = {d: i for i, d in enumerate(common_dates)}
+            as_of_candidates = []
+            for me in _month_ends(common_dates):
+                idx = cd_index.get(me)
+                if idx is not None and idx + 1 >= sample_floor:
+                    as_of_candidates.append((me, idx + 1))
+            if not as_of_candidates:
+                skipped.append({"symbol": asset.symbol, "name": asset.name, "reason": f"共同交易日不足{sample_floor}（历史太短）"})
+                continue
+            if not full:
+                as_of_candidates = as_of_candidates[-1:]
+
+            for me, n_avail in as_of_candidates:
+                window_slice = common_dates[max(0, n_avail - window_days):n_avail]
+                ar = [(d, asset_map[d]) for d in window_slice]
+                fr = {fid: [(d, fm[d]) for d in window_slice] for fid, fm in factor_maps.items()}
+                res = compute_exposure(ar, fr, window_days=window_days, ridge_alpha=ridge_alpha)
+                if res is None:
+                    continue
+                months_done.add((asset.id, me))
+                for fid in res["betas"]:
+                    key = (asset.id, me, fid)
+                    existing = existing_map.get(key)
+                    # params 快照不再逐行存储：同一配置 2.96M 行 × 2.2KB 曾吃掉 6.6GB
+                    # （2026-08-29 事故）。回归配置由 window_days 列 + 调用参数可完全还原。
+                    if existing is not None:
+                        existing.beta = res["betas"][fid]
+                        existing.t_stat = res["t_stats"][fid]
+                        existing.r2 = res["r2"]
+                        existing.method = res["method"]
+                        existing.window_days = res["n_samples"]
+                        existing.params = None
+                    else:
+                        new_row = FactorExposure(
+                            asset_id=asset.id, as_of_date=me, factor_id=fid,
+                            beta=res["betas"][fid], t_stat=res["t_stats"][fid], r2=res["r2"],
+                            method=res["method"], window_days=res["n_samples"], params=None,
+                        )
+                        db.add(new_row)
+                        existing_map[key] = new_row
+                    written += 1
     await db.commit()
     return {"assets": len(assets), "factors": len(factors), "months": len(months_done),
             "regressions": len(months_done), "rows_written": written, "skipped": skipped}

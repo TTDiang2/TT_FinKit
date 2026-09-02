@@ -322,10 +322,11 @@ async def recompute_exposures_endpoint(
     symbols = [s.strip() for s in asset_symbols.split(",") if s.strip()] or None
     result = await recompute_exposures(db, user_id, full=full, window_days=window_days,
                                        asset_symbols=symbols)
-    # chain factor evaluation (IC/ICIR) — pure numpy, fast after exposures exist
+    # chain factor evaluation (IC/ICIR) — 评估范围跟随本次重算的 asset_symbols
+    # 下推（否则选 5 只标的也会全池加载 4.23M 暴露行，请求超时）
     from ..services.factor_evaluation import evaluate_all_factors
     try:
-        eval_summary = await evaluate_all_factors(db, user_id)
+        eval_summary = await evaluate_all_factors(db, user_id, asset_symbols=symbols)
         result["evaluation"] = eval_summary
     except Exception as e:
         result["evaluation"] = {"evaluated": [], "skipped": [], "error": f"{type(e).__name__}: {e}"}

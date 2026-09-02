@@ -134,11 +134,14 @@ async def stats_snapshot_cached(
                 proc = await _asyncio.create_subprocess_exec(
                     _sys.executable, "scripts/compute_stats_snapshot.py",
                     str(days), assets or "all", user_id,
-                    cwd=str(Path(__file__).resolve().parents[2] / "backend"),
+                    cwd=str(_Path(__file__).resolve().parents[2]),
                     stdout=_asyncio.subprocess.DEVNULL, stderr=_asyncio.subprocess.DEVNULL)
                 await _asyncio.wait_for(proc.wait(), timeout=600)
-                cache_file = (_Path(__file__).resolve().parents[2] / "backend" / "cache"
-                              / f"stats_snapshot_{user_id}_{days}_{assets or 'all'}.json")
+                # 文件名与脚本侧 key 归一化保持一致（compute_stats_snapshot.py：
+                # "," → "-"、":" → "_"），否则子集请求落盘后路由读不到
+                _key = f"{user_id}_{days}_{assets or 'all'}".replace(":", "_").replace(",", "-")
+                cache_file = (_Path(__file__).resolve().parents[2] / "cache"
+                              / f"stats_snapshot_{_key}.json")
                 if cache_file.exists():
                     data = _json.loads(cache_file.read_text(encoding="utf-8"))
                     _stats_cache[key] = {"ts": _time.time(), "data": data}

@@ -47,12 +47,22 @@ def main() -> int:
         "SELECT id FROM users ORDER BY created_at ASC LIMIT 1").fetchone()[0]
     TOKEN = create_access_token({"sub": uid})
 
-    # 前置清理：脚本断言的是"首次配置"语义（缺 token 应 400），
-    # 若上次运行残留了 sync_config.json 会让该断言误报，先删掉。
-    cfg_pre = PRIVATE_DB.parent / "sync_config.json"
-    if cfg_pre.exists():
-        cfg_pre.unlink()
-        print(f"[prep] 清理残留测试配置 {cfg_pre}")
+    # 前置清理：脚本断言的是"首次配置"语义（缺 token 应 400）。
+    # 配置存在实例上报的 private_db 旁（exe 冒烟时是测试目录，不是 backend/），
+    # 以实例视角为准；且仅当 token 是本脚本的测试 token 时才删，防误删真实 PAT。
+    code, cfg0 = req("GET", "/api/sync/config")
+    if code == 200 and cfg0.get("token_set"):
+        cfg_file = Path(str(cfg0.get("private_db") or "")).parent / "sync_config.json"
+        try:
+            raw = json.loads(cfg_file.read_text(encoding="utf-8"))
+            is_test_token = "ghp_test_" in str(raw.get("token", ""))
+        except Exception:  # noqa: BLE001
+            is_test_token = False
+        if is_test_token and cfg_file.exists():
+            cfg_file.unlink()
+            print(f"[prep] 清理残留测试配置 {cfg_file}")
+        elif cfg0.get("token_set"):
+            print(f"[prep] 检测到非测试 token 配置，保留不动（断言可能因此失败）")
 
     ok = True
 

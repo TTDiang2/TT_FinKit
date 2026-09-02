@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import math
+from bisect import bisect_right
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 
@@ -307,23 +308,30 @@ async def evaluate_all_factors(
     db: AsyncSession,
     user_id: str,
     thresholds: dict | None = None,
+    asset_symbols: list[str] | None = None,
 ) -> dict:
     """Recompute evaluations for every factor that has exposure history.
 
     Returns {"evaluated": [keys], "skipped": [{key, reason}]}.
+    ``asset_symbols`` 下推过滤：随重算范围联动（2026-09-02 事故——选 5 只标的
+    重算时本函数仍全池加载 4.23M 暴露行 + 数百万价格行，请求必然超时）。
     """
     thresholds = thresholds or DEFAULT_THRESHOLDS
     factors = (await db.execute(select(Factor).where(Factor.active.is_(True)))).scalars().all()
     factor_by_id = {f.id: f for f in factors}
 
-    assets = (await db.execute(
-        select(ResearchAsset).where(ResearchAsset.user_id == user_id, ResearchAsset.status == "pooled")
-    )).scalars().all()
+    aq = select(ResearchAsset).where(ResearchAsset.user_id == user_id, ResearchAsset.status == "pooled")
+    if asset_symbols:
+        aq = aq.where(ResearchAsset.symbol.in_(asset_symbols))
+    assets = (await db.execute(aq)).scalars().all()
     asset_ids = [a.id for a in assets]
 
+    # 列查询替代 ORM 实体加载（只需要 4 列；ORM 实体在百万行级别内存/构造都重数倍）
     exp_rows = (await db.execute(
-        select(FactorExposure).where(FactorExposure.asset_id.in_(asset_ids))
-    )).scalars().all() if asset_ids else []
+        select(FactorExposure.factor_id, FactorExposure.asset_id,
+               FactorExposure.as_of_date, FactorExposure.beta)
+        .where(FactorExposure.asset_id.in_(asset_ids))
+    )).all() if asset_ids else []
 
     # prices for monthly returns between as_of anchors
     price_rows = (await db.execute(
@@ -332,17 +340,19 @@ async def evaluate_all_factors(
         .order_by(ResearchAssetPrice.date)
     )).all() if asset_ids else []
     close_by_asset: dict[str, dict[str, float]] = {}
+    dates_by_asset: dict[str, list[str]] = {}
     for aid, d, c in price_rows:
         close_by_asset.setdefault(aid, {})[d] = float(c)
+        dates_by_asset.setdefault(aid, []).append(d)   # 查询已按 date 排序
 
     # global grid of as_of month-ends (union)
-    all_as_of = sorted({e.as_of_date for e in exp_rows})
+    all_as_of = sorted({as_of for (_fid, _aid, as_of, _b) in exp_rows})
     evaluated, skipped = [], []
 
     # group exposures by factor
-    by_factor: dict[str, list[FactorExposure]] = {}
+    by_factor: dict[str, list[tuple[str, str, str, float]]] = {}
     for e in exp_rows:
-        by_factor.setdefault(e.factor_id, []).append(e)
+        by_factor.setdefault(e[0], []).append(e)
 
     for fid, rows in by_factor.items():
         f = factor_by_id.get(fid)
@@ -350,8 +360,8 @@ async def evaluate_all_factors(
             continue
         # exposures: asset -> {as_of: beta}
         expo: dict[str, dict[str, float]] = {}
-        for e in rows:
-            expo.setdefault(e.asset_id, {})[e.as_of_date] = e.beta
+        for (_fid, aid, as_of, beta) in rows:
+            expo.setdefault(aid, {})[as_of] = beta
 
         # per-asset month returns between consecutive grid points covering its as_ofs
         grid = [d for d in all_as_of]
@@ -365,8 +375,9 @@ async def evaluate_all_factors(
                     series.append(None)
                     continue
                 # month return = last close on/before nxt / last close on/before d − 1
-                p0 = _last_close_on_or_before(cmap, d)
-                p1 = _last_close_on_or_before(cmap, nxt)
+                dlist = dates_by_asset.get(aid, [])
+                p0 = _last_close_on_or_before(dlist, cmap, d)
+                p1 = _last_close_on_or_before(dlist, cmap, nxt)
                 series.append((p1 / p0 - 1.0) if (p0 and p1) else None)
             fwd[aid] = series
 
@@ -386,15 +397,17 @@ async def evaluate_all_factors(
             skipped.append({"key": f.key, "reason": "无有效暴露截面（先重算暴露）"})
             continue
 
-        # persist IC points (upsert)
+        # persist IC points (batch upsert: 一次预载该因子全部已有 IC 点，
+        # 替代逐行 SELECT 的 N+1 —— 60 因子 × 数十期曾意味着上千次往返)
+        existing_pts = (await db.execute(
+            select(FactorIcPoint).where(
+                FactorIcPoint.user_id == user_id,
+                FactorIcPoint.factor_key == f.key,
+            )
+        )).scalars().all()
+        pt_by_date = {p.date: p for p in existing_pts}
         for row in outcome.ic_points:
-            existing = (await db.execute(
-                select(FactorIcPoint).where(
-                    FactorIcPoint.user_id == user_id,
-                    FactorIcPoint.factor_key == f.key,
-                    FactorIcPoint.date == row["date"],
-                )
-            )).scalar_one_or_none()
+            existing = pt_by_date.get(row["date"])
             if existing:
                 existing.ic = row["ic"]
                 existing.rank_ic = row["rank_ic"]
@@ -404,6 +417,7 @@ async def evaluate_all_factors(
                     user_id=user_id, factor_key=f.key,
                     date=row["date"], ic=row["ic"], rank_ic=row["rank_ic"], n=row["n"],
                 ))
+                pt_by_date[row["date"]] = None  # 防同批重复插入
 
         # upsert evaluation row
         ev = (await db.execute(
@@ -448,15 +462,16 @@ async def evaluate_all_factors(
     return {"evaluated": evaluated, "skipped": skipped}
 
 
-def _last_close_on_or_before(cmap: dict[str, float], d: str) -> float | None:
-    """Close at or before date d.  cmap keys are sorted dates."""
-    best = None
-    for k in cmap:                    # small maps (~1000) — linear scan acceptable
-        if k <= d:
-            best = cmap[k]
-        else:
-            break
-    return best
+def _last_close_on_or_before(dates: list[str], cmap: dict[str, float], d: str) -> float | None:
+    """Close at or before date d.  ``dates`` 为与 cmap 同源的有序日期列表。
+
+    曾用线性扫描（"small maps ~1000 acceptable"），但全池评估时
+    资产数 × 网格点 × 2 次调用放大成数亿次迭代——2026-09-02 重算卡死热点之一。
+    """
+    idx = bisect_right(dates, d)         # O(log n)
+    if idx == 0:
+        return None
+    return cmap[dates[idx - 1]]
 
 
 def evaluation_to_dict(ev: FactorEvaluation) -> dict:
