@@ -333,8 +333,11 @@ class TestRouter:
                 )).scalars().all()
                 assert any(r.factor_id == fs.id for r in equity_rows)
 
-                # matrix endpoint
-                matrix = await fr.exposure_matrix(as_of=None, user_id=u.id, db=db)
+                # matrix endpoint（直接调用需显式传齐查询参数——FastAPI 的
+                # Query(None) 默认标记对象在直调时不是 None）
+                matrix = await fr.exposure_matrix(as_of=None, symbols=None, group_id=None,
+                                                  search=None, limit=50, offset=0,
+                                                  user_id=u.id, db=db)
                 assert matrix.as_of is not None
                 assert {r.asset_id for r in matrix.assets} == {a.id, m.id}
                 mmf_matrix_row = [r for r in matrix.assets if r.asset_id == m.id][0]

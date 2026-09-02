@@ -228,9 +228,14 @@ class TestComputeIndicators:
         assert ind.ret_1m is not None and ind.ret_1m == pytest.approx(0.02)
 
     def test_very_short_history_all_none(self):
+        # 用相对日期：硬编码日期会随日历推移让 cutoff 落进序列而改变行为
+        from datetime import date, timedelta
+        today = date.today()
+        pts = [((today - timedelta(days=19)).isoformat(), 1.0),
+               ((today - timedelta(days=1)).isoformat(), 1.02)]
         a = ResearchAsset(symbol="x", name="x", user_id="u")
-        ind = compute_asset_indicators(a, self._prices([("2026-08-01", 1.0), ("2026-08-20", 1.02)]))
-        assert ind.ret_1m is None and ind.ret_1y is None  # 19d span < 20d threshold
+        ind = compute_asset_indicators(a, self._prices(pts))
+        assert ind.ret_1m is None and ind.ret_1y is None  # 18d span < 20d threshold
 
     def test_lag_days(self):
         from datetime import date
@@ -501,17 +506,27 @@ class TestRouter:
     def test_price_status(self, monkeypatch):
         async def inner():
             self._no_ifind(monkeypatch)
+            # price_status 自 2026-08-29 起为 serve-stale-while-revalidate：
+            # 模块级缓存跨测试共享，先清空保证确定性
+            ra._price_status_cache.update({"ts": 0.0, "rows": [], "refreshing": False})
             db, engine = await _make_db()
             try:
                 u = await _mk_user(db)
                 a = await _mk_asset(db, u.id, status="pooled")
                 db.add(ResearchAssetPrice(asset_id=a.id, date="2026-01-05", close=1.0, source="ifind"))
                 await db.flush()
-                st = await ra.price_status(user_id=u.id, db=db)
+                # 首轮返回旧缓存（空）并触发后台重算；等重算完成后再取
+                await ra.price_status(status=None, user_id=u.id, db=db)
+                for _ in range(100):
+                    if not ra._price_status_cache["refreshing"]:
+                        break
+                    await asyncio.sleep(0.02)
+                st = await ra.price_status(status=None, user_id=u.id, db=db)
                 assert len(st) == 1
                 assert st[0].rows == 1 and st[0].last_date == "2026-01-05"
                 assert st[0].source == "ifind" and st[0].lag_days >= 0
             finally:
+                ra._price_status_cache.update({"ts": 0.0, "rows": [], "refreshing": False})
                 await db.close()
                 await engine.dispose()
         asyncio.run(inner())

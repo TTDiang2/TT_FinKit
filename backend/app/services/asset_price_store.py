@@ -153,6 +153,8 @@ def compute_asset_indicators(
             else:
                 break
         if idx is None:
+            # 序列够不到窗口起点：总跨度不足窗口的 2/3 视为数据不足
+            # （如 19 天历史不该产出"1 个月收益"）
             if (dates[-1] - dates[0]).days < days * 2 // 3:
                 return None
             idx = 0

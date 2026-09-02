@@ -7,7 +7,7 @@ from calendar import monthrange
 from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, text
+from sqlalchemy import select, text, func
 
 import logging as _importlog
 _importlog.getLogger("uvicorn.error").info("[factors] MODULE IMPORTED (new code)")
@@ -236,11 +236,17 @@ async def exposure_matrix(
         q = q.where(FactorExposure.as_of_date == as_of)
     else:
         # "最新"= 行数充足的最大日期（每日自动补录会造出只有几行的杂散 as_of，
-        # 直接 MAX 会选中它们导致矩阵看似为空）
+        # 直接 MAX 会选中它们导致矩阵看似为空）。≥1000 无命中时（小数据集/
+        # 新用户）回退到行数最密的日期，避免小池用户矩阵恒为空。
         latest = (await db.execute(
             text("SELECT as_of_date FROM factor_exposures GROUP BY as_of_date "
                  "HAVING COUNT(*) >= 1000 ORDER BY as_of_date DESC LIMIT 1")
         )).scalar()
+        if latest is None:
+            latest = (await db.execute(
+                text("SELECT as_of_date FROM factor_exposures GROUP BY as_of_date "
+                     "ORDER BY COUNT(*) DESC, as_of_date DESC LIMIT 1")
+            )).scalar()
         if latest is None:
             return ExposureMatrix()
         q = q.where(FactorExposure.as_of_date == latest)
