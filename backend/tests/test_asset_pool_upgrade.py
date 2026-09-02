@@ -101,7 +101,8 @@ class TestMigrationIdempotency:
         import subprocess
         script = os.path.join(os.path.dirname(__file__), "..", "scripts", "migrate_asset_pool_upgrade.py")
         # Run against a temp DB copy
-        src = os.path.join(os.path.dirname(__file__), "..", "finkit.db")
+        # 双库拆分（2026-08-31）后 research_* 全在 public 库；旧单库 finkit.db 已归档删除。
+        src = os.path.join(os.path.dirname(__file__), "..", "finkit_public.db")
         with tempfile.TemporaryDirectory() as tmp:
             db = os.path.join(tmp, "test.db")
             shutil_copy(src, db)
@@ -121,5 +122,20 @@ class TestMigrationIdempotency:
 
 
 def shutil_copy(src: str, dst: str) -> None:
-    import shutil
-    shutil.copy2(src, dst)
+    """只复制表结构（不含数据）。
+
+    迁移脚本只做 DDL（ADD COLUMN / CREATE TABLE），不需要 2.6GB 的真实数据；
+    复制结构即可，顺带把测试和体积庞大的开发库解耦。
+    """
+    s = sqlite3.connect(src)
+    d = sqlite3.connect(dst)
+    try:
+        for (sql,) in s.execute("SELECT sql FROM sqlite_master WHERE sql IS NOT NULL"):
+            try:
+                d.execute(sql)
+            except sqlite3.OperationalError:
+                pass  # 视图/索引等对象已存在或不可重建，迁移测试不依赖
+        d.commit()
+    finally:
+        s.close()
+        d.close()

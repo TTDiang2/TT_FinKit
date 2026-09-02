@@ -333,13 +333,16 @@
           </div>
           <div class="grid grid-cols-2 gap-3">
             <div><label class="block text-sm mb-1">赎回份额</label><input v-model.number="redeemForm.quantity" type="number" min="0" step="0.01" class="w-full px-3 py-2 border border-border-default rounded-md" /></div>
-            <div><label class="block text-sm mb-1">赎回单位净值</label><input v-model.number="redeemForm.unit_price" type="number" min="0" step="0.0001" class="w-full px-3 py-2 border border-border-default rounded-md" /></div>
+            <div>
+              <label class="block text-sm mb-1">赎回单位净值<span class="text-text-muted font-normal">（可留空）</span></label>
+              <input v-model.number="redeemForm.unit_price" type="number" min="0" step="0.0001" class="w-full px-3 py-2 border border-border-default rounded-md" placeholder="留空自动取当日净值" />
+            </div>
           </div>
           <div class="grid grid-cols-2 gap-3">
             <div><label class="block text-sm mb-1">赎回费用</label><input v-model.number="redeemForm.fee" type="number" min="0" step="0.01" class="w-full px-3 py-2 border border-border-default rounded-md" placeholder="0.00" /></div>
             <div><label class="block text-sm mb-1">赎回日期</label><input v-model="redeemForm.redeem_date" type="date" class="w-full px-3 py-2 border border-border-default rounded-md" /></div>
           </div>
-          <div class="text-xs text-text-muted">赎回记录会写入交易流水；当累计赎回份额等于持仓份额时，产品自动标记为已平仓</div>
+          <div class="text-xs text-text-muted">赎回记录会写入交易流水；当累计赎回份额等于持仓份额时，产品自动标记为已平仓。净值留空时系统自动取赎回日（或此前最近交易日）的收盘净值，回款金额 = 份额 × 净值。</div>
         </div>
 
         <!-- Create tab: existing form -->
@@ -719,12 +722,12 @@ function openProductModal(inv?: Investment) {
 
 async function redeemSubmit() {
   if (!redeemForm.value.investment_id) { show('请选择持仓', 'error'); return }
-  if (!(redeemForm.value.quantity > 0) || !(redeemForm.value.unit_price > 0)) { show('赎回份额与单位净值需大于 0', 'error'); return }
+  if (!(redeemForm.value.quantity > 0)) { show('赎回份额需大于 0', 'error'); return }
   if (!redeemForm.value.redeem_date) { show('请选择赎回日期', 'error'); return }
   try {
     await api.post(`/investments/${redeemForm.value.investment_id}/transactions`, {
       event_type: 'sell', event_date: redeemForm.value.redeem_date,
-      quantity: redeemForm.value.quantity, unit_price: redeemForm.value.unit_price,
+      quantity: redeemForm.value.quantity, unit_price: Number(redeemForm.value.unit_price) || 0,
       fee: redeemForm.value.fee || 0, notes: '',
     })
     show('赎回已记录', 'success')
@@ -856,7 +859,7 @@ async function saveTx() {
     const isBuySell = txForm.value.event_type === 'buy' || txForm.value.event_type === 'sell'
     const payload = {
       event_type: txForm.value.event_type, event_date: txForm.value.event_date,
-      quantity: txForm.value.quantity, unit_price: txForm.value.unit_price,
+      quantity: txForm.value.quantity, unit_price: Number(txForm.value.unit_price) || 0,
       fee: isBuySell ? (txForm.value.fee || 0) : 0, notes: txForm.value.notes
     }
     if (editingTx.value) {

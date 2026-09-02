@@ -152,22 +152,68 @@ async def _recompute_legacy_fields(db: AsyncSession, investment: Investment) -> 
     )
 
     diluted_cost = buys + fees - sells
-    avg_price = diluted_cost / net_qty if net_qty > 0 else 0.0
 
-    investment.quantity = net_qty
+    # 份额残差容差：买入/卖出份额都是浮点，全部卖出后累加常留下 ~1e-13 的碎股
+    # （如 308.07 + 358.35 - 666.42 = 1.14e-13）。若不设容差，该标的会被判定
+    # 为"仍持仓"，既进不了已平仓列表，成本价还会被除成天文数字（2026-09-02）。
+    QTY_EPS = 1e-6
+    has_position = net_qty > QTY_EPS
+    avg_price = diluted_cost / net_qty if has_position else 0.0
+
+    investment.quantity = net_qty if has_position else 0.0
     investment.purchase_price = avg_price
     earliest_buy = min((t.event_date for t in txs if t.event_type == "buy"), default=None)
     if earliest_buy:
         investment.purchase_date = earliest_buy
 
     last_sell = max((t.event_date for t in txs if t.event_type == "sell"), default=None)
-    if net_qty <= 0 and last_sell:
-        # Fully closed (net_qty may be -1e-13 float residue from exact offsets)
-        investment.quantity = 0.0
+    if not has_position and last_sell:
         investment.sell_date = last_sell
-    elif net_qty > 0 and investment.sell_date:
+    elif has_position and investment.sell_date:
         investment.sell_date = None
     # current_price is NOT recomputed here — only by the price provider refresh
+
+
+async def _resolve_sell_unit_price(
+    inv: Investment, event_date: str, db: AsyncSession, user_id: str
+) -> tuple[float, str] | None:
+    """平仓未填净值时自动补净值：优先卖出日（或此前最近交易日）收盘价，回退最新净值。
+
+    返回 (price, 来源说明)，取不到返回 None（此时调用方保持 0 并让前端提示）。
+    历史净值为已知数据，要求用户手填既不必要、漏填又会把回款算成 0（全额成本变亏损）。
+    """
+    if not inv.symbol or not inv.exchange:
+        return None
+    try:
+        end_d = datetime.strptime((event_date or "")[:10], "%Y-%m-%d")
+    except (ValueError, TypeError):
+        end_d = datetime.now()
+    begin_d = end_d - timedelta(days=30)  # 覆盖节假日/停牌：取此前最近交易日
+    ifind_user, ifind_pass = await ifind_client.get_credentials(db, user_id)
+    series: list[dict] = []
+    try:
+        series, _source = await asyncio.wait_for(
+            nav_history.fetch_history_series(
+                inv.symbol, inv.exchange,
+                begin_d.strftime("%Y-%m-%d"), end_d.strftime("%Y-%m-%d"),
+                ifind_user, ifind_pass,
+                force_money_market=bool(inv.is_money_market),
+            ),
+            timeout=20,
+        )
+    except Exception:
+        series = []
+    end_s = end_d.strftime("%Y-%m-%d")
+    picks = [
+        p for p in (series or [])
+        if str(p.get("date", "")) <= end_s and (p.get("close") or 0) > 0
+    ]
+    if picks:
+        last = picks[-1]
+        return float(last["close"]), f"{last['date']} 收盘净值"
+    if (inv.current_price or 0) > 0:
+        return float(inv.current_price), "最新净值（当日净值缺失）"
+    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -367,7 +413,10 @@ async def get_closed_positions(
         except (ValueError, TypeError):
             days = 0
         ann = None
-        if days > 0 and return_rate is not None:
+        # (1+return_rate) 必须为正才能开分数次幂：return_rate <= -100% 时
+        # Python 会返回复数，round(complex) 抛 TypeError 让整个接口 500
+        # （2026-09-02：平仓净值缺失导致 realized = -cost，正好越过 -100%）。
+        if days > 0 and return_rate is not None and return_rate > -1.0:
             ann = (1.0 + return_rate) ** (365.0 / days) - 1.0
         positions.append(ClosedPosition(
             id=inv.id,
@@ -415,6 +464,62 @@ async def get_closed_positions(
         total_return_rate=round(total_return_rate, 4) if total_return_rate is not None else None,
         count=len(positions),
     )
+
+
+@router.post("/maintenance/backfill-sell-nav")
+async def backfill_sell_nav(
+    user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_private_db),
+):
+    """回填历史卖出记录里缺失的净值，并重算全部持仓的汇总字段。
+
+    场景：平仓时未填净值 → unit_price/amount 为 0 → 回款算 0，全部成本被计为亏损。
+    同时修复份额浮点残差导致的"已卖光但仍挂在持仓"（_recompute_legacy_fields 容差）。
+    """
+    inv_res = await db.execute(
+        select(Investment).where(Investment.user_id == user_id).order_by(Investment.name.asc())
+    )
+    invs = list(inv_res.scalars().all())
+    updated: list[dict] = []
+    skipped: list[dict] = []
+    for inv in invs:
+        tx_res = await db.execute(
+            select(InvestmentTransaction)
+            .where(
+                InvestmentTransaction.investment_id == inv.id,
+                InvestmentTransaction.event_type == "sell",
+                or_(
+                    InvestmentTransaction.unit_price.is_(None),
+                    InvestmentTransaction.unit_price <= 0,
+                ),
+            )
+            .order_by(InvestmentTransaction.event_date.asc())
+        )
+        for tx in list(tx_res.scalars().all()):
+            resolved = await _resolve_sell_unit_price(inv, tx.event_date, db, user_id)
+            if not resolved:
+                skipped.append({
+                    "symbol": inv.symbol, "name": inv.name,
+                    "event_date": tx.event_date, "reason": "未取到净值（无代码/无行情源）",
+                })
+                continue
+            price, src = resolved
+            base_notes = (tx.notes or "").split("（净值自动补全")[0].strip()
+            tx.unit_price = price
+            tx.amount = float(tx.quantity or 0) * price
+            tx.notes = f"{base_notes}（净值自动补全：{src}）".strip()
+            updated.append({
+                "symbol": inv.symbol, "name": inv.name,
+                "event_date": tx.event_date,
+                "quantity": tx.quantity, "unit_price": round(price, 4),
+                "amount": round(tx.amount, 2), "source": src,
+            })
+        # 无论有无回填都重算：修复份额残差 / 成本价被极小份额放大等历史脏数据
+        await _recompute_legacy_fields(db, inv)
+    await db.commit()
+    _invalidate_portfolio_nav_cache(user_id)
+    return {"updated": updated, "skipped": skipped,
+            "updated_count": len(updated), "skipped_count": len(skipped)}
 
 
 async def _consistency_core(db: AsyncSession, user_id: str) -> dict:
@@ -480,7 +585,8 @@ async def _consistency_core(db: AsyncSession, user_id: str) -> dict:
             qty = sum(t.quantity for t in its if t.event_type not in ("dividend", "fee"))
         else:
             qty = inv.quantity or 0
-        is_open = not inv.sell_date and qty > 0
+        # 份额容差：浮点累加会留下 ~1e-13 碎股，不能当作"仍持仓"
+        is_open = not inv.sell_date and qty > 1e-6
         if is_open:
             if its:
                 holdings_cost += b + f - s - d
@@ -1567,7 +1673,16 @@ async def create_transaction(
     inv = await _load_investment(db, investment_id, user_id)
     # Sign convention: buys positive, sells negative; amount excludes fee (fee is a separate column)
     qty = req.quantity if req.event_type != "sell" else -abs(req.quantity)
-    amount = qty * req.unit_price
+    unit_price = float(req.unit_price or 0)
+    notes = req.notes
+    if req.event_type == "sell" and unit_price <= 0:
+        # 净值为已知数据，允许留空：自动取卖出日（或此前最近交易日）净值，
+        # 否则 amount=0 会让回款算成 0，把全部成本计为亏损。
+        resolved = await _resolve_sell_unit_price(inv, req.event_date, db, user_id)
+        if resolved:
+            unit_price, src = resolved
+            notes = f"{notes or ''}（净值自动补全：{src}）".strip()
+    amount = qty * unit_price
     fee = abs(req.fee or 0)
     if req.event_type == "dividend":
         # Dividend: quantity 0, amount = positive cash to investor
@@ -1584,10 +1699,10 @@ async def create_transaction(
         event_type=req.event_type,
         event_date=req.event_date,
         quantity=qty,
-        unit_price=req.unit_price,
+        unit_price=unit_price,
         amount=amount,
         fee=fee,
-        notes=req.notes,
+        notes=notes,
     )
     db.add(tx)
     await db.flush()
@@ -1633,6 +1748,11 @@ async def update_transaction(
         else:
             if tx.event_type == "sell":
                 tx.quantity = -abs(tx.quantity)
+                if float(tx.unit_price or 0) <= 0:
+                    resolved = await _resolve_sell_unit_price(inv, tx.event_date, db, user_id)
+                    if resolved:
+                        tx.unit_price, src = resolved
+                        tx.notes = f"{tx.notes or ''}（净值自动补全：{src}）".strip()
             tx.amount = tx.quantity * tx.unit_price
         tx.fee = fee
     await _recompute_legacy_fields(db, inv)

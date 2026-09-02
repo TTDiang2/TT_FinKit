@@ -62,7 +62,8 @@ def strategy_file(tmp_path):
 
 def _run_cli(strategy_file: str, *extra: str) -> subprocess.CompletedProcess:
     cli = os.path.join(_BACKEND, "scripts", "run_backtest_cli.py")
-    db = os.path.join(_BACKEND, "finkit.db")
+    # 双库拆分（2026-08-31）后价格/标的都在 public 库；旧单库 finkit.db 已归档删除。
+    db = os.path.join(_BACKEND, "finkit_public.db")
     cmd = [
         sys.executable, cli,
         "--strategy-file", strategy_file,
