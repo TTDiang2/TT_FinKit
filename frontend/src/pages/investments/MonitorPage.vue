@@ -355,6 +355,8 @@ const route = useRoute()
 const events = ref<any[]>([])
 const eventsLoaded = ref(false)
 const eventClass = ref('')
+import { useToast } from '@/composables/useToast'
+const { show } = useToast()
 const collecting = ref(false)
 
 async function loadEvents() {
@@ -370,8 +372,15 @@ async function loadEvents() {
 async function collectEvents() {
   collecting.value = true
   try {
-    await api.post('/monitor/events/collect', {})
+    // RSS 抓取多源串行 + 节流，可能 20-60s： axios 全局超时不够时放宽
+    const res = await api.post('/monitor/events/collect', {}, { timeout: 120000 })
+    const r = res.data as { feeds?: number; added?: number; feeds_failed?: number }
+    const fail = r?.feeds_failed ? `（${r.feeds_failed} 个源失败）` : ''
+    show(`采集完成：新增 ${r?.added ?? 0} 条 / 见 ${r?.feeds ?? 0} 源${fail}`,
+         (r?.added ?? 0) > 0 ? 'success' : 'info')
     await loadEvents()
+  } catch (e: any) {
+    show(e?.response?.data?.detail || e?.message || '采集失败', 'error')
   } finally {
     collecting.value = false
   }

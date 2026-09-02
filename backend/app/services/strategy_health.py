@@ -156,7 +156,12 @@ async def strategy_health(db: AsyncSession, pub: AsyncSession, user_id: str) -> 
     out["live_drift"] = drift
 
     # ---- 失效判定（用户拍板的默认阈值）----
+    # 实盘未开始（无调仓记录）时不做红判：回测失效扫描的历史停滞段
+    # 不代表实盘失效（2026-09-02 用户反馈刚激活就被判「失效」）
+    last_rb, rb_src = await _last_rebalance_date(db, user_id)
     level, reasons = "ok", []
+    if not last_rb:
+        reasons.append("实盘尚未开始执行调仓，失效判定将在首笔调仓后启用")
     if base_metrics and drift["mdd"] is not None:
         bt_mdd = base_metrics.get("max_drawdown") or 0.0
         bt_ann = base_metrics.get("ann_return") or 0.0
@@ -174,7 +179,7 @@ async def strategy_health(db: AsyncSession, pub: AsyncSession, user_id: str) -> 
     if reasons:
         level = "yellow"
         # 持续性 → 红：失效扫描里存在覆盖最近 63 日的失效段
-        if stagnant:
+        if stagnant and last_rb:
             for p in stagnant:
                 if p.get("end", "0000") >= (today - timedelta(days=RED_PERSIST_DAYS)).isoformat():
                     level = "red"
@@ -187,7 +192,6 @@ async def strategy_health(db: AsyncSession, pub: AsyncSession, user_id: str) -> 
                                "red_persist_days": RED_PERSIST_DAYS}}
 
     # ---- 调仓冷却 ----
-    last_rb, rb_src = await _last_rebalance_date(db, user_id)
     cooldown_until = None
     if last_rb:
         d0 = date.fromisoformat(str(last_rb)[:10])

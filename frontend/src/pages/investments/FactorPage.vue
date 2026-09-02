@@ -14,21 +14,15 @@
         </button>
         <div v-if="activeTab === 'analysis'" class="relative">
           <button @click="showAssetPicker = !showAssetPicker" class="btn-secondary">
-            重算范围: {{ recomputeAssetIds.length ? `${recomputeAssetIds.length} 个标的` : '全部标的' }}
+            重算范围: {{ recomputeAssetIds.length ? `${recomputeAssetIds.length} 个标的` : '未选择（必须选组合）' }}
           </button>
-          <div v-if="showAssetPicker" class="absolute right-0 top-full mt-1 z-20 bg-white border border-border-default rounded-md shadow-lg p-2 w-72 max-h-80 overflow-auto">
-            <label class="flex items-center gap-2 text-xs px-1 py-1 cursor-pointer font-medium">
-              <input type="checkbox" :checked="recomputeAssetIds.length === 0" @change="recomputeAssetIds = []" />
-              全部入池标的
-            </label>
-            <div class="border-t border-border-default my-1"></div>
-            <label v-for="a in pooledAssets" :key="a.value" class="flex items-center gap-2 text-xs px-1 py-1 cursor-pointer hover:bg-bg-tertiary rounded">
-              <input type="checkbox" :value="a.value" v-model="recomputeAssetIds" />
-              <span class="truncate">{{ a.label }}</span>
-            </label>
-            <div class="border-t border-border-default my-1"></div>
-            <div class="flex gap-2 px-1 pt-1">
-              <button @click="recomputeAssetIds = pooledAssets.map(a => a.value)" class="text-xs text-accent-primary hover:underline">全选</button>
+          <div v-if="showAssetPicker" class="absolute right-0 top-full mt-1 z-20 bg-white border border-border-default rounded-md shadow-lg p-3 w-80">
+            <div class="text-xs text-text-muted mb-2">按组合选择重算范围（防止误跑全池 7714 只）</div>
+            <select v-model="pickerGroupId" class="w-full px-2 py-1.5 text-sm border border-border-default rounded-md mb-2" @change="applyPickerGroup">
+              <option value="">选择组合…</option>
+              <option v-for="g in assetGroups" :key="g.id" :value="g.id">{{ g.name }}（{{ g.asset_ids.length }}）</option>
+            </select>
+            <div class="flex gap-2 px-1">
               <button @click="recomputeAssetIds = []" class="text-xs text-text-muted hover:underline">清空</button>
               <button @click="showAssetPicker = false" class="ml-auto text-xs text-accent-primary hover:underline">完成</button>
             </div>
@@ -488,6 +482,16 @@ const historyError = ref('')
 const pooledAssets = ref<Array<{ value: string; label: string; symbol: string }>>([])
 const showAssetPicker = ref(false)
 const recomputeAssetIds = ref<string[]>([])
+const pickerGroupId = ref('')
+
+function applyPickerGroup() {
+  const g = assetGroups.value.find(x => x.id === pickerGroupId.value)
+  if (!g) return
+  const idSet = new Set(g.asset_ids)
+  recomputeAssetIds.value = pooledAssets.value
+    .filter(a => idSet.has(a.value))
+    .map(a => a.value)
+}
 const contribAsset = ref('')
 const contribStart = ref('')
 const contribEnd = ref('')
@@ -697,6 +701,10 @@ async function loadMatrixMeta() {
 }
 
 async function recomputeExposures() {
+  if (!recomputeAssetIds.value.length) {
+    toast.show('请先在「重算范围」里选择一个标的组合', 'error')
+    return
+  }
   recomputing.value = true
   try {
     // full=true 会自然回填所有历史月份（如果只缺最新月，每日刷新会自动补）

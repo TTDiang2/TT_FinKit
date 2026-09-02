@@ -14,7 +14,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 BACKEND = Path(__file__).resolve().parents[1]
-DB = str(BACKEND / "finkit.db")
+DB = str(BACKEND / "finkit_public.db")
 CACHE = BACKEND / "cache"
 CACHE.mkdir(exist_ok=True)
 

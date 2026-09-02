@@ -108,12 +108,13 @@ def collect(db_path: str = str(DB), throttle_s: float = 1.5) -> dict:
     conn.execute("PRAGMA busy_timeout=60000")
     conn.execute(CREATE_SQL)
     conn.commit()
-    added, seen = 0, 0
+    added, seen, feeds_failed = 0, 0, 0
     for feed in FEEDS:
         try:
             body = _fetch(feed["url"])
         except Exception as e:  # noqa: BLE001 — 单源失败不阻断
             print(f"[rss] {feed['name']} fetch failed: {e}", flush=True)
+            feeds_failed += 1
             continue
         now = datetime.utcnow().isoformat()
         for it in parse_feed(body):
@@ -133,7 +134,7 @@ def collect(db_path: str = str(DB), throttle_s: float = 1.5) -> dict:
         conn.commit()
         time.sleep(throttle_s)
     conn.close()
-    return {"feeds": len(FEEDS), "items_seen": seen, "added": added}
+    return {"feeds": len(FEEDS) - feeds_failed, "items_seen": seen, "added": added, "feeds_failed": feeds_failed}
 
 
 def list_events(db_path: str = str(DB), limit: int = 100,

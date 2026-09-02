@@ -346,9 +346,19 @@ async def list_evaluations(
     rows = (await db.execute(
         select(FactorEvaluation).where(FactorEvaluation.user_id == user_id)
     )).scalars().all()
+    # factor_name：曾缺失导致评估表第一列空白（2026-09-02 用户反馈）
+    name_by_key = {}
+    frows = (await db.execute(select(Factor))).scalars().all()
+    for f in frows:
+        name_by_key[f.key] = f.name
+    out = []
+    for r in rows:
+        d = evaluation_to_dict(r)
+        d["factor_name"] = name_by_key.get(r.factor_key, r.factor_key)
+        out.append(d)
     return {
         "thresholds": DEFAULT_THRESHOLDS,
-        "evaluations": [evaluation_to_dict(r) for r in rows],
+        "evaluations": out,
     }
 
 

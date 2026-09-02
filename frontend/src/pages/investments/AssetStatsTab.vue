@@ -23,37 +23,26 @@
       <div class="text-xs text-text-muted ml-auto">{{ selectedSymbols.length }} 个标的已选（共 {{ filteredSelector.length }} 可选）</div>
     </div>
 
-    <!-- 标的选择面板 -->
+    <!-- 标的选择面板：只按组合选（用户拍板 2026-09-02） -->
     <div class="bg-white rounded-lg shadow-sm p-3 mb-4">
-      <div class="flex items-center gap-2 mb-2">
-        <span class="text-sm font-medium">标的选择</span>
-        <button @click="selectTop10" class="px-2 py-0.5 text-xs rounded border border-border-default text-text-secondary hover:bg-bg-tertiary">夏普Top10</button>
-        <button @click="selectAllFiltered" class="px-2 py-0.5 text-xs rounded border border-border-default text-text-secondary hover:bg-bg-tertiary">全选当前筛选</button>
-        <button @click="clearSelection" class="px-2 py-0.5 text-xs rounded border border-border-default text-text-secondary hover:bg-bg-tertiary">清空</button>
-        <select v-model="groupPick" @change="applyGroupPick" class="px-2 py-0.5 text-xs border border-border-default rounded-md ml-2">
-          <option value="">按组合选择…</option>
+      <div class="flex items-center gap-2 flex-wrap">
+        <span class="text-sm font-medium shrink-0">标的组合</span>
+        <select v-model="groupPick" @change="applyGroupPick" class="px-3 py-1.5 text-sm border border-border-default rounded-md min-w-56">
+          <option value="">请选择组合…</option>
           <option v-for="g in groups" :key="g.id" :value="g.id">{{ g.name }}（{{ g.asset_ids.length }}）</option>
         </select>
-        <span class="text-xs text-text-muted ml-auto">按夏普1Y降序 · 仅展示有数据标的</span>
-      </div>
-      <div class="max-h-40 overflow-y-auto border border-border-default rounded-md">
-        <div v-if="!filteredSelector.length" class="py-6 text-center text-sm text-text-muted">无可用标的</div>
-        <label v-for="a in filteredSelector" :key="a.id"
-          :class="['flex items-center gap-2 px-3 py-1.5 text-xs cursor-pointer hover:bg-bg-tertiary border-b border-border-light last:border-0',
-            !a.has_data && 'opacity-40']">
-          <input type="checkbox" :checked="selectedIds.has(a.id)" @change="toggleSelect(a.id)" class="accent-accent-primary" />
-          <span class="font-mono w-20 shrink-0">{{ a.symbol }}</span>
-          <span class="flex-1 truncate">{{ a.name }}</span>
-          <span class="text-text-muted w-20 text-right">{{ a.category || '—' }}</span>
-          <span :class="['w-16 text-right font-mono', (a.sharpe_1y ?? 0) >= 0 ? 'text-income-color' : 'text-expense-color']">
-            {{ a.sharpe_1y != null ? a.sharpe_1y.toFixed(2) : '—' }}
-          </span>
-        </label>
+        <span class="text-xs text-text-muted">
+          已选 {{ selectedSymbols.length }} 只标的（在组合内且有数据）
+        </span>
+        <span v-if="snapshotPending" class="text-xs text-warning ml-auto">后台统计计算中，自动刷新…</span>
       </div>
     </div>
 
     <div v-if="loading" class="text-sm text-text-muted py-12 text-center">统计计算中…</div>
-    <div v-else-if="!filteredAssets.length" class="text-sm text-text-muted py-12 text-center">所选范围内没有标的</div>
+    <div v-else-if="!selectedSymbols.length" class="text-sm text-text-muted py-12 text-center">请先在上方选择一个标的组合</div>
+    <div v-else-if="!filteredAssets.length" class="text-sm text-text-muted py-12 text-center">
+      {{ snapshotPending ? '统计后台计算中（首次约 30-60 秒），自动刷新中…' : '所选范围内没有标的' }}
+    </div>
     <template v-else>
       <div class="grid grid-cols-1 gap-6">
         <!-- 1. 归一化净值曲线 -->
@@ -241,8 +230,13 @@ async function load() {
     }
     const res = await api.get('/research/stats/snapshot', { params })
     if ((res.data as any)?.pending) {
-      // 后台重算中：10 秒后自动重试（serve-stale 模式，算完自动出图）
-      setTimeout(() => { if (!loading.value) load() }, 10000)
+      // 后台重算中（子进程 32s+）：8 秒后自动重试，最多 40 次（~5 分钟）
+      pendingTries.value += 1
+      if (pendingTries.value <= 40) {
+        setTimeout(() => { if (!loading.value) load() }, 8000)
+      }
+    } else {
+      pendingTries.value = 0
     }
     snapshot.value = res.data
   } catch (e) {
@@ -252,6 +246,8 @@ async function load() {
     loading.value = false
   }
 }
+
+const pendingTries = ref(0)
 
 function toggleSelect(id: string) {
   const s = new Set(selectedIds.value)
@@ -272,9 +268,12 @@ function applyGroupPick() {
   const g = groups.value.find(x => x.id === groupPick.value)
   if (!g) return
   const memberSet = new Set(g.asset_ids)
+  // 组合成员全部选中（不再依赖 has_data 前置过滤，snapshot 端点会自行剔除无数据标的）
   selectedIds.value = new Set(
-    filteredSelector.value.filter(a => memberSet.has(a.id)).map(a => a.id))
+    selectorItems.value.filter(a => memberSet.has(a.id)).map(a => a.id))
 }
+
+const snapshotPending = computed(() => !!(snapshot.value as any)?.pending)
 
 function selectAllFiltered() {
   selectedIds.value = new Set(filteredSelector.value.map(a => a.id))

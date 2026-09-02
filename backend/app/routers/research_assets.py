@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..database import get_public_db, async_session_maker
+from ..database import get_public_db, get_private_db, async_session_maker
 from ..models.research_asset import ResearchAsset, ResearchAssetPrice
 from ..models.research_group import ResearchGroup, ResearchGroupMember
 from ..schemas.research_asset import (
@@ -436,10 +436,11 @@ async def lookthrough_endpoint(req: dict,
 
 @router.get("/hot")
 async def hot_overview_endpoint(user_id: str = Depends(get_current_user_id),
-                                db: AsyncSession = Depends(get_public_db)):
-    """热点页：持仓层每日异动 + 全池层异动（截至最近统计刷新）。"""
+                                db: AsyncSession = Depends(get_private_db),
+                                pub: AsyncSession = Depends(get_public_db)):
+    """热点页：持仓Recently变动 + 全池不动量（自动数据刷新统计）。"""
     from ..services.hot_movers import hot_overview
-    return await hot_overview(db, user_id)
+    return await hot_overview(pub, user_id, priv=db)
 
 
 @router.get("", response_model=None)

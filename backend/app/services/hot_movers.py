@@ -18,11 +18,11 @@ from ..models.research_asset import ResearchAsset, ResearchAssetPrice
 from ..models.research_asset_stats import ResearchAssetStats
 
 
-async def hot_overview(db: AsyncSession, user_id: str) -> dict:
+async def hot_overview(pub: AsyncSession, user_id: str, priv: AsyncSession | None = None) -> dict:
     today = date.today().isoformat()
 
     # ---- 全池层（读预计算表，零重算）----
-    stats = (await db.execute(
+    stats = (await pub.execute(
         select(ResearchAssetStats).where(ResearchAssetStats.status == "pooled")
     )).scalars().all()
     valid = [s for s in stats if s.last_date]
@@ -57,13 +57,15 @@ async def hot_overview(db: AsyncSession, user_id: str) -> dict:
     }
 
     # ---- 持仓层（当日价格已自动更新，实时异动）----
-    invs = (await db.execute(
+    # Investment 在 private 库：优先用 priv，单库模式回退 pub（同一 session）
+    inv_sess = priv or pub
+    invs = (await inv_sess.execute(
         select(Investment).where(Investment.user_id == user_id, open_position_cond())
     )).scalars().all()
     held_syms = [i.symbol for i in invs if i.symbol]
     holdings: list[dict] = []
     if held_syms:
-        rows = (await db.execute(
+        rows = (await pub.execute(
             select(ResearchAsset.symbol, ResearchAsset.name,
                    ResearchAssetPrice.date, ResearchAssetPrice.close)
             .join(ResearchAsset, ResearchAsset.id == ResearchAssetPrice.asset_id)
@@ -121,6 +123,7 @@ async def refresh_holdings_prices(db: AsyncSession, user_id: str,
 
     pdb = pub if pub is not None else db
 
+    # Investment 在 private 库 → 用 db（private 会话）；研究价格表在 public → 用 pdb
     invs = (await db.execute(
         select(Investment).where(Investment.user_id == user_id, open_position_cond())
     )).scalars().all()

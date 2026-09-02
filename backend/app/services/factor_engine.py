@@ -179,12 +179,17 @@ async def recompute_exposures(
     skipped: list[dict] = []
 
     # 一次加载该用户全部现有暴露行，避免每 (asset, month, factor) 一条 SELECT
-    # 的 N+1 地狱 —— 全量回填时那是上万次往返、请求必然超时
-    exp_rows = (await db.execute(
+    # 的 N+1 地狱 —— 全量回填时那是上万次往返、请求必然超时。
+    # asset_symbols 时必须下推过滤：否则小范围重算也会全量加载 400 万+ 行
+    # （2026-09-02 用户选 5 只标的卡死 300s 的根因）。
+    exp_q = (
         select(FactorExposure)
         .join(ResearchAsset, FactorExposure.asset_id == ResearchAsset.id)
         .where(ResearchAsset.user_id == user_id)
-    )).scalars().all()
+    )
+    if asset_symbols:
+        exp_q = exp_q.where(ResearchAsset.symbol.in_(asset_symbols))
+    exp_rows = (await db.execute(exp_q)).scalars().all()
     existing_map: dict[tuple[str, str, str], FactorExposure] = {
         (e.asset_id, e.as_of_date, e.factor_id): e for e in exp_rows
     }

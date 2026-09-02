@@ -99,9 +99,9 @@ async def stats_snapshot_cached(
             _stats_cache[f"busy:{key}"] = True
 
             async def _recompute() -> None:
-                from ..database import async_session_maker
+                from ..database import public_session_maker
                 try:
-                    async with async_session_maker() as db2:
+                    async with public_session_maker() as db2:
                         data = await stats_snapshot(days=days, assets=assets, user_id=user_id, db=db2)
                     _stats_cache[key] = {"ts": _time.time(), "data": data}
                 except Exception:  # noqa: BLE001
