@@ -167,7 +167,6 @@ async def refresh_all(
     return results
 
 
-@router.get("/exposure-matrix", response_model=ExposureMatrix)
 @router.get("/exposure-months")
 async def exposure_months(user_id: str = Depends(get_current_user_id),
                           db: AsyncSession = Depends(get_public_db)):
@@ -181,6 +180,7 @@ async def exposure_months(user_id: str = Depends(get_current_user_id),
     return {"months": months, "latest": latest}
 
 
+@router.get("/exposure-matrix", response_model=ExposureMatrix)
 async def exposure_matrix(
     as_of: Optional[str] = Query(None, description="YYYY-MM（该月任一月末）或 YYYY-MM-DD；默认最新"),
     symbols: Optional[str] = Query(None, description="逗号分隔标的代码，优先于 group/search/limit"),
