@@ -144,3 +144,9 @@ async def run_lightweight_migrations(conn: AsyncConnection) -> None:
         )
         """,
     )
+    # signals: per-user isolation (rebalance schedule differs per account)
+    await _add_column_if_missing(conn, "signals", "user_id", "VARCHAR")
+    await conn.execute(
+        text("UPDATE signals SET user_id = (SELECT id FROM users ORDER BY created_at LIMIT 1) "
+             "WHERE user_id IS NULL")
+    )

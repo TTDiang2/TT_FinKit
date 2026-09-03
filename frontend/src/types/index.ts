@@ -657,7 +657,7 @@ export interface SignalRiskStatus {
 
 export interface SignalRunResult {
   signal_id: string
-  status: 'ok' | 'error'
+  status: 'ok' | 'running' | 'error'
   error?: string
 }
 

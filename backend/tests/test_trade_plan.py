@@ -23,8 +23,9 @@ async def _make_db() -> tuple[AsyncSession, object]:
     return maker(), engine
 
 
-def _mk_signal(target: dict) -> Signal:
+def _mk_signal(target: dict, user_id: str | None = None) -> Signal:
     return Signal(
+        user_id=user_id,  # signals 自 2026-09-03 起按账号隔离
         strategy_id="s1", strategy_version=1,
         run_date=date.today().isoformat(), as_of_date=date.today().isoformat(),
         target_weights=json.dumps(target),
@@ -60,7 +61,7 @@ class TestTradePlan:
                                symbol="B", exchange="FUND_CN", quantity=10000,
                                current_price=2.0,
                                purchase_date=(date.today() - timedelta(days=40)).isoformat()),
-                    _mk_signal({"A": 0.5, "B": 0.5}),
+                    _mk_signal({"A": 0.5, "B": 0.5}, user_id=u.id),
                 ])
                 await db.commit()
 
@@ -101,7 +102,7 @@ class TestTradePlan:
                     Investment(user_id=u.id, name="h", investment_type="fund",
                                symbol="A", exchange="FUND_CN", quantity=1000,
                                current_price=1.0, purchase_date="2026-01-01"),
-                    _mk_signal({"A": 0.996}),   # Δ ≈ -4元 → hold via buffer band
+                    _mk_signal({"A": 0.996}, user_id=u.id),   # Δ ≈ -4元 → hold via buffer band
                 ])
                 await db.commit()
                 plan = await sg.compute_trade_plan(db, db, u.id)

@@ -19,23 +19,29 @@ async def get_active_strategy(db: AsyncSession):
     )
     return result.scalar_one_or_none()
 
-async def get_latest_signal(db: AsyncSession) -> Signal | None:
-    result = await db.execute(select(Signal).order_by(Signal.created_at.desc()).limit(1))
+async def get_latest_signal(db: AsyncSession, user_id: str) -> Signal | None:
+    result = await db.execute(
+        select(Signal).where(Signal.user_id == user_id)
+        .order_by(Signal.created_at.desc()).limit(1))
     return result.scalar_one_or_none()
 
-async def list_signals(db: AsyncSession, limit: int = 50) -> list[Signal]:
-    result = await db.execute(select(Signal).order_by(Signal.created_at.desc()).limit(limit))
+async def list_signals(db: AsyncSession, user_id: str, limit: int = 50) -> list[Signal]:
+    result = await db.execute(
+        select(Signal).where(Signal.user_id == user_id)
+        .order_by(Signal.created_at.desc()).limit(limit))
     return list(result.scalars().all())
 
-async def get_signal(db: AsyncSession, signal_id: str) -> Signal | None:
-    result = await db.execute(select(Signal).where(Signal.id == signal_id))
+async def get_signal(db: AsyncSession, signal_id: str, user_id: str) -> Signal | None:
+    result = await db.execute(
+        select(Signal).where(Signal.id == signal_id, Signal.user_id == user_id))
     return result.scalar_one_or_none()
 
-async def save_signal(db: AsyncSession, strategy_id: str, strategy_version: int,
+async def save_signal(db: AsyncSession, user_id: str, strategy_id: str, strategy_version: int,
                      run_date: str, as_of_date: str, next_rebalance_date: str | None,
                      target_weights: dict, risk_status: dict | None = None,
                      backtest_id: str | None = None) -> Signal:
     sig = Signal(
+        user_id=user_id,
         strategy_id=strategy_id,
         strategy_version=strategy_version,
         run_date=run_date,

@@ -269,8 +269,23 @@ async function runSignal() {
   running.value = true
   runError.value = ''
   try {
+    const prevId = currentSignal.value?.id || ''
     const result = await api.post<SignalRunResult>('/signals/run', {})
-    if (result.data.status === 'ok') {
+    if (result.data.status === 'running') {
+      // 后台生成中(全池可能数分钟):轮询直到出现新 signal
+      const deadline = Date.now() + 10 * 60 * 1000
+      while (Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 5000))
+        const cur = await api.get<SignalResponse | null>('/signals/current').then(r => r.data).catch(() => null)
+        if (cur && cur.id !== prevId) {
+          currentSignal.value = cur
+          break
+        }
+        if (!running.value) return
+      }
+      await loadSignals()
+      await loadTradePlan()
+    } else if (result.data.status === 'ok') {
       await loadSignals()
       await loadTradePlan()
     } else {

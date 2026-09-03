@@ -1,7 +1,7 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from ..database import get_private_db, get_public_db
+from ..database import get_private_db, get_public_db, async_session_maker
 from ..config import _resolve_public_url as _pub_url
 from ..middleware.auth import get_current_user_id
 from ..schemas.signal import SignalResponse, SignalRunResult
@@ -90,21 +90,68 @@ async def _current_weights_from_holdings(db: AsyncSession, pub: AsyncSession, us
     return {s: w / total for s, w in mv.items() if w > 0}
 
 
+_SIGNAL_JOB_RUNNING = False
+
+
+def _run_signal_job(strategy_code: str, params: dict, universe: list[str],
+                    rebalance_freq: str, current_weights: dict, db_path: str,
+                    strategy_id: str, strategy_version: int, user_id: str) -> None:
+    """后台线程执行全池信号生成（7714 标的可能耗时数分钟，不能占住请求）。"""
+    global _SIGNAL_JOB_RUNNING
+    import asyncio
+    try:
+        result = generate_signal(
+            strategy_code=strategy_code,
+            params=params,
+            universe=universe,
+            rebalance_freq=rebalance_freq,
+            current_weights=current_weights,
+            db_path=db_path,
+        )
+        if result.get("status") != "ok":
+            return
+
+        async def _save():
+            async with async_session_maker() as s:
+                await save_signal(
+                    s,
+                    user_id=user_id,
+                    strategy_id=strategy_id,
+                    strategy_version=strategy_version,
+                    run_date=date.today().isoformat(),
+                    as_of_date=result["as_of_date"],
+                    next_rebalance_date=result["next_rebalance_date"],
+                    target_weights=result["target_weights"],
+                    risk_status=result.get("risk_status"),
+                )
+        asyncio.run(_save())
+    except Exception:
+        import logging
+        logging.getLogger("uvicorn.error").exception("background signal job failed")
+    finally:
+        _SIGNAL_JOB_RUNNING = False
+
+
 @router.post("/run", response_model=SignalRunResult)
-async def run_signal_endpoint(db: AsyncSession = Depends(get_private_db),
+async def run_signal_endpoint(background_tasks: BackgroundTasks,
+                              db: AsyncSession = Depends(get_private_db),
                               pub: AsyncSession = Depends(get_public_db),
                               user_id: str = Depends(get_current_user_id)):
-    """Run the active strategy to generate a new signal."""
-    # Get active strategy (latest imported or the one set as active)
-    # For now: use the most recently created strategy
+    """Run the active strategy to generate a new signal.
+
+    全池 universe 计算耗时可能数分钟，改为后台任务：立即返回 running，
+    前端轮询 /signals/current 直到出现新 signal。
+    """
+    global _SIGNAL_JOB_RUNNING
+    if _SIGNAL_JOB_RUNNING:
+        return SignalRunResult(signal_id="", status="running",
+                               error="已有信号生成任务进行中，请稍候")
     strat = await get_active_strategy(pub)
     if not strat:
         raise HTTPException(status_code=404, detail="No active strategy found. Please import or activate a strategy first.")
 
-    # Load strategy params from active (or use defaults)
-    active_params = {}
+    active_params: dict = {}
 
-    # Get universe: 策略绑定的标的组合成员 ∩ 已入池；未绑定 → 全部入池
     from app.models.research_asset import ResearchAsset
     universe_q = select(ResearchAsset).where(ResearchAsset.status == "pooled")
     if strat.group_id:
@@ -121,40 +168,22 @@ async def run_signal_endpoint(db: AsyncSession = Depends(get_private_db),
             detail="策略绑定的标的组合中没有已入池标的——请先在标的面板把这些组合成员入池",
         )
 
-    try:
-        current_weights = await _current_weights_from_holdings(db, pub, user_id)
-        signal_result = generate_signal(
-            strategy_code=strat.code,
-            params=active_params,
-            universe=universe,
-            rebalance_freq=strat.rebalance_freq or "monthly",
-            current_weights=current_weights,
-            db_path=_pub_url().split("///")[-1],
-        )
-    except Exception as e:
-        return SignalRunResult(signal_id="", status="error", error=str(e))
-
-    if signal_result["status"] != "ok":
-        return SignalRunResult(signal_id="", status="error", error=signal_result.get("error"))
-
-    # Save signal
-    sig = await save_signal(
-        db,
-        strategy_id=strat.id,
-        strategy_version=strat.version,
-        run_date=date.today().isoformat(),
-        as_of_date=signal_result["as_of_date"],
-        next_rebalance_date=signal_result["next_rebalance_date"],
-        target_weights=signal_result["target_weights"],
-        risk_status=signal_result["risk_status"],
+    current_weights = await _current_weights_from_holdings(db, pub, user_id)
+    _SIGNAL_JOB_RUNNING = True
+    background_tasks.add_task(
+        _run_signal_job,
+        strat.code, dict(active_params), universe,
+        strat.rebalance_freq or "monthly", current_weights,
+        _pub_url().split("///")[-1],
+        strat.id, strat.version, user_id,
     )
-
-    return SignalRunResult(signal_id=sig.id, status="ok")
+    return SignalRunResult(signal_id="", status="running")
 
 @router.get("/current", response_model=SignalResponse | None)
 async def get_current_signal_endpoint(db: AsyncSession = Depends(get_private_db),
-                                      pub: AsyncSession = Depends(get_public_db)):
-    sig = await get_latest_signal(db)
+                                      pub: AsyncSession = Depends(get_public_db),
+                                      user_id: str = Depends(get_current_user_id)):
+    sig = await get_latest_signal(db, user_id)
     if not sig:
         return None
     sname, vnote = await _strategy_meta(pub, sig.strategy_id)
@@ -165,8 +194,9 @@ async def get_current_signal_endpoint(db: AsyncSession = Depends(get_private_db)
 
 @router.get("", response_model=list[SignalResponse])
 async def list_signals_endpoint(limit: int = Query(50), db: AsyncSession = Depends(get_private_db),
-                                pub: AsyncSession = Depends(get_public_db)):
-    signals = await list_signals(db, limit)
+                                pub: AsyncSession = Depends(get_public_db),
+                                user_id: str = Depends(get_current_user_id)):
+    signals = await list_signals(db, user_id, limit)
     return [_signal_to_response(s) for s in signals]
 
 # --------------------------------------------------------------------------- #
@@ -206,7 +236,7 @@ def _redeem_fee_for(rules_json: str | None, holding_days: int):
 
 async def compute_trade_plan(db: AsyncSession, pub: AsyncSession, user_id: str,
                              additional_cash: float = 0.0) -> dict:
-    sig = await get_latest_signal(db)
+    sig = await get_latest_signal(db, user_id)
     targets: dict[str, float] = json.loads(sig.target_weights) if sig else {}
 
     assets = (await pub.execute(select(ResearchAsset).where(
@@ -330,8 +360,9 @@ async def trade_plan_endpoint(
     return await compute_trade_plan(db, pub, user_id, additional_cash=additional_cash)
 @router.get("/{signal_id}", response_model=SignalResponse)
 async def get_signal_endpoint(signal_id: str, db: AsyncSession = Depends(get_private_db),
-                              pub: AsyncSession = Depends(get_public_db)):
-    sig = await get_signal(db, signal_id)
+                              pub: AsyncSession = Depends(get_public_db),
+                              user_id: str = Depends(get_current_user_id)):
+    sig = await get_signal(db, signal_id, user_id)
     if not sig:
         raise HTTPException(status_code=404, detail="Signal not found")
     sname, vnote = await _strategy_meta(pub, sig.strategy_id)

@@ -5,6 +5,7 @@ import uuid, datetime
 class Signal(Base):
     __tablename__ = "signals"
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String, nullable=True)  # owner; NULL = legacy global row
     strategy_id = Column(String, nullable=False)
     strategy_version = Column(Integer, nullable=False)
     run_date = Column(String, nullable=False)  # YYYY-MM-DD: when signal was generated
