@@ -974,15 +974,22 @@ async def _build_portfolio_series(
     mmf_ids = {inv.id for inv in invs if inv.is_money_market}
     fund_navs: dict[str, dict[str, float]] = {}
     funds_meta = []
-    for inv in invs:
+
+    async def _fetch_one(inv):
         try:
             series, source = await nav_history.fetch_history_series(
                 inv.symbol, inv.exchange, begin, end, ifind_user, ifind_pass,
                 force_money_market=(inv.id in mmf_ids),
             )
-        except nav_history.NavHistoryError:
+            return inv, {p["date"]: p["close"] for p in series}, source, None
+        except nav_history.NavHistoryError as e:
+            return inv, None, None, str(e)
+
+    results = await asyncio.gather(*[_fetch_one(inv) for inv in invs])
+    for inv, series_map, source, err in results:
+        if err or series_map is None:
             continue
-        fund_navs[inv.id] = {p["date"]: p["close"] for p in series}
+        fund_navs[inv.id] = series_map
         funds_meta.append({"id": inv.id, "name": inv.name, "symbol": inv.symbol, "source": source})
 
     dates = sorted(set().union(*[set(navs) for navs in fund_navs.values()])) if fund_navs else []
@@ -1062,9 +1069,22 @@ async def _build_portfolio_series(
         cum_trade += trade_cash_by_date.get(d, 0.0)
         cash_by_date[d] = cum_flow + cum_trade
 
+    # Ledger with no external cash flows (deposits/withdrawals never recorded):
+    # treating buys as cash outflows drives cash deeply negative and the NAV
+    # walk degenerates (nav = holdings - principal ≈ noisy near-zero series).
+    # In that mode buys/sells are pure internal rebalancing: cash stays 0 and
+    # the flows go to build_portfolio_nav as internal unit subscriptions at
+    # prev_nav, producing a proper time-weighted index. Accounts WITH external
+    # flows keep the existing cash-ledger behavior.
+    internal_flow_by_date: dict[str, float] | None = None
+    if not deposit_by_date and not withdrawal_by_date:
+        internal_flow_by_date = {d: -delta for d, delta in trade_cash_by_date.items()}
+        cash_by_date = {d: 0.0 for d in dates}
+
     return {"invs": invs, "txs": txs, "fund_navs": fund_navs, "funds_meta": funds_meta,
             "dates": dates, "fund_qty": fund_qty, "cash_by_date": cash_by_date,
             "deposit_by_date": deposit_by_date, "withdrawal_by_date": withdrawal_by_date,
+            "internal_flow_by_date": internal_flow_by_date,
             "begin": begin, "end": end}
 
 
@@ -1091,14 +1111,15 @@ async def get_portfolio_nav(
     dates, fund_qty, cash_by_date = ctx["dates"], ctx["fund_qty"], ctx["cash_by_date"]
     deposit_by_date, withdrawal_by_date = ctx["deposit_by_date"], ctx["withdrawal_by_date"]
     begin, end = ctx["begin"], ctx["end"]
-
     if not invs:
         return {"series": [], "metrics": {}, "funds": []}
 
     if not fund_navs:
         raise HTTPException(502, "组合净值获取失败：所有持仓产品都拉不到净值历史（iFinD/东财/akshare 均未成功）")
 
-    result = build_portfolio_nav(dates, fund_navs, fund_qty, cash_by_date, deposit_by_date, withdrawal_by_date)
+    result = build_portfolio_nav(dates, fund_navs, fund_qty, cash_by_date,
+                                 deposit_by_date, withdrawal_by_date,
+                                 internal_flow_by_date=ctx.get("internal_flow_by_date"))
 
     nav_closes = [p["nav"] for p in result["series"]]
     metrics = dict(result["metrics"])
@@ -1638,6 +1659,8 @@ async def delete_investment(
     db: AsyncSession = Depends(get_private_db),
 ):
     inv = await _load_investment(db, investment_id, user_id)
+    await db.execute(delete(InvestmentTransaction).where(
+        InvestmentTransaction.investment_id == investment_id))
     await db.delete(inv)
     await db.commit()
     _invalidate_portfolio_nav_cache(user_id)

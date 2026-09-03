@@ -317,7 +317,12 @@ async def _fetch_uncached(
 
     if ifind_user and ifind_pass and not force_money_market:
         try:
-            series = await ifind_client.fetch_history_close(ifind_user, ifind_pass, symbol, ex, begin, end)
+            # iFinDPy blocking calls can hang indefinitely (login up to 90s,
+            # THS_HQ unbounded); cap it so the eastmoney fallback always runs.
+            series = await asyncio.wait_for(
+                ifind_client.fetch_history_close(ifind_user, ifind_pass, symbol, ex, begin, end),
+                timeout=45.0,
+            )
             if series:
                 return series, "ifind"
             errors.append("ifind: empty series")
