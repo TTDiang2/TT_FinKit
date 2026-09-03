@@ -27,10 +27,11 @@
               问点什么，例如：<br>「评价一下我这一个月的消费决策」<br>「我的应急储备够不够？离目标差多少」<br>「审视我的投资组合暴露是否与购房目标冲突」
             </div>
             <div v-for="(m, i) in messages" :key="i"
-              :class="['max-w-[85%] rounded-lg px-3 py-2 text-sm whitespace-pre-wrap',
+              :class="['max-w-[85%] rounded-lg px-3 py-2 text-sm',
                        m.role === 'user' ? 'ml-auto bg-accent-primary/10' : 'bg-bg-tertiary']">
               <div v-if="m.role === 'assistant'" class="text-xs text-text-muted mb-1">财富审计师</div>
-              <div class="whitespace-pre-wrap">{{ m.content }}</div>
+              <div v-if="m.role === 'assistant'" class="md-body" v-html="renderMd(m.content)"></div>
+              <div v-else class="whitespace-pre-wrap">{{ m.content }}</div>
             </div>
             <div v-if="asking" class="text-sm text-text-muted">审计师正在核对数据…</div>
             <div v-if="askError" class="text-xs text-expense-color">{{ askError }}</div>
@@ -97,6 +98,14 @@
 
 <script setup lang="ts">
 import { ref, onMounted, nextTick } from 'vue'
+import { marked } from 'marked'
+import DOMPurify from 'dompurify'
+
+marked.setOptions({ breaks: true, gfm: true })
+
+function renderMd(content: string): string {
+  return DOMPurify.sanitize(marked.parse(content || '') as string)
+}
 import { useApi } from '@/composables/useApi'
 
 const api = useApi()
@@ -184,6 +193,7 @@ async function ask() {
   try {
     const { data } = await api.post('/ai-advisor/ask', { question: q })
     messages.value.push({ role: 'assistant', content: data.answer })
+    loadSnapshot()   // 回答后刷新数据画像（快照为实时聚合，卡片同步更新）
   } catch (e: any) {
     askError.value = e?.response?.data?.detail || e?.message || '请求失败'
   } finally {
@@ -195,3 +205,55 @@ async function ask() {
 
 onMounted(() => { loadSnapshot(); loadProfile() })
 </script>
+
+<style scoped>
+.md-body :deep(h1),
+.md-body :deep(h2),
+.md-body :deep(h3),
+.md-body :deep(h4) {
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin: 0.6em 0 0.3em;
+}
+.md-body :deep(h1) { font-size: 1.05rem; }
+.md-body :deep(p) { margin: 0.35em 0; }
+.md-body :deep(ul),
+.md-body :deep(ol) { margin: 0.35em 0; padding-left: 1.3em; }
+.md-body :deep(li) { margin: 0.15em 0; }
+.md-body :deep(strong) { font-weight: 600; }
+.md-body :deep(code) {
+  background: rgba(0,0,0,0.06);
+  padding: 0.05em 0.3em;
+  border-radius: 3px;
+  font-size: 0.85em;
+  font-family: ui-monospace, monospace;
+}
+.md-body :deep(pre) {
+  background: rgba(0,0,0,0.05);
+  padding: 0.6em;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin: 0.5em 0;
+}
+.md-body :deep(pre code) { background: transparent; padding: 0; }
+.md-body :deep(table) {
+  border-collapse: collapse;
+  margin: 0.5em 0;
+  font-size: 0.85em;
+  width: 100%;
+}
+.md-body :deep(th),
+.md-body :deep(td) {
+  border: 1px solid rgba(0,0,0,0.12);
+  padding: 0.25em 0.5em;
+  text-align: left;
+}
+.md-body :deep(blockquote) {
+  border-left: 3px solid rgba(0,0,0,0.15);
+  padding-left: 0.7em;
+  margin: 0.5em 0;
+  opacity: 0.85;
+}
+.md-body :deep(hr) { border: none; border-top: 1px solid rgba(0,0,0,0.1); margin: 0.6em 0; }
+.md-body :deep(a) { text-decoration: underline; }
+</style>
