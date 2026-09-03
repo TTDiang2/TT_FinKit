@@ -18,6 +18,7 @@ class OverviewResponse(BaseModel):
     investment_return_rate: float = 0.0
     investment_return_rate_annualized: float = 0.0
     investment_ratio: float = 0.0
+    months_in_range: float | None = None
 
 
 class CategoryStatItem(BaseModel):

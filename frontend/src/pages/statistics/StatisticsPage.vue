@@ -12,6 +12,7 @@
       <div class="flex gap-2">
         <button @click="setQuickRange('1m')" :class="['px-3 py-1.5 text-sm rounded-md transition-colors', range === '1m' ? 'bg-accent-primary text-white' : 'border border-border-default text-text-secondary hover:bg-bg-tertiary']">近一月</button>
         <button @click="setQuickRange('3m')" :class="['px-3 py-1.5 text-sm rounded-md transition-colors', range === '3m' ? 'bg-accent-primary text-white' : 'border border-border-default text-text-secondary hover:bg-bg-tertiary']">近三月</button>
+        <button @click="setQuickRange('6m')" :class="['px-3 py-1.5 text-sm rounded-md transition-colors', range === '6m' ? 'bg-accent-primary text-white' : 'border border-border-default text-text-secondary hover:bg-bg-tertiary']">近六月</button>
         <button @click="setQuickRange('1y')" :class="['px-3 py-1.5 text-sm rounded-md transition-colors', range === '1y' ? 'bg-accent-primary text-white' : 'border border-border-default text-text-secondary hover:bg-bg-tertiary']">近一年</button>
       </div>
       <div class="flex items-center gap-2 ml-auto">
@@ -234,7 +235,7 @@ const expenseVolatility = ref<{ month: string; total_expense: number; std_dev: n
 const expenseCategoryTrend = ref<{ month: string; category_name: string; category_color: string; total: number }[]>([])
 
 // Overview totals from backend (authoritative) — used for coreStats to avoid recompute mismatches
-const overviewStats = ref({ total_income_month: 0, total_expense_month: 0, net_balance: 0, savings_rate: 0 })
+const overviewStats = ref({ total_income_month: 0, total_expense_month: 0, net_balance: 0, savings_rate: 0, months_in_range: null as number | null })
 
 function fmt(n: number): string { return n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }
 
@@ -244,7 +245,7 @@ const coreStats = computed(() => {
   const totalExpense = overviewStats.value.total_expense_month
   const totalBalance = overviewStats.value.net_balance
   const savingsRate = overviewStats.value.savings_rate
-  const monthCount = Math.max(trends.value.length, 1)
+  const monthCount = overviewStats.value.months_in_range || Math.max(trends.value.length, 1)
   const avgMonthlyIncome = totalIncome / monthCount
   const avgMonthlyExpense = totalExpense / monthCount
   return { totalIncome, totalExpense, totalBalance, avgMonthlyIncome, avgMonthlyExpense, savingsRate }
@@ -463,6 +464,7 @@ function getQuickRangeParams(q: string): { startDate: string; endDate: string } 
   const d = new Date()
   if (q === '1m') d.setMonth(d.getMonth() - 1)
   else if (q === '3m') d.setMonth(d.getMonth() - 3)
+  else if (q === '6m') d.setMonth(d.getMonth() - 6)
   else d.setFullYear(d.getFullYear() - 1)
   const start = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
   return { startDate: start, endDate: end }
@@ -488,7 +490,7 @@ async function loadData() {
       api.get('/statistics/category-trend', { params: { type_filter: 'income', months: 12 } }),
       api.get('/statistics/expense-volatility', { params: { months: 12 } }),
       api.get('/statistics/category-trend', { params: { type_filter: 'expense', months: 12 } }),
-      api.get('/statistics/overview', { params: { year: y, month: m } }),
+      api.get('/statistics/overview', { params: { year: y, month: m, start_date: startDate.value, end_date: endDate.value } }),
     ])
     expenseCatsRaw.value = ec.data; incomeCatsRaw.value = ic.data; dailySpending.value = ds.data
     weekdayPattern.value = wp.data; trends.value = tr.data
@@ -500,7 +502,7 @@ async function loadData() {
     incomeCategoryTrend.value = ict.data
     expenseVolatility.value = ev.data
     expenseCategoryTrend.value = ect.data
-    overviewStats.value = { total_income_month: ov.data.total_income_month, total_expense_month: ov.data.total_expense_month, net_balance: ov.data.net_balance, savings_rate: ov.data.savings_rate }
+    overviewStats.value = { total_income_month: ov.data.total_income_month, total_expense_month: ov.data.total_expense_month, net_balance: ov.data.net_balance, savings_rate: ov.data.savings_rate, months_in_range: ov.data.months_in_range }
   } catch (e) { console.error(e) }
 }
 

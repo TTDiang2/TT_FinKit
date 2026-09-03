@@ -73,6 +73,52 @@
                 <span class="font-mono">{{ fmt(c.total) }}（{{ ((c.share || 0) * 100).toFixed(0) }}%）</span>
               </div>
             </div>
+
+            <div class="pt-2 border-t border-border-default">
+              <div class="text-text-muted mb-1">收支时间窗口（滚动）</div>
+              <div v-for="w in ['6m', '3m', '1m']" :key="w" class="flex justify-between py-0.5">
+                <span>近{{ w === '6m' ? '6月' : w === '3m' ? '3月' : '1月' }}</span>
+                <span class="font-mono">
+                  {{ fmt(snapshot.time_windows?.[w]?.income) }} / {{ fmt(snapshot.time_windows?.[w]?.expense) }}
+                  <span :class="(snapshot.time_windows?.[w]?.net ?? 0) >= 0 ? 'text-income-color' : 'text-expense-color'">
+                    （{{ fmt(snapshot.time_windows?.[w]?.net) }}）</span>
+                </span>
+              </div>
+            </div>
+
+            <div class="pt-2 border-t border-border-default">
+              <div class="text-text-muted mb-1">收入画像（近12月）</div>
+              <div class="flex justify-between py-0.5"><span>总收入</span>
+                <span class="font-mono">{{ fmt(snapshot.income_profile?.['12m_total']) }}</span></div>
+              <div v-for="(v, k) in (snapshot.income_profile?.by_subcategory || {})" :key="k" class="flex justify-between py-0.5">
+                <span>{{ k }}</span>
+                <span class="font-mono">{{ fmt(v.total_12m) }}（{{ ((v.share || 0) * 100).toFixed(1) }}%）</span>
+              </div>
+            </div>
+
+            <div class="pt-2 border-t border-border-default">
+              <div class="text-text-muted mb-1">投资画像</div>
+              <div class="flex justify-between py-0.5"><span>持仓市值 / 盈亏</span>
+                <span class="font-mono">{{ fmt(snapshot.investment_profile?.current_total_value) }} /
+                  <span :class="(snapshot.investment_profile?.current_total_pnl ?? 0) >= 0 ? 'text-income-color' : 'text-expense-color'">{{ fmt(snapshot.investment_profile?.current_total_pnl) }}</span></span></div>
+              <div class="flex justify-between py-0.5"><span>Top1 集中度</span>
+                <span class="font-mono">{{ snapshot.investment_profile?.current_top1_concentration != null ? ((snapshot.investment_profile.current_top1_concentration * 100).toFixed(1) + '%') : '—' }}</span></div>
+              <div class="flex justify-between py-0.5"><span>近12月建仓（按月）</span>
+                <span class="font-mono text-[10px]">{{ Object.entries(snapshot.investment_profile?.['12m_new_positions_by_month'] || {}).map(([m, n]) => `${m.slice(2)}:${n}`).join(' ') || '—' }}</span></div>
+            </div>
+
+            <div class="pt-2 border-t border-border-default">
+              <div class="text-text-muted mb-1">支出节奏与风险敞口</div>
+              <div class="flex justify-between py-0.5"><span>近30天支出</span>
+                <span class="font-mono">{{ fmt(snapshot.expense_rhythm?.last30d_total) }}</span></div>
+              <div class="flex justify-between py-0.5"><span>异常支出阈值（2σ）</span>
+                <span class="font-mono">{{ fmt(snapshot.expense_rhythm?.anomaly_threshold_2sigma) }}</span></div>
+              <div class="flex justify-between py-0.5"><span>现金 / 投资占比</span>
+                <span class="font-mono">{{ ((snapshot.risk_exposure?.cash_share ?? 0) * 100).toFixed(0) }}% /
+                  {{ ((snapshot.risk_exposure?.invest_share ?? 0) * 100).toFixed(0) }}%</span></div>
+              <div class="flex justify-between py-0.5"><span>应急覆盖</span>
+                <span class="font-mono">{{ snapshot.risk_exposure?.emergency_cover_months ?? '—' }} 个月</span></div>
+            </div>
           </div>
           <div v-else class="text-text-muted">加载中…</div>
         </div>

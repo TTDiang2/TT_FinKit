@@ -50,6 +50,8 @@ def resolve_date_range(start_date: Optional[str], end_date: Optional[str], year:
 async def get_overview(
     year: int = Query(default=None),
     month: int = Query(default=None),
+    start_date: Optional[str] = Query(default=None),
+    end_date: Optional[str] = Query(default=None),
     user_id: str = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_private_db)
 ):
@@ -57,7 +59,6 @@ async def get_overview(
     year = year or now.year
     month = month or now.month
 
-    start, end = get_month_range(year, month)
     last_start, last_end = get_month_range(year if month > 1 else year-1, month-1 if month > 1 else 12)
     three_m_month = month - 2
     three_m_year = year
@@ -65,6 +66,14 @@ async def get_overview(
         three_m_month += 12
         three_m_year -= 1
     three_months_ago, _ = get_month_range(three_m_year, three_m_month)
+
+    months_in_range: float | None = None
+    if start_date and end_date:
+        start, end = start_date, end_date
+        span_days = max((datetime.strptime(end_date, "%Y-%m-%d") - datetime.strptime(start_date, "%Y-%m-%d")).days, 1)
+        months_in_range = round(span_days / 30.4375, 1)
+    else:
+        start, end = get_month_range(year, month)
 
     inc_result = await db.execute(
         select(func.coalesce(func.sum(Transaction.amount), 0)).where(
@@ -165,6 +174,7 @@ async def get_overview(
     vs_expense = ((total_expense - total_expense_last) / total_expense_last * 100) if total_expense_last else 0
 
     days_in_month = monthrange(year, month)[1]
+    days_in_window = span_days if months_in_range is not None else days_in_month
     savings_rate = ((total_income - total_expense) / total_income * 100) if total_income > 0 else 0
 
     txn_count_result = await db.execute(
@@ -270,7 +280,7 @@ async def get_overview(
         vs_last_month_income=round(vs_income, 1),
         vs_last_month_expense=round(vs_expense, 1),
         savings_rate=round(savings_rate, 1),
-        avg_daily_expense=round(total_expense / days_in_month, 2) if days_in_month else 0,
+        avg_daily_expense=round(total_expense / days_in_window, 2) if days_in_window else 0,
         transaction_count_month=txn_count_result.scalar() or 0,
         necessary_expense_ratio=round(necessary_ratio, 1),
         necessary_expense_ratio_month=round(necessary_ratio_month, 1),
@@ -278,7 +288,8 @@ async def get_overview(
         net_worth_growth_rate=round(net_worth_growth, 2),
         investment_return_rate=round(inv_return, 2),
         investment_return_rate_annualized=round(annualized_return, 2),
-        investment_ratio=round(investment_ratio, 1)
+        investment_ratio=round(investment_ratio, 1),
+        months_in_range=months_in_range,
     )
 
 
