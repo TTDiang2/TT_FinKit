@@ -195,12 +195,18 @@
               <td colspan="12" class="px-4 py-3">
                 <div class="flex items-center justify-between mb-2">
                   <div class="text-xs font-medium text-text-secondary">平仓产品流水（{{ txMap[p.id]?.length || 0 }} 条）</div>
-                  <div class="text-xs text-text-muted">已平仓产品的流水仅供查看，编辑请使用右侧「编辑」按钮</div>
+                  <button v-if="soldInvById[p.id]" @click="openTxModal(soldInvById[p.id]!)"
+                    class="px-2 py-0.5 text-xs rounded border border-border-default text-text-secondary hover:bg-bg-tertiary flex items-center gap-1">
+                    <Plus :size="12" /> 添加流水
+                  </button>
                 </div>
                 <table class="w-full text-xs">
                   <thead><tr class="text-text-muted"><th class="px-2 py-1 text-left">日期</th><th class="px-2 py-1 text-left">类型</th><th class="px-2 py-1 text-right">数量</th><th class="px-2 py-1 text-right">单价</th><th class="px-2 py-1 text-right">金额</th><th class="px-2 py-1 text-right">费用</th><th class="px-2 py-1 text-left">备注</th></tr></thead>
                   <tbody>
-                    <tr v-for="tx in txMap[p.id] || []" :key="tx.id" class="border-t border-border-default">
+                    <tr v-for="tx in txMap[p.id] || []" :key="tx.id"
+                      class="border-t border-border-default cursor-pointer hover:bg-bg-tertiary"
+                      title="点击修正此流水"
+                      @click="soldInvById[p.id] && openTxModal(soldInvById[p.id]!, tx)">
                       <td class="px-2 py-1">{{ tx.event_date }}</td>
                       <td class="px-2 py-1">{{ TX_LABELS[tx.event_type] }}</td>
                       <td class="px-2 py-1 text-right">{{ tx.quantity || '—' }}</td>
