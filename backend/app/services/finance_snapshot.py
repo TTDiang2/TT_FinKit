@@ -64,17 +64,6 @@ async def finance_snapshot(db: AsyncSession, user_id: str) -> dict:
         "savings_rate": round((inc6 - exp6) / inc6, 4) if inc6 > 0 else None,
     }
 
-    # ---- 经营储蓄率（剔除转账后的真实烧钱率） ----
-    # 把 transfer 当中性资金搬运，储蓄率只看 income vs expense
-    operating_inc6 = sum(m["income"] for ym, m in monthly.items() if ym >= (date.today() - timedelta(days=200)).strftime("%Y-%m"))
-    operating_exp6 = sum(m["expense"] for ym, m in monthly.items() if ym >= (date.today() - timedelta(days=200)).strftime("%Y-%m"))
-    snap["operating_savings_6m"] = {
-        "income": round(operating_inc6, 2),
-        "expense": round(operating_exp6, 2),
-        "net": round(operating_inc6 - operating_exp6, 2),
-        # 经营储蓄率不计算百分比（含义模糊——负值代表入不敷出）
-    }
-
     # ---- 最近 90 天分类支出 Top ----
     cat_rows = (await db.execute(text(
         """
