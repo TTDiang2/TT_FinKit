@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..database import get_private_db
+from ..database import get_private_db, get_public_db
 from ..models.research_asset import ResearchAsset
 from ..models.research_asset_ai_report import ResearchAssetAiReport
 from ..schemas.ai_investment import AnalyzeRequest
@@ -31,9 +31,10 @@ def _report_dict(r: ResearchAssetAiReport) -> dict:
     }
 
 
-async def _get_owned(asset_id: str, user_id: str, db: AsyncSession) -> ResearchAsset:
+async def _get_public(asset_id: str, db: AsyncSession) -> ResearchAsset:
+    """共享池标的任何人可读；报告本身按 user_id 隔离在 private 库。"""
     asset = await db.get(ResearchAsset, asset_id)
-    if not asset or asset.user_id != user_id:
+    if not asset:
         raise HTTPException(status_code=404, detail="标的不存在")
     return asset
 
@@ -44,8 +45,9 @@ async def run_ai_analysis(
     req: AnalyzeRequest,
     user_id: str = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_private_db),
+    pub: AsyncSession = Depends(get_public_db),
 ):
-    asset = await _get_owned(asset_id, user_id, db)
+    asset = await _get_public(asset_id, pub)
     try:
         report, analysis = await research_ai.analyze_research_asset(db, asset, user_id, req)
         await db.commit()
@@ -72,11 +74,13 @@ async def list_ai_reports(
     limit: int = Query(50),
     user_id: str = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_private_db),
+    pub: AsyncSession = Depends(get_public_db),
 ):
-    await _get_owned(asset_id, user_id, db)
+    await _get_public(asset_id, pub)
     res = await db.execute(
         select(ResearchAssetAiReport)
-        .where(ResearchAssetAiReport.asset_id == asset_id)
+        .where(ResearchAssetAiReport.asset_id == asset_id,
+               ResearchAssetAiReport.user_id == user_id)
         .order_by(ResearchAssetAiReport.generated_at.desc())
         .limit(limit)
     )

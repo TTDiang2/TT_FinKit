@@ -112,6 +112,14 @@ async def _get_owned(asset_id: str, user_id: str, db: AsyncSession) -> ResearchA
     return asset
 
 
+async def _get_public(asset_id: str, db: AsyncSession) -> ResearchAsset:
+    """public 标的任何人可读（共享池），写操作才用 _get_owned。"""
+    asset = await db.get(ResearchAsset, asset_id)
+    if not asset:
+        raise HTTPException(status_code=404, detail="标的不存在")
+    return asset
+
+
 async def _respond(db: AsyncSession, asset: ResearchAsset,
                    stats_row=None) -> ResearchAssetResponse:
     # indicators 优先读预计算表（O(1)）；stats_row 为 None 时才回退拉全历史现算
@@ -971,7 +979,7 @@ async def get_asset(
     user_id: str = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_public_db),
 ):
-    asset = await _get_owned(asset_id, user_id, db)
+    asset = await _get_public(asset_id, db)
     return await _respond(db, asset)
 
 
@@ -990,7 +998,7 @@ async def get_nav_history(
     With ``days``/``with_benchmark``/``with_ma`` → NavHistoryDetail with
     optional MA20/MA60 and a comparison benchmark (per D2 mapping).
     """
-    asset = await _get_owned(asset_id, user_id, db)
+    asset = await _get_public(asset_id, db)
     q = select(ResearchAssetPrice).where(ResearchAssetPrice.asset_id == asset.id)
     if days and days > 0:
         begin = (date.today() - timedelta(days=days)).isoformat()
@@ -1136,7 +1144,7 @@ async def get_asset_holdings(
     db: AsyncSession = Depends(get_public_db),
 ):
     """Cached holdings transparency (quarterly top-10 + asset class mix)."""
-    asset = await _get_owned(asset_id, user_id, db)
+    asset = await _get_public(asset_id, db)
     from ..services import asset_holdings
     if not asset_holdings.is_eligible(asset):
         return {"status": "unsupported", "report_date": None, "asset_classes": [], "top_holdings": []}

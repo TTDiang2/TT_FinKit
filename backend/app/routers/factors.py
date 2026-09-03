@@ -351,7 +351,7 @@ async def list_evaluations(
     from ..services.factor_evaluation import evaluation_to_dict, DEFAULT_THRESHOLDS
     from ..models.factor_evaluation import FactorEvaluation
     rows = (await db.execute(
-        select(FactorEvaluation).where(FactorEvaluation.user_id == user_id)
+        select(FactorEvaluation)
     )).scalars().all()
     # factor_name：曾缺失导致评估表第一列空白（2026-09-02 用户反馈）
     name_by_key = {}
