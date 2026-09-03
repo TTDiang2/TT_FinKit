@@ -89,7 +89,7 @@ async def _portfolio_context(db: AsyncSession, pub: AsyncSession, user_id: str) 
     investments.current_price for symbols not in the research pool.
     """
     assets = (await pub.execute(
-        select(ResearchAsset).where(ResearchAsset.user_id == user_id)
+        select(ResearchAsset).where()
     )).scalars().all()
     symbol_to_asset = {a.symbol: a for a in assets}
     asset_id_to_asset = {a.id: a for a in assets}

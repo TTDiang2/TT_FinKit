@@ -62,7 +62,7 @@ async def _symbol_names(pub: AsyncSession, symbols: list[str]) -> dict[str, str]
 async def _current_weights_from_holdings(db: AsyncSession, pub: AsyncSession, user_id: str) -> dict[str, float]:
     """按最新净值把用户未清仓投资折算成 {symbol: weight}，供信号引擎做持仓感知决策。"""
     assets = (await pub.execute(select(ResearchAsset).where(
-        ResearchAsset.user_id == user_id))).scalars().all()
+        ))).scalars().all()
     by_symbol = {a.symbol: a for a in assets}
     invs = (await db.execute(select(Investment).where(
         Investment.user_id == user_id, open_position_cond()))).scalars().all()
@@ -210,7 +210,7 @@ async def compute_trade_plan(db: AsyncSession, pub: AsyncSession, user_id: str,
     targets: dict[str, float] = json.loads(sig.target_weights) if sig else {}
 
     assets = (await pub.execute(select(ResearchAsset).where(
-        ResearchAsset.user_id == user_id))).scalars().all()
+        ))).scalars().all()
     by_symbol = {a.symbol: a for a in assets}
 
     invs = (await db.execute(select(Investment).where(

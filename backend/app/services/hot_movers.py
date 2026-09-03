@@ -131,8 +131,7 @@ async def refresh_holdings_prices(db: AsyncSession, user_id: str,
     if not syms:
         return 0
     assets = (await pdb.execute(
-        select(ResearchAsset).where(ResearchAsset.user_id == user_id,
-                                    ResearchAsset.symbol.in_(syms))
+        select(ResearchAsset).where(ResearchAsset.symbol.in_(syms))
     )).scalars().all()
     updated = 0
     for a in assets:

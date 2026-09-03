@@ -320,7 +320,7 @@ async def evaluate_all_factors(
     factors = (await db.execute(select(Factor).where(Factor.active.is_(True)))).scalars().all()
     factor_by_id = {f.id: f for f in factors}
 
-    aq = select(ResearchAsset).where(ResearchAsset.user_id == user_id, ResearchAsset.status == "pooled")
+    aq = select(ResearchAsset).where(ResearchAsset.status == "pooled")
     if asset_symbols:
         aq = aq.where(ResearchAsset.symbol.in_(asset_symbols))
     assets = (await db.execute(aq)).scalars().all()

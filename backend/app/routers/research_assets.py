@@ -222,7 +222,7 @@ async def assets_selector(
 
     aq = select(ResearchAsset, ResearchAssetStats).join(
         ResearchAssetStats, ResearchAssetStats.asset_id == ResearchAsset.id, isouter=True
-    ).where(ResearchAsset.user_id == user_id)
+    ).where()
     if status:
         aq = aq.where(ResearchAsset.status == status)
     if group_id:
@@ -259,11 +259,11 @@ async def list_groups(
 ):
     id_rows = (await db.execute(
         select(ResearchAsset.id, ResearchAsset.symbol, ResearchAsset.name)
-        .where(ResearchAsset.user_id == user_id)
+        .where()
     )).all()
     asset_map = {r[0]: r for r in id_rows}
     rows = (await db.execute(
-        select(ResearchGroup).where(ResearchGroup.user_id == user_id)
+        select(ResearchGroup).where()
         .order_by(ResearchGroup.created_at)
     )).scalars().all()
     out = []
@@ -290,7 +290,7 @@ async def create_group(
     if not name:
         raise HTTPException(status_code=400, detail="组合名称不能为空")
     dup = (await db.execute(
-        select(ResearchGroup).where(ResearchGroup.user_id == user_id, ResearchGroup.name == name)
+        select(ResearchGroup).where(ResearchGroup.name == name)
     )).scalar_one_or_none()
     if dup:
         raise HTTPException(status_code=409, detail=f"组合「{name}」已存在")
@@ -299,8 +299,7 @@ async def create_group(
     db.add(g)
     await db.flush()
     owned = set((await db.execute(
-        select(ResearchAsset.id).where(ResearchAsset.user_id == user_id,
-                                       ResearchAsset.id.in_(req.asset_ids))
+        select(ResearchAsset.id).where(ResearchAsset.id.in_(req.asset_ids))
     )).scalars().all())
     for aid in req.asset_ids:
         if aid in owned:
@@ -319,15 +318,14 @@ async def update_group(
     db: AsyncSession = Depends(get_public_db),
 ):
     g = (await db.execute(
-        select(ResearchGroup).where(ResearchGroup.id == group_id, ResearchGroup.user_id == user_id)
+        select(ResearchGroup).where(ResearchGroup.id == group_id)
     )).scalar_one_or_none()
     if not g:
         raise HTTPException(status_code=404, detail="组合不存在")
 
     if req.name is not None and req.name.strip() and req.name.strip() != g.name:
         dup = (await db.execute(
-            select(ResearchGroup).where(ResearchGroup.user_id == user_id,
-                                        ResearchGroup.name == req.name.strip())
+            select(ResearchGroup).where(ResearchGroup.name == req.name.strip())
         )).scalar_one_or_none()
         if dup:
             raise HTTPException(status_code=409, detail=f"组合「{req.name.strip()}」已存在")
@@ -336,8 +334,7 @@ async def update_group(
         g.note = req.note
     if req.asset_ids is not None:
         owned = set((await db.execute(
-            select(ResearchAsset.id).where(ResearchAsset.user_id == user_id,
-                                           ResearchAsset.id.in_(req.asset_ids))
+            select(ResearchAsset.id).where(ResearchAsset.id.in_(req.asset_ids))
         )).scalars().all())
         await db.execute(delete(ResearchGroupMember).where(ResearchGroupMember.group_id == g.id))
         for aid in req.asset_ids:
@@ -356,7 +353,7 @@ async def delete_group(
     db: AsyncSession = Depends(get_public_db),
 ):
     g = (await db.execute(
-        select(ResearchGroup).where(ResearchGroup.id == group_id, ResearchGroup.user_id == user_id)
+        select(ResearchGroup).where(ResearchGroup.id == group_id)
     )).scalar_one_or_none()
     if not g:
         raise HTTPException(status_code=404, detail="组合不存在")
@@ -374,7 +371,7 @@ async def pooled_count(
     旧实现拉全量 18891 只逐只算指标（N+1 全历史价格），分钟级超时。"""
     n = (await db.execute(
         select(func.count()).select_from(ResearchAsset)
-        .where(ResearchAsset.user_id == user_id, ResearchAsset.status == "pooled")
+        .where(ResearchAsset.status == "pooled")
     )).scalar_one()
     return {"count": n}
 
@@ -394,7 +391,7 @@ async def list_asset_ids(
 ):
     """轻量 id 全集（同 list_assets 筛选口径）——供前端「全选筛选结果」。"""
     q = select(ResearchAsset.id, ResearchAsset.symbol, ResearchAsset.name, ResearchAsset.status)\
-        .where(ResearchAsset.user_id == user_id)
+        .where()
     if status:
         q = q.where(ResearchAsset.status == status)
     if category:
@@ -467,7 +464,7 @@ async def list_assets(
 
     sort_by 走预计算表 research_asset_stats（全库级排序，服务端完成）；
     with_stats=1 时每行附带 stats 指标供展示。"""
-    q = select(ResearchAsset).where(ResearchAsset.user_id == user_id)
+    q = select(ResearchAsset).where()
     if status:
         q = q.where(ResearchAsset.status == status)
     if category:
@@ -484,7 +481,7 @@ async def list_assets(
         q = q.where((ResearchAsset.purchase_limit.is_(None)) | (ResearchAsset.purchase_limit >= 100000))
     if group_id:
         g = (await db.execute(
-            select(ResearchGroup).where(ResearchGroup.id == group_id, ResearchGroup.user_id == user_id)
+            select(ResearchGroup).where(ResearchGroup.id == group_id)
         )).scalar_one_or_none()
         if not g:
             raise HTTPException(status_code=404, detail="组合不存在")
@@ -563,7 +560,7 @@ async def create_asset(
     dup = (
         await db.execute(
             select(ResearchAsset).where(
-                ResearchAsset.user_id == user_id, ResearchAsset.symbol == symbol
+                ResearchAsset.symbol == symbol
             )
         )
     ).scalar_one_or_none()
@@ -658,7 +655,6 @@ async def import_watchlist_from_eastmoney(
         r[0] for r in (
             await db.execute(
                 select(ResearchAsset.symbol).where(
-                    ResearchAsset.user_id == user_id,
                     ResearchAsset.symbol.in_(symbols),
                 )
             )
@@ -747,7 +743,7 @@ async def batch_pool_assets(
     if not req.ids:
         raise HTTPException(status_code=400, detail="ids 不能为空")
     assets = (await db.execute(
-        select(ResearchAsset).where(ResearchAsset.user_id == user_id, ResearchAsset.id.in_(req.ids))
+        select(ResearchAsset).where(ResearchAsset.id.in_(req.ids))
     )).scalars().all()
     pooled: list[ResearchAsset] = []
     rejected: list[BatchPoolRejected] = []
@@ -798,7 +794,7 @@ async def batch_audit_pooled(
     """已入池标的自动审查：刷新档案 → 硬违规或仍缺档案的踢回自选。"""
     assets = (await db.execute(
         select(ResearchAsset).where(
-            ResearchAsset.user_id == user_id, ResearchAsset.status == "pooled",
+            ResearchAsset.status == "pooled",
             ResearchAsset.exchange == "FUND_CN",
         ).order_by(ResearchAsset.created_at)
     )).scalars().all()
@@ -843,7 +839,7 @@ async def batch_refresh_profiles(
     db: AsyncSession = Depends(get_public_db),
 ):
     """批量更新档案（费率/限购额/申购状态）并重算标签 — 数据源天天基金。"""
-    q = select(ResearchAsset).where(ResearchAsset.user_id == user_id)
+    q = select(ResearchAsset).where()
     if req.ids:
         q = q.where(ResearchAsset.id.in_(req.ids))
     else:
@@ -905,7 +901,7 @@ async def _rebuild_price_status(db: AsyncSession, user_id: str) -> list:
     """全库价格新鲜度聚合（647 万行 GROUP BY，冷启动 ~50s）。"""
     assets = (
         await db.execute(
-            select(ResearchAsset).where(ResearchAsset.user_id == user_id)
+            select(ResearchAsset).where()
             .order_by(ResearchAsset.created_at)
         )
     ).scalars().all()

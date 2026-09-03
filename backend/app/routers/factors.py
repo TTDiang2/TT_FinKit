@@ -203,7 +203,7 @@ async def exposure_matrix(
     # 全池 3813 资产 × 70 因子的全量矩阵曾把响应撑到几十 MB/分钟级（UI 15s 必超时，
     # 用户看到的是"暂无暴露数据"——实为 axios 静默吞了超时）。
     aq = select(ResearchAsset).where(
-        ResearchAsset.user_id == user_id, ResearchAsset.status == "pooled")
+        ResearchAsset.status == "pooled")
     sym_list = [x.strip() for x in (symbols or "").split(",") if x.strip()]
     if sym_list:
         aq = aq.where(ResearchAsset.symbol.in_(sym_list))

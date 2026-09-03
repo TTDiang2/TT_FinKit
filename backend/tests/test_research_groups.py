@@ -48,7 +48,8 @@ class TestGroups:
                     ra.ResearchGroupCreate(name="全宽基", asset_ids=[a1.id, a2.id, alien.id]),
                     user_id=u.id, db=db)
                 assert g.name == "全宽基"
-                assert sorted(g.asset_ids) == sorted([a1.id, a2.id])   # 别人的标的被过滤
+                # 共享模式（2026-09-02）：public 标的全局可见，不再按 user 过滤成员
+                assert sorted(g.asset_ids) == sorted([a1.id, a2.id, alien.id])
 
                 try:
                     await ra.create_group(ra.ResearchGroupCreate(name="全宽基"),
@@ -64,7 +65,8 @@ class TestGroups:
 
                 mine = await ra.list_groups(user_id=u.id, db=db)
                 theirs = await ra.list_groups(user_id=other.id, db=db)
-                assert len(mine) == 1 and theirs == []
+                # 共享模式：组合全局可见，两个账号都能看到同一组
+                assert len(mine) == 1 and len(theirs) == 1
 
                 await ra.delete_group(g.id, user_id=u.id, db=db)
                 assert (await ra.list_groups(user_id=u.id, db=db)) == []

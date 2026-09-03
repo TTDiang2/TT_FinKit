@@ -154,7 +154,7 @@ async def recompute_exposures(
     run of a month).  ``asset_symbols`` restricts the run to specific symbols
     (None = every pooled asset).  Upsert keyed on (asset, as_of, factor).
     """
-    q = select(ResearchAsset).where(ResearchAsset.user_id == user_id, ResearchAsset.status == "pooled")
+    q = select(ResearchAsset).where(ResearchAsset.status == "pooled")
     if asset_symbols:
         q = q.where(ResearchAsset.symbol.in_(asset_symbols))
     assets = (await db.execute(q)).scalars().all()
@@ -167,7 +167,7 @@ async def recompute_exposures(
     # 池内最早/最晚价格日（SQL 聚合，不全量加载）：最早价格日是因子值查询的
     # 精确下界——共同交易日必须同时是资产收益日，早于它的因子行永远进不了
     # 任何回归窗口（full 回填也成立）。
-    asset_filter = [ResearchAsset.user_id == user_id, ResearchAsset.status == "pooled"]
+    asset_filter = [ResearchAsset.status == "pooled"]
     if asset_symbols:
         asset_filter.append(ResearchAsset.symbol.in_(asset_symbols))
     aid_subq = select(ResearchAsset.id).where(*asset_filter)
@@ -207,7 +207,7 @@ async def recompute_exposures(
     exp_q = (
         select(FactorExposure)
         .join(ResearchAsset, FactorExposure.asset_id == ResearchAsset.id)
-        .where(ResearchAsset.user_id == user_id)
+        .where()
     )
     if asset_symbols:
         exp_q = exp_q.where(ResearchAsset.symbol.in_(asset_symbols))
