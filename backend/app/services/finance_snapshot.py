@@ -13,6 +13,8 @@ from datetime import date, timedelta
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .emergency_reserve import compute_emergency_reserve
+from .housing_plan import build_housing_snapshot, get_housing_plan
 from .investment_stats import compute_portfolio_overview
 
 
@@ -131,31 +133,10 @@ async def finance_snapshot(db: AsyncSession, user_id: str) -> dict:
         "total_pnl_pct": round((total_value - total_cost) / total_cost, 4) if total_cost > 0 else None,
     }
 
-    # ---- 应急储备（与首页/统计 tab 同口径：总资产 ÷ 近3个完整自然月月均支出）----
-    m1_start = date.today().replace(day=1)
-    exp3_sum = 0.0
-    for i in range(1, 4):
-        ms, me = _shift_months(m1_start, -i), _shift_months(m1_start, -(i - 1))
-        r = (await db.execute(text(
-            "SELECT COALESCE(SUM(amount),0) FROM transactions "
-            "WHERE user_id=:u AND type='expense' AND date >= :s AND date < :e"
-        ), {"u": user_id, "s": ms.isoformat(), "e": me.isoformat()})).one()
-        exp3_sum += float(r[0] or 0)
-    avg3 = exp3_sum / 3.0
-    asset_rows = (await db.execute(text(
-        "SELECT asset_type, COALESCE(SUM(value),0) FROM assets WHERE user_id=:u GROUP BY asset_type"
-    ), {"u": user_id})).all()
-    amap = {r[0]: float(r[1]) for r in asset_rows}
-    total_account_balance = sum(x["balance"] for x in snap["accounts"])
-    total_assets_ai = (total_account_balance + total_value
-                       + amap.get("fixed_asset", 0) + amap.get("other_asset", 0)
-                       - amap.get("liability", 0))
-    snap["emergency_reserve"] = {
-        "total_assets": round(total_assets_ai, 2),
-        "avg_monthly_expense_3m": round(avg3, 2),
-        "cover_months": round(total_assets_ai / avg3, 1) if avg3 > 0 else None,
-        "cash_total": snap["cash_total"],
-    }
+    # ---- 应急储备（唯一口径：与首页共用 emergency_reserve 服务）----
+    # 旧口径把投资账户余额 + 持仓市值 + 固定资产都算进"可动用应急资金"，
+    # 导致长期投资资金被重复充当应急储备（2026-09-04 修正）。
+    snap["emergency_reserve"] = await compute_emergency_reserve(db, user_id)
 
     # ---- 时间尺度快照（6/3/1 月收支对比，滚动日历月精确区间） ----
     async def _month_window(months_back: int) -> dict:
@@ -181,8 +162,20 @@ async def finance_snapshot(db: AsyncSession, user_id: str) -> dict:
         FROM transactions t
         LEFT JOIN categories c ON c.id = t.category_id
         WHERE t.user_id=:u AND t.type='income' AND t.date >= :begin
+          AND COALESCE(t.description,'') NOT LIKE '投资月度盈亏%'
         """
     ), {"u": user_id, "begin": (date.today() - timedelta(days=365)).isoformat()})).all()
+    # 投资账户的「投资月度盈亏 YYYY-MM」是系统 sync 自动写入的浮动盈亏流水，
+    # 不是真实现金收入（盈亏已体现在持仓市值中）。计入收入结构会污染
+    # 收入画像——投资 tab 自身统计分红时本就排除它（2026-09-04 对齐该口径）。
+    pnl_rows = (await db.execute(text(
+        """
+        SELECT COALESCE(SUM(t.amount),0)
+        FROM transactions t
+        WHERE t.user_id=:u AND t.type='income' AND t.date >= :begin
+          AND t.description LIKE '投资月度盈亏%'
+        """
+    ), {"u": user_id, "begin": (date.today() - timedelta(days=365)).isoformat()})).one()
     cat_total: Counter[str] = Counter()
     cat_month_sum: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
     inc_total = 0.0
@@ -210,20 +203,25 @@ async def finance_snapshot(db: AsyncSession, user_id: str) -> dict:
         "12m_total": round(inc_total, 2),
         "12m_count": inc_count,
         "by_subcategory": dict(sorted(by_subcategory.items(), key=lambda kv: -(kv[1]["total_12m"] or 0))),
+        # 口径说明：让 AI 明确知道哪些钱不算"收入"，避免它再去质疑数据
+        "excluded": {
+            "investment_pnl_sync_12m": round(float(pnl_rows[0] or 0), 2),
+            "reason": "已排除系统 sync 写入的「投资月度盈亏」流水：属浮动盈亏入账，"
+                      "非真实现金收入，且盈亏已体现在持仓市值中（重复计入会虚增收入）",
+        },
     }
 
     # ---- 投资画像（决策画像：买卖流水 + 当前持仓 + 建仓节奏） ----
     tx_rows = (await db.execute(text(
         """
-        SELECT date, type, amount, COALESCE(description,''), account_type
-        FROM transactions t
-        JOIN accounts a ON a.id = t.account_id
-        WHERE t.user_id=:u AND t.type IN ('buy','sell')
-          AND date >= :begin
-        ORDER BY date
+        SELECT event_date, event_type, COALESCE(amount,0),
+               COALESCE(quantity,0), COALESCE(unit_price,0), COALESCE(fee,0)
+        FROM investment_transactions
+        WHERE user_id=:u AND event_type IN ('buy','sell') AND event_date >= :begin
+        ORDER BY event_date
         """
     ), {"u": user_id, "begin": (date.today() - timedelta(days=365)).isoformat()})).all()
-    # 建仓节奏（按月统计建仓动作）
+    # 建仓节奏（新建标的：按 investments.purchase_date 计）
     build_rows = (await db.execute(text(
         """
         SELECT substr(purchase_date, 1, 7) AS ym, COUNT(*) AS n
@@ -233,6 +231,10 @@ async def finance_snapshot(db: AsyncSession, user_id: str) -> dict:
         """
     ), {"u": user_id, "begin": (date.today() - timedelta(days=365)).isoformat()})).all()
     build_by_month = {ym: int(n) for ym, n in build_rows}
+    # 调仓节奏（按月统计买卖动作笔数）
+    trade_by_month: dict[str, dict[str, int]] = defaultdict(lambda: {"buy": 0, "sell": 0})
+    for ev_date, ev_type, *_ in tx_rows:
+        trade_by_month[str(ev_date)[:7]][ev_type] += 1
     po = await compute_portfolio_overview(db, user_id)
     snap["investment_profile"] = {
         "realized_pnl": po.realized_pnl,
@@ -243,9 +245,12 @@ async def finance_snapshot(db: AsyncSession, user_id: str) -> dict:
         "12m_tx_count": len(tx_rows),
         "12m_buy_count": sum(1 for x in tx_rows if x[1] == "buy"),
         "12m_sell_count": sum(1 for x in tx_rows if x[1] == "sell"),
-        "12m_buy_amount": round(sum(float(x[2] or 0) for x in tx_rows if x[1] == "buy"), 2),
-        "12m_sell_amount": round(sum(float(x[2] or 0) for x in tx_rows if x[1] == "sell"), 2),
+        "12m_buy_amount": round(sum(abs(float(x[2] or 0)) for x in tx_rows if x[1] == "buy"), 2),
+        "12m_sell_amount": round(sum(abs(float(x[2] or 0)) for x in tx_rows if x[1] == "sell"), 2),
+        "12m_trade_by_month": {k: dict(v) for k, v in sorted(trade_by_month.items())},
+        "12m_active_trade_months": len(trade_by_month),
         "12m_new_positions_by_month": build_by_month,
+        "data_source": "investment_transactions",
         "current_position_count": len(positions),
         "current_total_value": round(total_value, 2),
         "current_total_pnl": round(total_value - total_cost, 2),
@@ -311,5 +316,47 @@ async def finance_snapshot(db: AsyncSession, user_id: str) -> dict:
         "money_market_share": round(sum(p["value"] for p in positions if p["money_market"]) / invest_value, 4)
             if invest_value > 0 and any(p["money_market"] for p in positions) else None,
     }
+
+    # ---- 投资账户对账（让 AI 能自证勾稽，回应"无法勾稽=假数据"的质疑）----
+    # 恒等式：投资账户余额 = 累计入金 − 累计出金 + 累计已入账盈亏
+    # 其中"累计已入账盈亏"是 sync 写入的「投资月度盈亏」流水，代表浮动盈亏入账。
+    # 三项都能对上时，AI 不应再质疑数据的内部一致性。
+    try:
+        cf_rows = (await db.execute(text(
+            "SELECT flow_type, COALESCE(SUM(amount),0) FROM investment_cash_flows "
+            "WHERE user_id=:u GROUP BY flow_type"
+        ), {"u": user_id})).all()
+        cf = {r[0]: float(r[1] or 0) for r in cf_rows}
+        dep_total, wd_total = cf.get("deposit", 0.0), cf.get("withdrawal", 0.0)
+        inv_acc_bal = sum(x["balance"] for x in snap["accounts"] if x["type"] == "investment")
+        posted_pnl = float((await db.execute(text(
+            """
+            SELECT COALESCE(SUM(t.amount),0) FROM transactions t
+            JOIN accounts a ON a.id = t.account_id
+            WHERE t.user_id=:u AND t.type='income' AND a.account_type='investment'
+              AND t.description LIKE '投资月度盈亏%'
+            """
+        ), {"u": user_id})).one()[0] or 0)
+        expected = dep_total - wd_total + posted_pnl
+        diff = round(inv_acc_bal - expected, 2) + 0.0   # +0.0 归一 -0.0
+        snap["investment_reconciliation"] = {
+            "identity": "投资账户余额 = 累计入金 − 累计出金 + 累计已入账盈亏",
+            "total_deposits": round(dep_total, 2),
+            "total_withdrawals": round(wd_total, 2),
+            "net_principal": round(dep_total - wd_total, 2),
+            "cumulative_pnl_posted": round(posted_pnl, 2),
+            "investment_account_balance": round(inv_acc_bal, 2),
+            "expected_balance": round(expected, 2),
+            "difference": diff,
+            "balanced": abs(diff) < 0.01,
+            "note": "差额为 0 表示台账与账户余额完全勾稽；不为 0 时差额即"
+                    "待补记的出/入金（多为投资账户↔工资账户转账未同步）。",
+        }
+    except Exception:
+        snap["investment_reconciliation"] = {"note": "台账表缺失，无法勾稽"}
+
+    # ---- 购房目标画像（参数可在 AI 咨询页编辑） ----
+    plan = await get_housing_plan(db, user_id)
+    snap["housing_profile"] = build_housing_snapshot(plan)
 
     return snap

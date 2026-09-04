@@ -19,6 +19,7 @@ from ..schemas.statistics import (
     AssetCompositionTrendItem
 )
 from ..middleware.auth import get_current_user_id
+from ..services.emergency_reserve import compute_emergency_reserve
 from typing import List, Optional
 import calendar
 import math
@@ -232,7 +233,11 @@ async def get_overview(
         )
         avg_3m_expense += float(pm_exp.scalar() or 0)
     avg_3m_expense = avg_3m_expense / 3.0
-    emergency_coverage = (total_assets / avg_3m_expense) if avg_3m_expense > 0 else 0
+    # 应急覆盖月数：与 AI 咨询 tab 共用同一口径服务（只算现金类账户，
+    # 排除投资账户余额与持仓市值）。旧口径用 total_assets / 月均支出，
+    # 把投资资金与固定资产也算进应急储备，虚高覆盖月数（2026-09-04 统一）。
+    emergency = await compute_emergency_reserve(db, user_id)
+    emergency_coverage = emergency["cover_months"] or 0
 
     prev_nw_start, prev_nw_end = get_month_range(year if month > 2 else year - 1, month - 2 if month > 2 else month + 10)
     prev_cum_inc = await db.execute(

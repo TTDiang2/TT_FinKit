@@ -7,12 +7,18 @@
           严厉 · 理性 · 冷静 · 只引用真实数据 · 不提供情绪价值
         </p>
       </div>
-      <div class="flex gap-2">
+      <div class="flex gap-2 flex-wrap justify-end">
         <button @click="showData = !showData" class="btn-secondary text-xs">
           {{ showData ? '隐藏数据画像' : '查看数据画像' }}
         </button>
         <button @click="showProfile = !showProfile" class="btn-secondary text-xs">
           {{ showProfile ? '隐藏画像编辑' : '编辑个人画像' }}
+        </button>
+        <button @click="toggleArchive" class="btn-secondary text-xs">
+          {{ showArchive ? '隐藏对话归档' : '对话归档' }}
+        </button>
+        <button @click="toggleActions" class="btn-secondary text-xs">
+          {{ showActions ? '隐藏行动清单' : '行动清单' }}
         </button>
       </div>
     </div>
@@ -131,6 +137,37 @@
             </div>
 
             <div class="pt-2 border-t border-border-default">
+              <div class="text-text-muted mb-1">投资账户对账（自证勾稽）</div>
+              <div class="flex justify-between py-0.5"><span>累计入金 / 出金</span>
+                <span class="font-mono">{{ fmt(snapshot.investment_reconciliation?.total_deposits) }} /
+                  {{ fmt(snapshot.investment_reconciliation?.total_withdrawals) }}</span></div>
+              <div class="flex justify-between py-0.5"><span>净本金 + 累计盈亏</span>
+                <span class="font-mono">{{ fmt(snapshot.investment_reconciliation?.net_principal) }} +
+                  {{ fmt(snapshot.investment_reconciliation?.accumulated_pnl) }}</span></div>
+              <div class="flex justify-between py-0.5"><span>账户余额 / 差额</span>
+                <span class="font-mono">{{ fmt(snapshot.investment_reconciliation?.account_balance) }} /
+                  <span :class="(snapshot.investment_reconciliation?.difference ?? 0) === 0 ? 'text-income-color' : 'text-expense-color font-medium'">
+                    {{ fmt(snapshot.investment_reconciliation?.difference) }}</span></span></div>
+            </div>
+
+            <div class="pt-2 border-t border-border-default">
+              <div class="text-text-muted mb-1">购房画像（{{ (snapshot.housing_profile?.target_cities || []).join(' / ') }}，{{ snapshot.housing_profile?.target_years }} 年内 {{ snapshot.housing_profile?.area_sqm }}㎡）</div>
+              <div class="flex justify-between py-0.5"><span>公积金月缴 / 年累积</span>
+                <span class="font-mono">{{ fmt(snapshot.housing_profile?.housing_fund?.monthly_total) }} /
+                  {{ fmt(snapshot.housing_profile?.housing_fund?.annual_accumulation) }}</span></div>
+              <div class="flex justify-between py-0.5"><span>目标年公积金累积</span>
+                <span class="font-mono">{{ fmt(snapshot.housing_profile?.housing_fund?.accumulation_by_target_year) }}</span></div>
+              <div v-for="s in (snapshot.housing_profile?.scenarios || [])" :key="s.city_key"
+                class="flex justify-between py-0.5">
+                <span>{{ s.city }}：总价/首付</span>
+                <span class="font-mono">{{ (s.est_total_price / 10000).toFixed(0) }}万 /
+                  {{ (s.down_payment / 10000).toFixed(0) }}万 · 月供 {{ s.monthly_payment.toLocaleString() }}
+                  <span :class="s.affordable_with_fund ? 'text-income-color' : 'text-expense-color'">{{ s.affordable_with_fund ? '✓可承受' : '✗超限' }}</span>
+                </span>
+              </div>
+            </div>
+
+            <div class="pt-2 border-t border-border-default">
               <div class="text-text-muted mb-1">支出节奏与风险敞口</div>
               <div class="flex justify-between py-0.5"><span>近30天支出</span>
                 <span class="font-mono">{{ fmt(snapshot.expense_rhythm?.last30d_total) }}</span></div>
@@ -158,6 +195,86 @@
           </div>
           <div v-if="profileMsg" class="text-xs mt-1" :class="profileOk ? 'text-income-color' : 'text-expense-color'">
             {{ profileMsg }}
+          </div>
+        </div>
+
+        <!-- 对话归档 -->
+        <div v-if="showArchive" class="bg-white rounded-lg shadow-sm p-4">
+          <div class="flex items-center justify-between mb-2">
+            <h3 class="font-medium text-sm">对话归档（本地）</h3>
+            <button v-if="archiveDetail" @click="closeArchiveDetail" class="text-xs underline text-text-muted">返回列表</button>
+          </div>
+
+          <template v-if="!archiveDetail">
+            <div v-if="archiveLoading" class="text-xs text-text-muted">加载中…</div>
+            <div v-else-if="!archiveSessions.length" class="text-xs text-text-muted py-4 text-center">暂无历史对话</div>
+            <div v-else class="space-y-1.5 max-h-[60vh] overflow-y-auto">
+              <div v-for="s in archiveSessions" :key="s.session_id"
+                class="flex items-start justify-between gap-2 p-2 rounded border border-border-default hover:bg-bg-secondary cursor-pointer"
+                @click="openArchiveDetail(s)">
+                <div class="min-w-0">
+                  <div class="text-xs font-medium truncate">{{ s.first_question || '（无提问记录）' }}</div>
+                  <div class="text-[10px] text-text-muted mt-0.5">
+                    {{ s.started_at?.slice(0, 16) }} · {{ Math.ceil((s.msg_count || 0) / 2) }} 轮
+                  </div>
+                </div>
+                <button @click.stop="deleteArchiveSession(s)"
+                  class="text-[10px] text-expense-color shrink-0 hover:underline">删除</button>
+              </div>
+            </div>
+          </template>
+
+          <template v-else>
+            <div class="text-[10px] text-text-muted mb-2">{{ archiveDetail.started_at?.slice(0, 16) }}</div>
+            <div class="space-y-2 max-h-[60vh] overflow-y-auto">
+              <div v-for="m in archiveMessages" :key="m.id"
+                :class="['max-w-[92%] rounded-lg px-3 py-2 text-xs',
+                         m.role === 'user' ? 'ml-auto bg-accent-primary/10' : 'bg-bg-tertiary']">
+                <div v-if="m.role === 'assistant'" class="text-[10px] text-text-muted mb-1">财富审计师</div>
+                <div v-if="m.role === 'assistant'" class="md-body" v-html="renderMd(m.content)"></div>
+                <div v-else class="whitespace-pre-wrap">{{ m.content }}</div>
+              </div>
+            </div>
+          </template>
+        </div>
+
+        <!-- 行动清单 -->
+        <div v-if="showActions" class="bg-white rounded-lg shadow-sm p-4">
+          <h3 class="font-medium text-sm mb-2">行动清单 / 目标</h3>
+          <div v-if="!actions.length" class="text-xs text-text-muted py-2">还没有行动项——可以让 AI 在回答后把建议转成行动</div>
+          <div class="space-y-1.5 max-h-[40vh] overflow-y-auto mb-3">
+            <div v-for="a in actions" :key="a.id"
+              class="flex items-start gap-2 p-2 rounded border border-border-default">
+              <input type="checkbox" :checked="a.status === 'done'" @change="toggleAction(a)" class="mt-0.5" />
+              <div class="min-w-0 flex-1">
+                <div class="text-xs" :class="a.status === 'done' ? 'line-through text-text-muted' : 'font-medium'">
+                  {{ a.title }}
+                  <span class="ml-1 text-[10px] px-1 rounded bg-bg-tertiary text-text-muted">{{ actionCategoryLabel(a.category) }}</span>
+                </div>
+                <div v-if="a.detail" class="text-[10px] text-text-muted mt-0.5 whitespace-pre-wrap">{{ a.detail }}</div>
+                <div class="text-[10px] text-text-muted mt-0.5">
+                  <span v-if="a.target_amount != null" class="font-mono">目标 {{ fmt(a.target_amount) }} · </span>
+                  <span v-if="a.due_date">截止 {{ a.due_date }}</span>
+                </div>
+              </div>
+              <button @click="deleteAction(a)" class="text-[10px] text-expense-color shrink-0 hover:underline">删除</button>
+            </div>
+          </div>
+          <div class="space-y-1.5 border-t border-border-default pt-2">
+            <input v-model="newAction.title" placeholder="行动项标题，如：每月定投 5,000 到指数增强"
+              class="w-full px-2 py-1 text-xs border border-border-default rounded" />
+            <div class="flex gap-1.5">
+              <select v-model="newAction.category" class="px-1 py-1 text-xs border border-border-default rounded flex-none">
+                <option value="emergency">应急</option>
+                <option value="invest">投资</option>
+                <option value="housing">购房</option>
+                <option value="spending">消费</option>
+                <option value="income">收入</option>
+                <option value="other">其他</option>
+              </select>
+              <input v-model="newAction.due_date" type="date" class="px-1 py-1 text-xs border border-border-default rounded flex-none" />
+              <button @click="addAction" :disabled="!newAction.title.trim()" class="btn-primary text-xs px-3 disabled:opacity-50">添加</button>
+            </div>
           </div>
         </div>
       </div>
@@ -195,6 +312,26 @@ const profileMsg = ref('')
 const profileOk = ref(false)
 const chatBox = ref<HTMLElement | null>(null)
 
+// 对话归档
+const showArchive = ref(false)
+const archiveLoading = ref(false)
+const archiveSessions = ref<any[]>([])
+const archiveDetail = ref<any | null>(null)
+const archiveMessages = ref<any[]>([])
+
+// 行动清单
+const showActions = ref(false)
+const actions = ref<any[]>([])
+const newAction = ref({ title: '', category: 'other', due_date: '' })
+
+const ACTION_CATEGORY_LABELS: Record<string, string> = {
+  emergency: '应急', invest: '投资', housing: '购房',
+  spending: '消费', income: '收入', other: '其他',
+}
+function actionCategoryLabel(c: string): string {
+  return ACTION_CATEGORY_LABELS[c] || c || '其他'
+}
+
 function fmt(v: number | null | undefined): string {
   return v == null ? '—' : Number(v).toLocaleString('zh-CN', { maximumFractionDigits: 0 }) + ' 元'
 }
@@ -230,29 +367,100 @@ async function saveProfile() {
   }
 }
 
-function resetProfile() {
-  profileMd.value = DEFAULT_PROFILE_LOCAL
-  profileMsg.value = '已恢复默认模板（记得点保存）'
-  profileOk.value = true
+async function resetProfile() {
+  try {
+    const { data } = await api.get('/ai-advisor/profile', { params: { default: true } })
+    profileMd.value = data.profile_md
+    profileMsg.value = '已恢复默认模板（记得点保存）'
+    profileOk.value = true
+  } catch {
+    profileMsg.value = '获取默认模板失败'
+    profileOk.value = false
+  }
 }
 
-const DEFAULT_PROFILE_LOCAL = `# 个人画像
+// ---- 对话归档 ----
 
-## 收入
-- 工资为主，月入约 1.0万~1.7万（有奖金/补贴波动）
-- 家庭支持的可能性存在（尤其购房时），但不应作为日常现金流依赖
+async function toggleArchive() {
+  showArchive.value = !showArchive.value
+  if (showArchive.value) {
+    closeArchiveDetail()
+    await loadArchiveSessions()
+  }
+}
 
-## 投资纪律
-- 每月固定投入约 1 万元到投资账户（定投为主）
-- 投资品种：基金定投（指数增强、行业/主题基金、黄金、债券），接受中高波动
+async function loadArchiveSessions() {
+  archiveLoading.value = true
+  try {
+    const { data } = await api.get('/ai-advisor/archive/sessions')
+    archiveSessions.value = data
+  } catch { archiveSessions.value = [] } finally {
+    archiveLoading.value = false
+  }
+}
 
-## 目标与约束
-- 应急储备：至少覆盖 6 个月支出（硬约束）
-- 中期目标：未来 5~10 年内购房；可能获得父母家庭支持，但要求自己独立供得起月供
+async function openArchiveDetail(s: any) {
+  try {
+    const { data } = await api.get(`/ai-advisor/archive/sessions/${s.session_id}`)
+    archiveMessages.value = data
+    archiveDetail.value = s
+  } catch { /* 列表保留 */ }
+}
 
-## 性格与偏好
-- 能接受严厉、直接的批评；讨厌和稀泠式的安慰
-- 希望得到可执行的数字级建议（金额/比例/期限）`
+function closeArchiveDetail() {
+  archiveDetail.value = null
+  archiveMessages.value = []
+}
+
+async function deleteArchiveSession(s: any) {
+  if (!confirm('删除这一轮对话（含全部消息）？不可恢复。')) return
+  try {
+    await api.delete(`/ai-advisor/archive/sessions/${s.session_id}`)
+    await loadArchiveSessions()
+  } catch { /* ignore */ }
+}
+
+// ---- 行动清单 ----
+
+async function toggleActions() {
+  showActions.value = !showActions.value
+  if (showActions.value) await loadActions()
+}
+
+async function loadActions() {
+  try {
+    const { data } = await api.get('/ai-advisor/actions')
+    actions.value = data
+  } catch { actions.value = [] }
+}
+
+async function addAction() {
+  const title = newAction.value.title.trim()
+  if (!title) return
+  try {
+    await api.post('/ai-advisor/actions', {
+      title,
+      category: newAction.value.category,
+      due_date: newAction.value.due_date || null,
+    })
+    newAction.value = { title: '', category: newAction.value.category, due_date: '' }
+    await loadActions()
+  } catch { /* ignore */ }
+}
+
+async function toggleAction(a: any) {
+  try {
+    await api.put(`/ai-advisor/actions/${a.id}`, { status: a.status === 'done' ? 'todo' : 'done' })
+    a.status = a.status === 'done' ? 'todo' : 'done'
+  } catch { /* ignore */ }
+}
+
+async function deleteAction(a: any) {
+  try {
+    await api.delete(`/ai-advisor/actions/${a.id}`)
+    await loadActions()
+  } catch { /* ignore */ }
+}
 
 const lastQuestion = ref('')
 
