@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="p-6">
     <h1 class="text-xl font-bold mb-4">统计</h1>
     <div class="flex gap-2 mb-4">
@@ -253,12 +253,12 @@ const coreStats = computed(() => {
 
 const expCats = computed(() => ({ labels: expenseCatsRaw.value.map(c => c.category_name), datasets: [{ data: expenseCatsRaw.value.map(c => c.total), backgroundColor: expenseCatsRaw.value.map(c => c.category_color) }] }))
 const incCats = computed(() => ({ labels: incomeCatsRaw.value.map(c => c.category_name), datasets: [{ data: incomeCatsRaw.value.map(c => c.total), backgroundColor: incomeCatsRaw.value.map(c => c.category_color) }] }))
-const dailyData = computed(() => ({ labels: dailySpending.value.map(d => d.date.slice(5)), datasets: [{ label: '收入', data: dailySpending.value.map(d => d.income), borderColor: '#4CAF50', tension: 0.3 }, { label: '支出', data: dailySpending.value.map(d => d.expense), borderColor: '#F44336', tension: 0.3 }] }))
+const dailyData = computed(() => ({ labels: dailySpending.value.map(d => d.date.slice(5)), datasets: [{ label: '收入', data: dailySpending.value.map(d => d.income), borderColor: '#F44336', tension: 0.3 }, { label: '支出', data: dailySpending.value.map(d => d.expense), borderColor: '#F44336', tension: 0.3 }] }))
 const dailyExpenseOnly = computed(() => ({ labels: dailySpending.value.map(d => d.date.slice(5)), datasets: [{ label: '支出', data: dailySpending.value.map(d => d.expense), borderColor: '#F44336', backgroundColor: 'rgba(244,67,54,0.1)', tension: 0.3, fill: true }] }))
-const weekdayData = computed(() => ({ labels: weekdayPattern.value.map(w => w.label), datasets: [{ label: '平均支出', data: weekdayPattern.value.map(w => w.avg_expense), backgroundColor: '#F44336' }, { label: '平均收入', data: weekdayPattern.value.map(w => w.avg_income), backgroundColor: '#4CAF50' }] }))
-const trend = computed(() => ({ labels: trends.value.map(t => t.month), datasets: [{ label: '收入', data: trends.value.map(t => t.income), backgroundColor: '#4CAF50' }, { label: '支出', data: trends.value.map(t => t.expense), backgroundColor: '#F44336' }] }))
-const incTrend = computed(() => ({ labels: trends.value.map(t => t.month), datasets: [{ label: '收入', data: trends.value.map(t => t.income), backgroundColor: '#4CAF50' }] }))
-const expTrend = computed(() => ({ labels: trends.value.map(t => t.month), datasets: [{ label: '支出', data: trends.value.map(t => t.expense), backgroundColor: '#F44336' }] }))
+const weekdayData = computed(() => ({ labels: weekdayPattern.value.map(w => w.label), datasets: [{ label: '平均支出', data: weekdayPattern.value.map(w => w.avg_expense), backgroundColor: '#4CAF50' }, { label: '平均收入', data: weekdayPattern.value.map(w => w.avg_income), backgroundColor: '#F44336' }] }))
+const trend = computed(() => ({ labels: trends.value.map(t => t.month), datasets: [{ label: '收入', data: trends.value.map(t => t.income), backgroundColor: '#F44336' }, { label: '支出', data: trends.value.map(t => t.expense), backgroundColor: '#4CAF50' }] }))
+const incTrend = computed(() => ({ labels: trends.value.map(t => t.month), datasets: [{ label: '收入', data: trends.value.map(t => t.income), backgroundColor: '#F44336' }] }))
+const expTrend = computed(() => ({ labels: trends.value.map(t => t.month), datasets: [{ label: '支出', data: trends.value.map(t => t.expense), backgroundColor: '#4CAF50' }] }))
 
 // Computed properties for new overview charts
 const cumulativeTrendData = computed(() => ({

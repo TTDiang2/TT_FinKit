@@ -470,8 +470,8 @@ const monthlyChartData = computed(() => {
   return {
     labels: months.map(x => x.slice(2)),
     datasets: [
-      { label: '收入', data: months.map(x => m[x].income || 0), backgroundColor: '#4CAF50' },
-      { label: '支出', data: months.map(x => m[x].expense || 0), backgroundColor: '#F44336' },
+      { label: '收入', data: months.map(x => m[x].income || 0), backgroundColor: '#F44336' },
+      { label: '支出', data: months.map(x => m[x].expense || 0), backgroundColor: '#4CAF50' },
     ],
   }
 })
@@ -502,8 +502,8 @@ const windowChartData = computed(() => {
   return {
     labels,
     datasets: [
-      { label: '收入', data: ['1m', '3m', '6m'].map(k => tw[k]?.income ?? 0), backgroundColor: '#4CAF50' },
-      { label: '支出', data: ['1m', '3m', '6m'].map(k => tw[k]?.expense ?? 0), backgroundColor: '#F44336' },
+      { label: '收入', data: ['1m', '3m', '6m'].map(k => tw[k]?.income ?? 0), backgroundColor: '#F44336' },
+      { label: '支出', data: ['1m', '3m', '6m'].map(k => tw[k]?.expense ?? 0), backgroundColor: '#4CAF50' },
     ],
   }
 })
