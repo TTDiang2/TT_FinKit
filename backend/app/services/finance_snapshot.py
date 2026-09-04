@@ -6,32 +6,21 @@ AI 只被允许引用这份快照里的数字。
 """
 from __future__ import annotations
 
+from calendar import monthrange
 from collections import Counter, defaultdict
 from datetime import date, timedelta
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-
-# ---------------- 快照扩展（用户拍板 2026-09-03） ----------------
-# 6 个数据块：时间尺度 / 收入画像 / 投资画像 / 经营储蓄率 / 支出节奏 / 风险敞口。
-# 排除应收应付与目标进度。
-
-_M_KEYWORDS_BY_NOTE = [
-    # note 关键词 → 收入子分类（中文匹配，命中首条为准）
-    ("奖金", "奖金"), ("补贴", "补贴"), ("津贴", "补贴"),
-    ("报销", "报销"), ("理财", "理财收益"), ("利息", "理财收益"),
-    ("红包", "其他"), ("退款", "其他"), ("兼职", "兼职"),
-]
+from .investment_stats import compute_portfolio_overview
 
 
-def _income_subcategory(note: str | None) -> str:
-    if not note:
-        return "工资"
-    for kw, cat in _M_KEYWORDS_BY_NOTE:
-        if kw in note:
-            return cat
-    return "工资"
+def _shift_months(d: date, k: int) -> date:
+    m0 = d.month + k - 1
+    y = d.year + m0 // 12
+    m = m0 % 12 + 1
+    return date(y, m, min(d.day, monthrange(y, m)[1]))
 
 
 async def finance_snapshot(db: AsyncSession, user_id: str) -> dict:
@@ -55,9 +44,19 @@ async def finance_snapshot(db: AsyncSession, user_id: str) -> dict:
         d["to_invest"] = d["transfer"]
     snap["monthly_12m"] = dict(sorted(monthly.items())[-12:])
 
-    # ---- 储蓄率（近 6 个月，剔除转账）----
-    inc6 = sum(m["income"] for ym, m in monthly.items() if ym >= (date.today() - timedelta(days=200)).strftime("%Y-%m"))
-    exp6 = sum(m["expense"] for ym, m in monthly.items() if ym >= (date.today() - timedelta(days=200)).strftime("%Y-%m"))
+    # ---- 储蓄率与时间窗口（滚动日历月，与统计 tab 同口径）----
+    async def _window_sums(begin: date) -> tuple[float, float]:
+        r = (await db.execute(text(
+            """
+            SELECT COALESCE(SUM(CASE WHEN type='income' THEN amount ELSE 0 END),0),
+                   COALESCE(SUM(CASE WHEN type='expense' THEN amount ELSE 0 END),0)
+            FROM transactions
+            WHERE user_id=:u AND type IN ('income','expense') AND date >= :b
+            """
+        ), {"u": user_id, "b": begin.isoformat()})).one()
+        return float(r[0] or 0), float(r[1] or 0)
+
+    inc6, exp6 = await _window_sums(_shift_months(date.today(), -6))
     snap["savings_6m"] = {
         "income": round(inc6, 2), "expense": round(exp6, 2),
         "net": round(inc6 - exp6, 2),
@@ -132,20 +131,35 @@ async def finance_snapshot(db: AsyncSession, user_id: str) -> dict:
         "total_pnl_pct": round((total_value - total_cost) / total_cost, 4) if total_cost > 0 else None,
     }
 
-    # ---- 应急储备估算 ----
-    avg_exp = exp6 / 6 if exp6 > 0 else None
+    # ---- 应急储备（与首页/统计 tab 同口径：总资产 ÷ 近3个完整自然月月均支出）----
+    m1_start = date.today().replace(day=1)
+    exp3_sum = 0.0
+    for i in range(1, 4):
+        ms, me = _shift_months(m1_start, -i), _shift_months(m1_start, -(i - 1))
+        r = (await db.execute(text(
+            "SELECT COALESCE(SUM(amount),0) FROM transactions "
+            "WHERE user_id=:u AND type='expense' AND date >= :s AND date < :e"
+        ), {"u": user_id, "s": ms.isoformat(), "e": me.isoformat()})).one()
+        exp3_sum += float(r[0] or 0)
+    avg3 = exp3_sum / 3.0
+    asset_rows = (await db.execute(text(
+        "SELECT asset_type, COALESCE(SUM(value),0) FROM assets WHERE user_id=:u GROUP BY asset_type"
+    ), {"u": user_id})).all()
+    amap = {r[0]: float(r[1]) for r in asset_rows}
+    total_account_balance = sum(x["balance"] for x in snap["accounts"])
+    total_assets_ai = (total_account_balance + total_value
+                       + amap.get("fixed_asset", 0) + amap.get("other_asset", 0)
+                       - amap.get("liability", 0))
     snap["emergency_reserve"] = {
+        "total_assets": round(total_assets_ai, 2),
+        "avg_monthly_expense_3m": round(avg3, 2),
+        "cover_months": round(total_assets_ai / avg3, 1) if avg3 > 0 else None,
         "cash_total": snap["cash_total"],
-        "avg_monthly_expense": round(avg_exp, 2) if avg_exp else None,
-        "cover_months": round(cash_total / avg_exp, 1) if avg_exp and avg_exp > 0 else None,
     }
 
-    # ---- 时间尺度快照（6/3/1 月收支对比） ----
-    # 每月净支出 = expense - income（不含 transfer）；月储蓄率 = 1 - expense/income
-    def _month_window(months_back: int) -> dict:
-        cutoff = (date.today().replace(day=1) - timedelta(days=months_back * 31)).replace(day=1)
-        inc = sum(m["income"] for ym, m in monthly.items() if ym >= cutoff.strftime("%Y-%m"))
-        exp = sum(m["expense"] for ym, m in monthly.items() if ym >= cutoff.strftime("%Y-%m"))
+    # ---- 时间尺度快照（6/3/1 月收支对比，滚动日历月精确区间） ----
+    async def _month_window(months_back: int) -> dict:
+        inc, exp = await _window_sums(_shift_months(date.today(), -months_back))
         return {
             "income": round(inc, 2),
             "expense": round(exp, 2),
@@ -153,58 +167,49 @@ async def finance_snapshot(db: AsyncSession, user_id: str) -> dict:
             "savings_rate": round((inc - exp) / inc, 4) if inc > 0 else None,
             "monthly_avg": round((inc - exp) / max(1, months_back), 2),
         }
+
     snap["time_windows"] = {
-        "6m": _month_window(6),
-        "3m": _month_window(3),
-        "1m": _month_window(1),
+        "6m": await _month_window(6),
+        "3m": await _month_window(3),
+        "1m": await _month_window(1),
     }
 
-    # ---- 收入画像（结构 + 稳定性 + 趋势） ----
+    # ---- 收入画像（按记账分类聚合，未选分类的归"未分类"） ----
     inc_rows = (await db.execute(text(
         """
-        SELECT substr(date, 1, 7) AS ym, amount, COALESCE(description,'')
-        FROM transactions
-        WHERE user_id=:u AND type='income' AND date >= :begin
-        ORDER BY date
+        SELECT substr(t.date,1,7) AS ym, COALESCE(c.name,'未分类') AS cat, t.amount
+        FROM transactions t
+        LEFT JOIN categories c ON c.id = t.category_id
+        WHERE t.user_id=:u AND t.type='income' AND t.date >= :begin
         """
     ), {"u": user_id, "begin": (date.today() - timedelta(days=365)).isoformat()})).all()
-    sub_totals: Counter[str] = Counter()
-    sub_months: dict[str, set[str]] = defaultdict(set)
+    cat_total: Counter[str] = Counter()
+    cat_month_sum: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
     inc_total = 0.0
     inc_count = 0
-    for ym, amt, note in inc_rows:
-        c = _income_subcategory(note)
-        sub_totals[c] += float(amt or 0)
-        sub_months[c].add(ym)
-        inc_total += float(amt or 0)
+    for ym, cat, amt in inc_rows:
+        a = float(amt or 0)
+        cat_total[cat] += a
+        cat_month_sum[cat][ym] += a
+        inc_total += a
         inc_count += 1
-    sub_avg = {k: round(v / max(1, len(sub_months[k])), 2) for k, v in sub_totals.items()}
-    sub_std = {}
-    for k in sub_totals:
-        months_active = len(sub_months[k])
-        avg = sub_avg[k]
-        # 月波动（最大/平均倍率）
-        rows_k = [float(a) for (y, a, _n) in inc_rows if _income_subcategory(_n) == k]
-        if len(rows_k) > 1:
-            mean = sum(rows_k) / len(rows_k)
-            var = sum((x - mean) ** 2 for x in rows_k) / (len(rows_k) - 1)
-            sd = var ** 0.5
-            sub_std[k] = {
-                "monthly_avg": round(mean, 2),
-                "monthly_std": round(sd, 2),
-                "coefficient_of_variation": round(sd / mean, 3) if mean > 0 else None,
-                "months_active": months_active,
-            }
+    by_subcategory = {}
+    for cat, tot in cat_total.items():
+        month_vals = list(cat_month_sum[cat].values())
+        mean = sum(month_vals) / len(month_vals)
+        sd = (sum((x - mean) ** 2 for x in month_vals) / len(month_vals)) ** 0.5 if len(month_vals) > 1 else 0.0
+        by_subcategory[cat] = {
+            "total_12m": round(tot, 2),
+            "share": round(tot / inc_total, 4) if inc_total > 0 else None,
+            "monthly_avg": round(mean, 2),
+            "monthly_std": round(sd, 2),
+            "coefficient_of_variation": round(sd / mean, 3) if mean > 0 else None,
+            "months_active": len(month_vals),
+        }
     snap["income_profile"] = {
         "12m_total": round(inc_total, 2),
         "12m_count": inc_count,
-        "by_subcategory": {
-            k: {
-                "total_12m": round(v, 2),
-                "share": round(v / inc_total, 4) if inc_total > 0 else None,
-                **sub_std.get(k, {"monthly_avg": sub_avg.get(k)}),
-            } for k, v in sub_totals.most_common()
-        },
+        "by_subcategory": dict(sorted(by_subcategory.items(), key=lambda kv: -(kv[1]["total_12m"] or 0))),
     }
 
     # ---- 投资画像（决策画像：买卖流水 + 当前持仓 + 建仓节奏） ----
@@ -228,7 +233,13 @@ async def finance_snapshot(db: AsyncSession, user_id: str) -> dict:
         """
     ), {"u": user_id, "begin": (date.today() - timedelta(days=365)).isoformat()})).all()
     build_by_month = {ym: int(n) for ym, n in build_rows}
+    po = await compute_portfolio_overview(db, user_id)
     snap["investment_profile"] = {
+        "realized_pnl": po.realized_pnl,
+        "floating_pnl": po.floating_pnl,
+        "xirr_annualized_pct": round(po.xirr_annualized * 100, 2) if po.xirr_annualized is not None else None,
+        "total_deposits": po.total_deposits,
+        "total_withdrawals": po.total_withdrawals,
         "12m_tx_count": len(tx_rows),
         "12m_buy_count": sum(1 for x in tx_rows if x[1] == "buy"),
         "12m_sell_count": sum(1 for x in tx_rows if x[1] == "sell"),

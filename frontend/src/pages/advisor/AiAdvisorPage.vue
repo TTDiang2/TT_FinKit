@@ -98,9 +98,15 @@
 
             <div class="pt-2 border-t border-border-default">
               <div class="text-text-muted mb-1">投资画像</div>
-              <div class="flex justify-between py-0.5"><span>持仓市值 / 盈亏</span>
+              <div class="flex justify-between py-0.5"><span>持仓市值 / 浮动盈亏</span>
                 <span class="font-mono">{{ fmt(snapshot.investment_profile?.current_total_value) }} /
                   <span :class="(snapshot.investment_profile?.current_total_pnl ?? 0) >= 0 ? 'text-income-color' : 'text-expense-color'">{{ fmt(snapshot.investment_profile?.current_total_pnl) }}</span></span></div>
+              <div class="flex justify-between py-0.5"><span>累计落袋盈亏（含分红）</span>
+                <span class="font-mono" :class="(snapshot.investment_profile?.realized_pnl ?? 0) >= 0 ? 'text-income-color' : 'text-expense-color'">{{ fmt(snapshot.investment_profile?.realized_pnl) }}</span></div>
+              <div class="flex justify-between py-0.5"><span>累计投入 / 累计回收</span>
+                <span class="font-mono">{{ fmt(snapshot.investment_profile?.total_deposits) }} / {{ fmt(snapshot.investment_profile?.total_withdrawals) }}</span></div>
+              <div class="flex justify-between py-0.5"><span>XIRR 年化（投资tab同款）</span>
+                <span class="font-mono">{{ snapshot.investment_profile?.xirr_annualized_pct != null ? snapshot.investment_profile.xirr_annualized_pct + '%' : '—' }}</span></div>
               <div class="flex justify-between py-0.5"><span>Top1 集中度</span>
                 <span class="font-mono">{{ snapshot.investment_profile?.current_top1_concentration != null ? ((snapshot.investment_profile.current_top1_concentration * 100).toFixed(1) + '%') : '—' }}</span></div>
               <div class="flex justify-between py-0.5"><span>近12月建仓（按月）</span>
@@ -152,7 +158,7 @@ marked.setOptions({ breaks: true, gfm: true })
 function renderMd(content: string): string {
   return DOMPurify.sanitize(marked.parse(content || '') as string)
 }
-import { useApi } from '@/composables/useApi'
+import { useApi, apiLong } from '@/composables/useApi'
 
 const api = useApi()
 const messages = ref<{ role: 'user' | 'assistant'; content: string }[]>([])
@@ -237,7 +243,7 @@ async function ask() {
   await nextTick()
   chatBox.value?.scrollTo({ top: chatBox.value.scrollHeight })
   try {
-    const { data } = await api.post('/ai-advisor/ask', { question: q })
+    const { data } = await apiLong.post('/ai-advisor/ask', { question: q })
     messages.value.push({ role: 'assistant', content: data.answer })
     loadSnapshot()   // 回答后刷新数据画像（快照为实时聚合，卡片同步更新）
   } catch (e: any) {
