@@ -1,4 +1,4 @@
-export interface User { id: string; email: string; name: string; created_at: string }
+﻿export interface User { id: string; email: string; name: string; created_at: string }
 export interface BankFormula {
   income: string[]   // 收入侧分项: transfer_in | refund | income
   expense: string[]  // 支出侧分项: expense_positive | expense_net
@@ -36,7 +36,7 @@ export interface Investment {
   quantity: number; purchase_price: number; current_price: number;
   purchase_date: string; sell_date: string; notes: string;
   symbol: string; exchange: string; last_price_update: string | null;
-  is_money_market: boolean; seven_day_yield: number | null; mmf_shares: number | null;
+  is_money_market: boolean; locked: boolean; seven_day_yield: number | null; mmf_shares: number | null;
   total_value: number; profit_loss: number;
   ann_volatility: number | null; sharpe_ratio: number | null; ann_return: number | null;
   created_at: string; updated_at: string;
@@ -664,9 +664,10 @@ export interface SignalRunResult {
 export interface TradePlanRow {
   symbol: string; name: string; current_weight: number; target_weight: number;
   current_mv: number; target_mv: number;
-  action: 'buy' | 'sell' | 'hold'; amount: number;
+  action: 'buy' | 'sell' | 'hold' | 'locked'; amount: number;
   est_fee_pct: number | null; est_fee_amount: number;
   t_plus: string | null; arrive_date: string | null; warnings: string[];
+  equiv_holding?: string;
 }
 
 export interface FactorExposurePoint {
@@ -677,6 +678,7 @@ export interface FactorExposurePoint {
 export interface TradePlan {
   signal_id: string | null; run_date: string | null; next_rebalance_date: string | null;
   invested_value: number; additional_cash: number; total_value: number;
+  locked_value?: number; tradable_budget?: number;
   rows: TradePlanRow[];
 }
 

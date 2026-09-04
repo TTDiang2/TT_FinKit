@@ -15,6 +15,7 @@ from ..models.investment import Investment, open_position_cond
 import json
 import uuid
 import datetime as _dt
+from collections import defaultdict
 from datetime import date
 
 router = APIRouter(prefix="/api/signals", tags=["signals"])
@@ -246,6 +247,9 @@ async def compute_trade_plan(db: AsyncSession, pub: AsyncSession, user_id: str,
     invs = (await db.execute(select(Investment).where(
         Investment.user_id == user_id, open_position_cond()))).scalars().all()
     holdings = [i for i in invs if (i.quantity or 0) > 0]
+    locked = [i for i in holdings if getattr(i, "locked", False)]
+    tradable = [i for i in holdings if not getattr(i, "locked", False)]
+    locked_syms = {(i.symbol or "").strip() for i in locked if i.symbol}
 
     # Navs only for symbols that matter (targets ∪ holdings) — an IN clause over
     # the full 19k-asset pool stalls SQLite.
@@ -269,70 +273,151 @@ async def compute_trade_plan(db: AsyncSession, pub: AsyncSession, user_id: str,
         mv_by_symbol[sym] = mv_by_symbol.get(sym, 0) + (i.quantity or 0) * nav
         inv_name.setdefault(sym, i.name)
 
+    locked_mv = sum(mv for s, mv in mv_by_symbol.items() if s in locked_syms)
     total_value = sum(mv_by_symbol.values())
     invested_value = total_value
     additional_cash = max(0.0, float(additional_cash or 0))
-    total_value += additional_cash
+    tradable_budget = total_value - locked_mv + additional_cash
+
+    def _key(sym: str) -> str:
+        a = by_symbol.get(sym)
+        ac = ((a.asset_class if a else "") or "").strip()
+        if not ac:
+            for i in holdings:
+                if (i.symbol or "").strip() == sym:
+                    ac = (i.asset_class or "").strip()
+                    break
+        if not ac:
+            return f"|{sym}"
+        rg = ((a.region if a else "") or "").strip()
+        return f"{ac}|{rg}"
+
+    t_items = [(s, w) for s, w in targets.items() if s not in locked_syms]
+    wsum = sum(w for _, w in t_items)
+
+    tradable_by_key: dict[str, list] = defaultdict(list)
+    for i in tradable:
+        tradable_by_key[_key((i.symbol or "").strip())].append(i)
+
+    weight_by_key: dict[str, float] = defaultdict(float)
+    rep_by_key: dict[str, str] = {}
+    for s, w in t_items:
+        k = _key(s)
+        weight_by_key[k] += w
+        if k not in rep_by_key:
+            pool = tradable_by_key.get(k)
+            rep_by_key[k] = ((pool[0].symbol or "").strip() if pool else s)
+
+    norm = {k: w / wsum for k, w in weight_by_key.items()} if wsum > 0 else {}
     today = date.today()
     rows_out: list[dict] = []
 
-    for sym in sorted(set(targets) | set(mv_by_symbol)):
-        a = by_symbol.get(sym)
-        name = (a.name if a else None) or inv_name.get(sym) or sym
-        target_w = float(targets.get(sym) or 0)
-        mv = mv_by_symbol.get(sym, 0)
-        current_w = mv / total_value if total_value > 0 else 0
-        delta = target_w * total_value - mv
+    if wsum > 0:
+        for k in sorted(norm, key=lambda kk: -norm[kk]):
+            rep = rep_by_key[k]
+            a = by_symbol.get(rep)
+            name = (a.name if a else None) or inv_name.get(rep) or rep
+            target_w = norm[k]
+            target_mv = target_w * tradable_budget
+            cur_mv = sum(mv for s, mv in mv_by_symbol.items()
+                         if s not in locked_syms and _key(s) == k)
+            cur_w = cur_mv / tradable_budget if tradable_budget > 0 else 0
+            delta = target_mv - cur_mv
 
-        row = {
-            "symbol": sym, "name": name,
-            "current_weight": round(current_w, 4),
-            "target_weight": round(target_w, 4),
-            "current_mv": round(mv, 2), "target_mv": round(target_w * total_value, 2),
-            "action": "hold", "amount": 0.0, "est_fee_pct": None,
-            "est_fee_amount": 0.0, "t_plus": None, "arrive_date": None,
-            "warnings": [],
-        }
-        # 缓冲带：差额既小于金额线也小于比例线 → 保持不动，避免摩擦损耗
-        if abs(delta) < _TRADE_MIN_AMOUNT or abs(delta / total_value) < _TRADE_MIN_RATIO:
-            rows_out.append(row)
-            continue
-
-        if delta > 0 and target_w > 0:
-            row.update(action="buy", amount=round(delta, 2))
-            if a:
-                status = a.purchase_status or ""
-                limit = a.purchase_limit
-                if status and status != "开放申购":
-                    row["warnings"].append(f"申购状态「{status}」，建议暂缓")
-                fee = a.purchase_fee
-                if fee is not None:
-                    row["est_fee_pct"] = fee
-                    row["est_fee_amount"] = round(delta * fee / 100, 2)
-                if limit is not None and delta > limit:
-                    row["warnings"].append(f"超单日限额 {limit:g} 元，需分日买入或降低目标")
-                    row["amount"] = round(min(delta, max(limit, 0)), 2)
-        elif delta < 0 and mv > 0:
-            amount = min(-delta, mv)
-            row.update(action="sell", amount=round(amount, 2))
-            if i_hold := next((i for i in holdings if i.symbol == sym), None):
+            row = {
+                "symbol": rep, "name": name,
+                "current_weight": round(cur_w, 4),
+                "target_weight": round(target_w, 4),
+                "current_mv": round(cur_mv, 2), "target_mv": round(target_mv, 2),
+                "action": "hold", "amount": 0.0, "est_fee_pct": None,
+                "est_fee_amount": 0.0, "t_plus": None, "arrive_date": None,
+                "warnings": [],
+            }
+            same_key = tradable_by_key.get(k, [])
+            others = [i for i in same_key if (i.symbol or "").strip() != rep]
+            if others:
+                row["equiv_holding"] = (others[0].name or others[0].symbol or "")
+            if abs(delta) < _TRADE_MIN_AMOUNT or (tradable_budget > 0 and abs(delta / tradable_budget) < _TRADE_MIN_RATIO):
+                if others:
+                    row["warnings"].append(f"持有同类标的「{row['equiv_holding']}」，视为等效持仓不做换仓")
+                rows_out.append(row)
+                continue
+            if delta > 0 and target_w > 0:
+                row.update(action="buy", amount=round(delta, 2))
+                if others:
+                    row["warnings"].append(f"可继续持有同类标的「{row['equiv_holding']}」代替买入，两者收益高度接近")
+                if a:
+                    status = a.purchase_status or ""
+                    limit = a.purchase_limit
+                    if status and status != "开放申购":
+                        row["warnings"].append(f"申购状态「{status}」，建议暂缓")
+                    fee = a.purchase_fee
+                    if fee is not None:
+                        row["est_fee_pct"] = fee
+                        row["est_fee_amount"] = round(delta * fee / 100, 2)
+                    if limit is not None and delta > limit:
+                        row["warnings"].append(f"超单日限额 {limit:g} 元，需分日买入或降低目标")
+                        row["amount"] = round(min(delta, max(limit, 0)), 2)
+            elif delta < 0 and cur_mv > 0:
+                amount = min(-delta, cur_mv)
+                sell_pool = same_key or tradable
+                sell_inv = max(sell_pool, key=lambda i: mv_by_symbol.get((i.symbol or "").strip(), 0))
+                sell_sym = (sell_inv.symbol or "").strip()
+                sell_name = (sell_inv.name or "") or inv_name.get(sell_sym, sell_sym)
+                a_sell = by_symbol.get(sell_sym)
+                row.update(action="sell", symbol=sell_sym, name=sell_name, amount=round(amount, 2))
+                i_hold = sell_inv
                 try:
                     held = (today - _dt.date.fromisoformat(str(i_hold.purchase_date)[:10])).days
                 except (ValueError, TypeError):
                     held = 9999
-                if a:
-                    fee_pct, note = _redeem_fee_for(a.redeem_rules, held)
+                if a_sell:
+                    fee_pct, note = _redeem_fee_for(a_sell.redeem_rules, held)
                     row["est_fee_pct"] = fee_pct
                     row["est_fee_amount"] = round(amount * (fee_pct or 0) / 100, 2)
                     if fee_pct is None:
                         row["warnings"].append(note)
                     elif held < _PENALTY_DAYS:
                         row["warnings"].append(note)
-                    t_plus = a.redeem_t_days
+                    t_plus = a_sell.redeem_t_days
                     if t_plus:
                         row["t_plus"] = f"T+{t_plus}"
                         row["arrive_date"] = _add_business_days(today, int(t_plus))
-        rows_out.append(row)
+                    status = a_sell.purchase_status or ""
+                    limit = a_sell.purchase_limit
+                    if (status and status != "开放申购") or (limit is not None and amount > (limit or 0)):
+                        est = f"，按限额需约 {int(amount / limit) + 1} 个交易日" if limit else ""
+                        row["warnings"].append(
+                            f"该标的申购受限（{status or f'限额 {limit:g} 元/日'}），卖出后回补困难{est}且不保证能回补，请谨慎"
+                        )
+            rows_out.append(row)
+    else:
+        # 无信号（或目标全为锁定标的）时保持现状展示，不产生任何调仓动作
+        for i in tradable:
+            sym = (i.symbol or "").strip()
+            mv = mv_by_symbol.get(sym, 0)
+            rows_out.append({
+                "symbol": sym, "name": (i.name or "") or inv_name.get(sym, sym),
+                "current_weight": round(mv / total_value, 4) if total_value > 0 else 0,
+                "target_weight": 0.0,
+                "current_mv": round(mv, 2), "target_mv": round(mv, 2),
+                "action": "hold", "amount": 0.0, "est_fee_pct": None,
+                "est_fee_amount": 0.0, "t_plus": None, "arrive_date": None,
+                "warnings": ["暂无信号，展示当前持仓"],
+            })
+
+    for i in sorted(locked, key=lambda i: -mv_by_symbol.get((i.symbol or "").strip(), 0)):
+        sym = (i.symbol or "").strip()
+        mv = mv_by_symbol.get(sym, 0)
+        rows_out.append({
+            "symbol": sym, "name": (i.name or "") or inv_name.get(sym, sym),
+            "current_weight": round(mv / total_value, 4) if total_value > 0 else 0,
+            "target_weight": 0.0,
+            "current_mv": round(mv, 2), "target_mv": round(mv, 2),
+            "action": "locked", "amount": 0.0, "est_fee_pct": None,
+            "est_fee_amount": 0.0, "t_plus": None, "arrive_date": None,
+            "warnings": ["已锁定：不参与调仓，其余资产在其之外归一化"],
+        })
 
     return {
         "signal_id": sig.id if sig else None,
@@ -341,6 +426,8 @@ async def compute_trade_plan(db: AsyncSession, pub: AsyncSession, user_id: str,
         "invested_value": round(invested_value, 2),
         "additional_cash": round(additional_cash, 2),
         "total_value": round(total_value, 2),
+        "locked_value": round(locked_mv, 2),
+        "tradable_budget": round(tradable_budget, 2),
         "rows": rows_out,
     }
 

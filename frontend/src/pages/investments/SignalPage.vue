@@ -105,8 +105,9 @@
 
         <div v-if="tradePlan" class="mb-1 text-xs text-text-muted">
           持仓总市值 {{ fmtMoney(tradePlan.invested_value) }}
+          <template v-if="(tradePlan.locked_value ?? 0) > 0"> · 🔒 已锁定 {{ fmtMoney(tradePlan.locked_value ?? 0) }}（不参与调仓）</template>
           <template v-if="tradePlan.additional_cash > 0"> · 本次新投入 {{ fmtMoney(tradePlan.additional_cash) }}</template>
-          · 合计 {{ fmtMoney(tradePlan.total_value) }} · 小额差额（&lt;100元或&lt;1%）自动保持不动
+          · 可调预算 {{ fmtMoney(tradePlan.tradable_budget ?? tradePlan.total_value) }} · 小额差额（&lt;100元或&lt;1%）自动保持不动
         </div>
         <table v-if="tradePlan" class="w-full text-sm">
           <thead class="bg-bg-tertiary text-left">
@@ -122,13 +123,13 @@
           </thead>
           <tbody>
             <tr v-for="r in tradePlan.rows" :key="r.symbol" class="border-t border-border-default">
-              <td class="px-3 py-1.5"><div class="font-medium">{{ r.name }}</div><div class="text-xs text-text-muted">{{ r.symbol }}</div></td>
+              <td class="px-3 py-1.5"><div class="font-medium">{{ r.name }}<span v-if="r.equiv_holding" class="ml-1 text-xs text-text-muted">（持有同类「{{ r.equiv_holding }}」）</span></div><div class="text-xs text-text-muted">{{ r.symbol }}</div></td>
               <td class="px-3 py-1.5 text-right text-xs">
                 {{ (r.current_weight * 100).toFixed(1) }}% → <span class="font-medium">{{ (r.target_weight * 100).toFixed(1) }}%</span>
               </td>
               <td class="px-3 py-1.5 text-right">
                 <span :class="['px-1.5 py-0.5 text-xs rounded', r.action === 'buy' ? 'bg-income-bg text-income-color' : r.action === 'sell' ? 'bg-expense-bg text-expense-color' : 'bg-bg-tertiary text-text-secondary']">
-                  {{ r.action === 'buy' ? '买入' : r.action === 'sell' ? '卖出' : '持有' }}
+                  {{ r.action === 'buy' ? '买入' : r.action === 'sell' ? '卖出' : r.action === 'locked' ? '已锁定' : '持有' }}
                 </span>
               </td>
               <td class="px-3 py-1.5 text-right font-mono">{{ r.amount ? fmtMoney(r.amount) : '—' }}</td>

@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+﻿from pydantic import BaseModel, Field
 from typing import Optional, Literal
 
 
@@ -69,6 +69,7 @@ class InvestmentResponse(BaseModel):
     ann_return: Optional[float] = None
     created_at: str
     updated_at: str
+    locked: bool = False
     merged_into: Optional[str] = None
     merged_message: Optional[str] = None
 

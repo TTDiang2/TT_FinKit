@@ -60,8 +60,11 @@ async def run_lightweight_migrations(conn: AsyncConnection) -> None:
     await _add_column_if_missing(conn, "investments", "last_price_update", "DATETIME")
 
     # investments: money-market fund flags (P5)
-    await _add_column_if_missing(conn, "investments", "is_money_market", "BOOLEAN DEFAULT 0")
+    await _add_column_if_missing(conn, "investments", "is_money_market", "BOOLEAN DEFAULT 0 NOT NULL")
     await _add_column_if_missing(conn, "investments", "seven_day_yield", "FLOAT")
+
+    # investments: 调仓锁定（锁定后调仓清单跳过该持仓的卖出建议）
+    await _add_column_if_missing(conn, "investments", "locked", "BOOLEAN DEFAULT 0 NOT NULL")
 
     # backtests: progress reporting (0-100) + running PID for orphan detection
     await _add_column_if_missing(conn, "backtests", "progress", "INTEGER DEFAULT 0")

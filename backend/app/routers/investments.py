@@ -78,6 +78,7 @@ def _to_response(inv: Investment) -> InvestmentResponse:
         notes=inv.notes,
         last_price_update=str(inv.last_price_update) if inv.last_price_update else None,
         is_money_market=bool(inv.is_money_market),
+        locked=bool(getattr(inv, "locked", False)),
         seven_day_yield=inv.seven_day_yield,
         total_value=total_value,
         profit_loss=profit_loss,
@@ -1650,6 +1651,20 @@ async def update_investment(
     await db.refresh(inv)
     _invalidate_portfolio_nav_cache(user_id)
     return _to_response(inv)
+
+
+@router.put("/{investment_id}/lock")
+async def set_investment_lock(
+    investment_id: str,
+    req: dict,
+    user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_private_db),
+):
+    """调仓锁定：锁定后调仓清单跳过该持仓的卖出建议。"""
+    inv = await _load_investment(db, investment_id, user_id)
+    inv.locked = bool(req.get("locked", False))
+    await db.commit()
+    return {"id": inv.id, "locked": bool(inv.locked)}
 
 
 @router.delete("/{investment_id}")

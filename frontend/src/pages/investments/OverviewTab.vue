@@ -108,6 +108,10 @@
                     <RefreshCw :size="14" />
                   </button>
                   <button @click="openProductModal(inv)" title="编辑" class="text-text-secondary hover:text-accent-primary"><Edit2 :size="14" /></button>
+                  <button @click="toggleLock(inv)" :title="inv.locked ? '解锁（恢复调仓卖出建议）' : '锁定（调仓清单跳过该持仓的卖出建议）'"
+                    :class="inv.locked ? 'text-warning hover:text-accent-primary' : 'text-text-muted hover:text-accent-primary'">
+                    <Lock v-if="inv.locked" :size="14" /><Unlock v-else :size="14" />
+                  </button>
                   <button @click="removeItem(inv.id)" title="删除" class="text-text-muted hover:text-expense-color"><Trash2 :size="14" /></button>
                 </div>
               </td>
@@ -506,7 +510,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { Plus, Edit2, Trash2, RefreshCw, ListPlus, LineChart, ChevronRight, ChevronDown } from 'lucide-vue-next'
+import { Plus, Edit2, Trash2, RefreshCw, ListPlus, LineChart, ChevronRight, ChevronDown, Lock, Unlock } from 'lucide-vue-next'
 import { useInvestmentsStore } from '@/stores/investments'
 import { useSettingsStore } from '@/stores/settings'
 import { useApi } from '@/composables/useApi'
@@ -613,6 +617,17 @@ async function toggleExpand(invId: string) {
 
 const refreshingId = ref<string | null>(null)
 const refreshingAll = ref(false)
+
+async function toggleLock(inv: Investment) {
+  try {
+    const res = await api.put(`/investments/${inv.id}/lock`, { locked: !inv.locked })
+    const idx = store.investments.findIndex(i => i.id === inv.id)
+    if (idx !== -1) store.investments[idx] = { ...store.investments[idx], locked: res.data.locked }
+    show(res.data.locked ? '已锁定：调仓清单将跳过该持仓的卖出建议' : '已解锁', 'success')
+  } catch (e: any) {
+    show(e?.response?.data?.detail || '操作失败', 'error')
+  }
+}
 
 async function refreshPrice(inv: Investment) {
   if (!supportsAutoRefresh(inv.exchange)) {
