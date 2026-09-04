@@ -33,18 +33,25 @@
               <div v-if="m.role === 'assistant'" class="md-body" v-html="renderMd(m.content)"></div>
               <div v-else class="whitespace-pre-wrap">{{ m.content }}</div>
             </div>
-            <div v-if="asking && reasoningText && !messages[messages.length - 1]?.content"
+            <div v-if="reasoningText"
               id="reasoning-box"
-              class="max-w-[85%] bg-bg-secondary border border-border-default rounded-lg px-3 py-2 text-xs text-text-muted whitespace-pre-wrap"
-              style="max-height: 160px; overflow-y: auto">
+              class="max-w-[85%] bg-bg-secondary border border-border-default rounded-lg px-3 py-2 text-xs text-text-muted">
               <div class="flex items-center justify-between mb-1">
-                <span>🤔 思考中…（推理模型逐字输出）</span>
-                <button @click="showReasoning = !showReasoning" class="underline">{{ showReasoning ? '收起' : '展开' }}</button>
+                <span>
+                  <template v-if="asking && !messages[messages.length - 1]?.content">🤔 思考中…（逐字输出）</template>
+                  <template v-else>🤔 深度思考过程</template>
+                </span>
+                <button @click="showReasoning = !showReasoning" class="underline">
+                  {{ showReasoning ? '收起' : `展开（${reasoningText.length} 字）` }}
+                </button>
               </div>
-              <div v-show="showReasoning">{{ reasoningText.slice(-1500) }}</div>
+              <div v-show="showReasoning" ref="reasoningBox" class="whitespace-pre-wrap" style="max-height: 220px; overflow-y: auto">{{ reasoningText.slice(-1500) }}</div>
             </div>
             <div v-if="asking && !reasoningText && !messages[messages.length - 1]?.content" class="text-sm text-text-muted">审计师正在核对数据，首字生成可能需要数十秒…</div>
-            <div v-if="askError" class="text-xs text-expense-color">{{ askError }}</div>
+            <div v-if="askError" class="text-xs text-expense-color">
+              {{ askError }}
+              <button v-if="lastQuestion && !asking" @click="retryLast" class="underline ml-1 font-medium">重新生成</button>
+            </div>
           </div>
           <div class="flex gap-2">
             <textarea v-model="question" rows="2"
@@ -178,6 +185,7 @@ const asking = ref(false)
 const askError = ref('')
 const reasoningText = ref('')
 const showReasoning = ref(true)
+const reasoningBox = ref<HTMLElement | null>(null)
 const snapshot = ref<any>(null)
 const showData = ref(true)
 const showProfile = ref(false)
@@ -246,20 +254,35 @@ const DEFAULT_PROFILE_LOCAL = `# 个人画像
 - 能接受严厉、直接的批评；讨厌和稀泠式的安慰
 - 希望得到可执行的数字级建议（金额/比例/期限）`
 
+const lastQuestion = ref('')
+
 async function ask() {
   const q = question.value.trim()
   if (!q || asking.value) return
-  messages.value.push({ role: 'user', content: q })
   question.value = ''
+  messages.value.push({ role: 'user', content: q })
+  await streamInto(q)
+}
+
+async function retryLast() {
+  if (asking.value || !lastQuestion.value) return
+  const last = messages.value[messages.value.length - 1]
+  if (last && last.role === 'assistant' && !last.content) messages.value.pop()
+  messages.value.push({ role: 'assistant', content: '' })
+  await streamInto(lastQuestion.value)
+}
+
+async function streamInto(q: string) {
+  lastQuestion.value = q
   asking.value = true
   askError.value = ''
+  reasoningText.value = ''
+  showReasoning.value = true
   await nextTick()
   chatBox.value?.scrollTo({ top: chatBox.value.scrollHeight })
   const authStore = useAuthStore()
-  const idx = messages.value.length
-  messages.value.push({ role: 'assistant', content: '' })
-  reasoningText.value = ''
-  showReasoning.value = true
+  const idx = messages.value.length - 1
+  messages.value[idx].content = ''
   try {
     const resp = await fetch('/api/ai-advisor/ask/stream', {
       method: 'POST',
@@ -288,20 +311,25 @@ async function ask() {
         if (payload.reasoning) {
           reasoningText.value += payload.reasoning
           await nextTick()
-          const box = document.getElementById('reasoning-box')
-          if (box) box.scrollTop = box.scrollHeight
+          if (reasoningBox.value) reasoningBox.value.scrollTop = reasoningBox.value.scrollHeight
         }
         if (payload.delta) {
+          if (showReasoning.value) showReasoning.value = false   // 正文开始 → 自动折叠 CoT
           messages.value[idx].content += payload.delta
           await nextTick()
           chatBox.value?.scrollTo({ top: chatBox.value.scrollHeight })
         }
-        if (payload.error) askError.value = payload.error
+        if (payload.error) {
+          askError.value = messages.value[idx].content
+            ? `生成中断（${payload.error}）——已保留以上内容，可重新生成`
+            : payload.error
+        }
       }
     }
     await loadSnapshot()   // 回答完刷新数据画像
   } catch (e: any) {
-    askError.value = e?.message || String(e)
+    const partial = !!messages.value[idx].content
+    askError.value = (e?.message || String(e)) + (partial ? '——已保留部分内容，可重新生成' : '')
   } finally {
     asking.value = false
   }

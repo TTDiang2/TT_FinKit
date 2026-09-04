@@ -141,7 +141,7 @@ async def ask_advisor(db: AsyncSession, user_id: str, question: str) -> dict:
     preset, url, payload, headers, snap = await _build_ask_payload(db, user_id, question, stream=False)
     if preset is None:
         return {"status": "error", "error": "未配置 AI preset（设置 → AI 预设）"}
-    timeout = httpx.Timeout(connect=15.0, read=280.0, write=30.0, pool=15.0)
+    timeout = httpx.Timeout(connect=15.0, read=420.0, write=30.0, pool=15.0)
     async with httpx.AsyncClient(timeout=timeout) as client:
         r = await client.post(url, json=payload, headers=headers)
         if r.status_code >= 400:
@@ -174,7 +174,7 @@ async def stream_ask_advisor(db: AsyncSession, user_id: str, question: str):
         yield _sse({"error": "未配置 AI preset（设置 → AI 预设）"})
         return
     acc: list[str] = []
-    timeout = httpx.Timeout(connect=15.0, read=280.0, write=30.0, pool=15.0)
+    timeout = httpx.Timeout(connect=15.0, read=420.0, write=30.0, pool=15.0)
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             async with client.stream("POST", url, json=payload, headers=headers) as r:
