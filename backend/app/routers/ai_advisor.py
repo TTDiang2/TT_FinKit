@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,6 +17,7 @@ from ..services.ai_advisor import (
     ensure_tables,
     get_profile,
     save_profile,
+    stream_ask_advisor,
 )
 from ..services.finance_snapshot import finance_snapshot
 
@@ -74,3 +76,21 @@ async def ask_endpoint(req: AskRequest,
         return await ask_advisor(db, user_id, q)
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e))
+
+
+@router.post("/ask/stream")
+async def ask_stream_endpoint(req: AskRequest,
+                              user_id: str = Depends(get_current_user_id),
+                              db: AsyncSession = Depends(get_private_db)):
+    """SSE 流式问答：LLM 每生成一段即推送，前端增量渲染。"""
+    q = req.question.strip()
+    if not q:
+        raise HTTPException(status_code=400, detail="问题不能为空")
+    if len(q) > 4000:
+        raise HTTPException(status_code=400, detail="问题过长（>4000 字符）")
+    ensure_tables(DB)
+    return StreamingResponse(
+        stream_ask_advisor(db, user_id, q),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

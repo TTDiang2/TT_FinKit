@@ -33,7 +33,17 @@
               <div v-if="m.role === 'assistant'" class="md-body" v-html="renderMd(m.content)"></div>
               <div v-else class="whitespace-pre-wrap">{{ m.content }}</div>
             </div>
-            <div v-if="asking" class="text-sm text-text-muted">审计师正在核对数据…</div>
+            <div v-if="asking && reasoningText && !messages[messages.length - 1]?.content"
+              id="reasoning-box"
+              class="max-w-[85%] bg-bg-secondary border border-border-default rounded-lg px-3 py-2 text-xs text-text-muted whitespace-pre-wrap"
+              style="max-height: 160px; overflow-y: auto">
+              <div class="flex items-center justify-between mb-1">
+                <span>🤔 思考中…（推理模型逐字输出）</span>
+                <button @click="showReasoning = !showReasoning" class="underline">{{ showReasoning ? '收起' : '展开' }}</button>
+              </div>
+              <div v-show="showReasoning">{{ reasoningText.slice(-1500) }}</div>
+            </div>
+            <div v-if="asking && !reasoningText && !messages[messages.length - 1]?.content" class="text-sm text-text-muted">审计师正在核对数据，首字生成可能需要数十秒…</div>
             <div v-if="askError" class="text-xs text-expense-color">{{ askError }}</div>
           </div>
           <div class="flex gap-2">
@@ -159,12 +169,15 @@ function renderMd(content: string): string {
   return DOMPurify.sanitize(marked.parse(content || '') as string)
 }
 import { useApi, apiLong } from '@/composables/useApi'
+import { useAuthStore } from '@/stores/auth'
 
 const api = useApi()
 const messages = ref<{ role: 'user' | 'assistant'; content: string }[]>([])
 const question = ref('')
 const asking = ref(false)
 const askError = ref('')
+const reasoningText = ref('')
+const showReasoning = ref(true)
 const snapshot = ref<any>(null)
 const showData = ref(true)
 const showProfile = ref(false)
@@ -242,16 +255,55 @@ async function ask() {
   askError.value = ''
   await nextTick()
   chatBox.value?.scrollTo({ top: chatBox.value.scrollHeight })
+  const authStore = useAuthStore()
+  const idx = messages.value.length
+  messages.value.push({ role: 'assistant', content: '' })
+  reasoningText.value = ''
+  showReasoning.value = true
   try {
-    const { data } = await apiLong.post('/ai-advisor/ask', { question: q })
-    messages.value.push({ role: 'assistant', content: data.answer })
-    loadSnapshot()   // 回答后刷新数据画像（快照为实时聚合，卡片同步更新）
+    const resp = await fetch('/api/ai-advisor/ask/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authStore.token}` },
+      body: JSON.stringify({ question: q }),
+    })
+    if (!resp.ok || !resp.body) {
+      let detail = `HTTP ${resp.status}`
+      try { detail = (await resp.json()).detail || detail } catch { /* keep status text */ }
+      throw new Error(detail)
+    }
+    const reader = resp.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      let i
+      while ((i = buf.indexOf('\n\n')) !== -1) {
+        const frame = buf.slice(0, i).trim()
+        buf = buf.slice(i + 2)
+        if (!frame.startsWith('data:')) continue
+        let payload: any
+        try { payload = JSON.parse(frame.slice(5).trim()) } catch { continue }
+        if (payload.reasoning) {
+          reasoningText.value += payload.reasoning
+          await nextTick()
+          const box = document.getElementById('reasoning-box')
+          if (box) box.scrollTop = box.scrollHeight
+        }
+        if (payload.delta) {
+          messages.value[idx].content += payload.delta
+          await nextTick()
+          chatBox.value?.scrollTo({ top: chatBox.value.scrollHeight })
+        }
+        if (payload.error) askError.value = payload.error
+      }
+    }
+    await loadSnapshot()   // 回答完刷新数据画像
   } catch (e: any) {
-    askError.value = e?.response?.data?.detail || e?.message || '请求失败'
+    askError.value = e?.message || String(e)
   } finally {
     asking.value = false
-    await nextTick()
-    chatBox.value?.scrollTo({ top: chatBox.value.scrollHeight })
   }
 }
 

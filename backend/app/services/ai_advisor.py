@@ -1,4 +1,4 @@
-"""AI 财富咨询 — 严厉财富审计师人设（用户要求：理性、绝对冷静、锐利、不和稀泠）。
+﻿"""AI 财富咨询 — 严厉财富审计师人设（用户要求：理性、绝对冷静、锐利、不和稀泠）。
 
 数据契约：AI 只能引用 finance_snapshot 里提供的真实数字；数据不足时必须明说。
 人设文档（个人画像）存 user_settings.monitor_thresholds JSON 的 advisor_profile 键，
@@ -103,10 +103,15 @@ async def save_profile(db: AsyncSession, user_id: str, profile_md: str) -> None:
     await db.commit()
 
 
-async def ask_advisor(db: AsyncSession, user_id: str, question: str) -> dict:
+def _sse(obj: dict) -> str:
+    return "data: " + json.dumps(obj, ensure_ascii=False) + "\n\n"
+
+
+async def _build_ask_payload(db: AsyncSession, user_id: str, question: str,
+                             stream: bool):
     preset = await _pick_preset(db, user_id)
     if preset is None:
-        return {"status": "error", "error": "未配置 AI preset（设置 → AI 预设）"}
+        return None, None, None, None, None
     snap = await finance_snapshot(db, user_id)
     profile = await get_profile(db, user_id)
     snapshot_md = "```json\n" + json.dumps(snap, ensure_ascii=False, indent=1) + "\n```"
@@ -126,14 +131,28 @@ async def ask_advisor(db: AsyncSession, user_id: str, question: str) -> dict:
             {"role": "user", "content": user_prompt},
         ],
         "temperature": 0.4,
+        "stream": stream,
     }
     headers = {"Authorization": f"Bearer {preset.api_key}", "Content-Type": "application/json"}
-    async with httpx.AsyncClient(timeout=120.0) as client:
+    return preset, url, payload, headers, snap
+
+
+async def ask_advisor(db: AsyncSession, user_id: str, question: str) -> dict:
+    preset, url, payload, headers, snap = await _build_ask_payload(db, user_id, question, stream=False)
+    if preset is None:
+        return {"status": "error", "error": "未配置 AI preset（设置 → AI 预设）"}
+    timeout = httpx.Timeout(connect=15.0, read=280.0, write=30.0, pool=15.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
         r = await client.post(url, json=payload, headers=headers)
         if r.status_code >= 400:
             raise RuntimeError(f"LLM HTTP {r.status_code}: {r.text[:300]}")
         answer = r.json()["choices"][0]["message"]["content"]
 
+    await _save_chat(db, question, answer, snap)
+    return {"status": "ok", "answer": answer, "snapshot": snap}
+
+
+async def _save_chat(db: AsyncSession, question: str, answer: str, snap: dict) -> None:
     from sqlalchemy import text as _text
     await db.execute(_text(
         "INSERT INTO advisor_chats (role, content, question, snapshot_json) "
@@ -146,7 +165,45 @@ async def ask_advisor(db: AsyncSession, user_id: str, question: str) -> dict:
         {"a": answer, "q": question},
     )
     await db.commit()
-    return {"status": "ok", "answer": answer, "snapshot": snap}
+
+
+async def stream_ask_advisor(db: AsyncSession, user_id: str, question: str):
+    """SSE generator: yields `data: {"delta": ...}` chunks, then `{"done": true}`."""
+    preset, url, payload, headers, snap = await _build_ask_payload(db, user_id, question, stream=True)
+    if preset is None:
+        yield _sse({"error": "未配置 AI preset（设置 → AI 预设）"})
+        return
+    acc: list[str] = []
+    timeout = httpx.Timeout(connect=15.0, read=280.0, write=30.0, pool=15.0)
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            async with client.stream("POST", url, json=payload, headers=headers) as r:
+                if r.status_code >= 400:
+                    body = (await r.aread()).decode("utf-8", "replace")
+                    yield _sse({"error": f"LLM HTTP {r.status_code}: {body[:200]}"})
+                    return
+                async for line in r.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        obj = json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
+                    delta_obj = (obj.get("choices") or [{}])[0].get("delta") or {}
+                    if delta_obj.get("reasoning_content"):
+                        yield _sse({"reasoning": delta_obj["reasoning_content"]})
+                    delta = delta_obj.get("content")
+                    if delta:
+                        acc.append(delta)
+                        yield _sse({"delta": delta})
+        answer = "".join(acc)
+        await _save_chat(db, question, answer, snap)
+        yield _sse({"done": True})
+    except Exception as e:
+        yield _sse({"error": f"{type(e).__name__}: {e}"[:300]})
 
 
 def ensure_tables(db_path: str) -> None:
