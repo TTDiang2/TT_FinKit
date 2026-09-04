@@ -6,6 +6,7 @@ AI 只被允许引用这份快照里的数字。
 """
 from __future__ import annotations
 
+import json
 from calendar import monthrange
 from collections import Counter, defaultdict
 from datetime import date, timedelta
@@ -356,7 +357,85 @@ async def finance_snapshot(db: AsyncSession, user_id: str) -> dict:
         snap["investment_reconciliation"] = {"note": "台账表缺失，无法勾稽"}
 
     # ---- 购房目标画像（参数可在 AI 咨询页编辑） ----
-    plan = await get_housing_plan(db, user_id)
-    snap["housing_profile"] = build_housing_snapshot(plan)
+    housing_plan = await get_housing_plan(db, user_id)
+    snap["housing_profile"] = build_housing_snapshot(housing_plan)
+
+    # ---- 投资组合书面配置（策略库 + 回测证据 + 信号目标权重）----
+    # 回应"没有目标配置"式批评：策略库本身就是书面的配置文件，
+    # 每个策略都有回测指标背书，active 策略的信号即当前目标权重。
+    portfolio_plan: dict = {"strategies": [], "recent_backtests": []}
+    try:
+        from ..database import public_session_maker
+        async with public_session_maker() as pub:
+            gname = {r[0]: r[1] for r in (await pub.execute(text(
+                "SELECT id, name FROM research_groups"))).all()}
+            srows = (await pub.execute(text(
+                """
+                SELECT id, name, version, rebalance_freq, group_id, activated_at,
+                       COALESCE(logic,'')
+                FROM strategies ORDER BY activated_at DESC NULLS LAST
+                """
+            ))).all()
+        portfolio_plan["strategies"] = [
+            {"id": r[0], "name": r[1], "version": r[2], "rebalance_freq": r[3],
+             "group": gname.get(r[4]), "activated": bool(r[5]),
+             "logic_digest": (r[6] or "")[:400]}
+            for r in srows
+        ]
+        portfolio_plan["active_strategy"] = next(
+            (s for s in portfolio_plan["strategies"] if s["activated"]), None)
+
+        bt_rows = (await db.execute(text(
+            """
+            SELECT strategy_id, strategy_version, results, created_at
+            FROM backtests WHERE status='done'
+            ORDER BY created_at DESC LIMIT 80
+            """
+        ))).all()
+        seen: set[str] = set()
+        for sid, ver, res, ca in bt_rows:
+            if sid in seen:
+                continue
+            seen.add(sid)
+            try:
+                m = json.loads(res).get("metrics", {}) if res else {}
+            except (json.JSONDecodeError, TypeError):
+                continue
+            meta = next((s for s in portfolio_plan["strategies"] if s["id"] == sid), {})
+            portfolio_plan["recent_backtests"].append({
+                "strategy": meta.get("name") or sid[:8], "version": ver,
+                "backtest_date": str(ca)[:10],
+                "ann_return_pct": round((m.get("ann_return") or 0) * 100, 2),
+                "sharpe": m.get("sharpe"),
+                "max_drawdown_pct": round((m.get("max_drawdown") or 0) * 100, 2),
+                "turnover_annual": m.get("turnover_annual"),
+                "win_rate_pct": round((m.get("win_rate") or 0) * 100, 1),
+                "benchmark_ann_pct": round((m.get("benchmark_ann_return") or 0) * 100, 2),
+                "alpha_ann_pct": round((m.get("alpha_ann") or 0) * 100, 2),
+            })
+            if len(portfolio_plan["recent_backtests"]) >= 12:
+                break
+
+        sig_row = (await db.execute(text(
+            "SELECT run_date, target_weights FROM signals "
+            "WHERE user_id=:u ORDER BY created_at DESC LIMIT 1"
+        ), {"u": user_id})).first()
+        if sig_row and sig_row[1]:
+            try:
+                portfolio_plan["current_target_weights"] = {
+                    "signal_run_date": str(sig_row[0]),
+                    "weights": json.loads(sig_row[1]),
+                }
+            except json.JSONDecodeError:
+                pass
+
+        portfolio_plan["note"] = (
+            "策略库即书面配置：active_strategy 是当前执行的书面方案，"
+            "recent_backtests 是各策略的历史回测证据。批评'缺少目标配置'前，"
+            "必须先引用这些内容；对配置的改进建议也应基于这些策略参数提出。"
+        )
+    except Exception as e:
+        portfolio_plan["note"] = f"策略库读取失败：{type(e).__name__}"
+    snap["portfolio_plan"] = portfolio_plan
 
     return snap
