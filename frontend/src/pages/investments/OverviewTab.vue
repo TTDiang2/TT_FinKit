@@ -303,7 +303,7 @@
           <div class="text-xs mt-0.5 text-text-muted">未同步到记账的部分</div>
         </div>
         <div>
-          <div class="text-xs text-text-muted">闲置现金（余额 + 当月盈亏 − 市值）</div>
+          <div class="text-xs text-text-muted">闲置现金（记账余额 − 市值）</div>
           <div class="font-medium" :class="consistency.idle_cash >= 0 ? '' : 'text-expense-color'">{{ sym }}{{ fmt(consistency.idle_cash) }}</div>
           <div class="text-xs mt-0.5" :class="consistency.floating_pnl >= 0 ? 'text-income-color' : 'text-expense-color'">浮动盈亏 {{ signed(consistency.floating_pnl) }}</div>
         </div>

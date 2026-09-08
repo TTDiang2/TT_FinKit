@@ -645,8 +645,34 @@ async def _consistency_core(db: AsyncSession, user_id: str) -> dict:
 
     dividend_total = await _query_dividend_total(db, user_id)
 
-    idle_cash = total_account_balance + current_month_pnl - total_current
-    diff = total_account_balance - (old_principal + realized_pnl + floating_pnl - current_month_pnl)
+    # ---- 当月落袋盈亏 / 当月浮动盈亏（2026-09-05 口径修正）----
+    # 「当月盈亏」(NAV重放) 同时含当月落袋与当月浮动；而累计落袋盈亏已单列，
+    # 若再用「当月盈亏」做勾稽会把当月落袋重复扣除。正确口径：
+    #   记账余额 = 净入金 + 落袋盈亏(全部) + 浮动盈亏(当前) − 当月浮动盈亏
+    # 按用户澄清：当月浮动盈亏取「当前持仓浮动」(快照法)；这样用户场景中
+    # 浮动与当月浮动相消，得恒等式 净入金 + 落袋 = 记账余额。当跨月持仓时此
+    # 口径略有近似偏差（历史浮动已入账，会与 R 形成残差），但可直接定位为
+    # 月度盈亏流水未及时入账的同步缺口，warnings 仍能提示。
+    month_realized_pnl = 0.0
+    # 当月落袋用于诊断展示，不参与 diff 计算（保留字段供前端可选用）
+    month_start_iso = month_start.isoformat()
+    for inv in invs:
+        its = txs_by_inv.get(inv.id, [])
+        for t in its:
+            if t.event_type == "sell" and str(t.event_date)[:10] >= month_start_iso:
+                # 当月卖出：回款 − 卖出份额×历史均价成本 − 费
+                inv_buys = [x for x in its if x.event_type == "buy"]
+                bs = sum(float(x.quantity or 0) for x in inv_buys)
+                ba = sum(float(x.amount or 0) for x in inv_buys)
+                ac = ba / bs if bs > 0 else 0
+                month_realized_pnl += abs(float(t.amount or 0)) - abs(float(t.quantity or 0)) * ac - abs(float(t.fee or 0))
+            if t.event_type == "dividend" and str(t.event_date)[:10] >= month_start_iso:
+                month_realized_pnl += abs(float(t.amount or 0))
+    # 当月浮动盈亏 = 当前持仓浮动（快照法口径，用户拍板）
+    month_floating_pnl = floating_pnl
+
+    idle_cash = total_account_balance - total_current
+    diff = total_account_balance - (old_principal + realized_pnl + floating_pnl - month_floating_pnl)
     warnings: list[str] = []
     status = "ok"
 
@@ -657,7 +683,7 @@ async def _consistency_core(db: AsyncSession, user_id: str) -> dict:
             warnings.append(
                 f"记账 tab 投资账户余额合计（{total_account_balance:,.2f}）比投资 tab 推算余额"
                 f"（入金 {total_deposits:,.2f} − 出金 {total_withdrawals:,.2f} + 落袋盈亏 {realized_pnl:,.2f}"
-                f" + 浮动盈亏 {floating_pnl:,.2f} − 当月盈亏 {current_month_pnl:,.2f} = {old_principal + realized_pnl + floating_pnl - current_month_pnl:,.2f}）"
+                f" + 浮动盈亏 {floating_pnl:,.2f} − 当月浮动盈亏 {month_floating_pnl:,.2f} = {old_principal + realized_pnl + floating_pnl - month_floating_pnl:,.2f}）"
                 f"多 {diff:,.2f} 元。"
                 f"常见原因：① 同步盈亏到记账未执行或漏了历史已平仓标的；② 分红统计口径不一致；"
                 f"③ 记账 tab 记了转入投资账户的转账，但投资 tab 漏记了对应的入金。"
@@ -666,8 +692,8 @@ async def _consistency_core(db: AsyncSession, user_id: str) -> dict:
         else:
             warnings.append(
                 f"投资 tab 推算余额（入金 {total_deposits:,.2f} − 出金 {total_withdrawals:,.2f}"
-                f" + 落袋盈亏 {realized_pnl:,.2f} + 浮动盈亏 {floating_pnl:,.2f} − 当月盈亏 {current_month_pnl:,.2f}"
-                f" = {old_principal + realized_pnl + floating_pnl - current_month_pnl:,.2f}）"
+                f" + 落袋盈亏 {realized_pnl:,.2f} + 浮动盈亏 {floating_pnl:,.2f} − 当月浮动盈亏 {month_floating_pnl:,.2f}"
+                f" = {old_principal + realized_pnl + floating_pnl - month_floating_pnl:,.2f}）"
                 f"比记账 tab 投资账户余额合计（{total_account_balance:,.2f}）多 {abs(diff):,.2f} 元。"
                 f"常见原因：① 投资 tab 记了入金，但记账 tab 漏记了转账给投资账户；"
                 f"② 记账 tab 记了投资账户转出，但投资 tab 漏记了对应的出金；"
@@ -706,6 +732,8 @@ async def _consistency_core(db: AsyncSession, user_id: str) -> dict:
         "realized_pnl": round(realized_pnl, 2),
         "dividend_total": dividend_total,
         "current_month_pnl": round(current_month_pnl, 2),
+        "month_realized_pnl": round(month_realized_pnl, 2),
+        "month_floating_pnl": round(month_floating_pnl, 2),
         "idle_cash": round(idle_cash, 2),
         "diff": round(diff, 2),
         "status": status,
@@ -729,8 +757,10 @@ async def get_reconciliation(
 ):
     """勾稽 Tab 数据：恒等式展示结构（纯只读，复用 _consistency_core）。
 
-    展示「记账余额 = 入金 − 出金 + 落袋盈亏(含分红) − 分红 + 浮动盈亏 − 当月盈亏」，
-    通过标准：ABS(记账余额 − 右侧合计) ≤ 0.01。作为所有投资勾稽关系的统一归档数据源。
+    展示「记账余额 = 入金 − 出金 + 落袋盈亏(含分红) − 分红 + 浮动盈亏 − 当月浮动盈亏」，
+    通过标准：ABS(记账余额 − 右侧合计) ≤ 0.01。「当月盈亏」已拆为「当月落袋」(落袋已含
+    在累计落袋里) + 「当月浮动」(本恒等式减项)，避免重复扣除。作为所有投资勾稽关系的
+    统一归档数据源。
     """
     core = await _consistency_core(db, user_id)
     dividend_total = core["dividend_total"]
@@ -744,16 +774,16 @@ async def get_reconciliation(
         {"label": "  └ 分红(工资账户)", "value": dividend_total, "operator": ""},
         {"label": "分红", "value": dividend_total, "operator": "-"},
         {"label": "浮动盈亏", "value": core["floating_pnl"], "operator": "+"},
-        {"label": "当月盈亏", "value": core["current_month_pnl"], "operator": "-"},
+        {"label": "当月浮动盈亏", "value": core["month_floating_pnl"], "operator": "-"},
     ]
     right = round(
         core["total_deposits"] - core["total_withdrawals"]
         + realized_with_div - dividend_total
-        + core["floating_pnl"] - core["current_month_pnl"],
+        + core["floating_pnl"] - core["month_floating_pnl"],
         2,
     )
     diff = round(core["total_account_balance"] - right, 2)
-    idle_check = round(core["total_account_balance"] + core["current_month_pnl"] - core["total_current"], 2)
+    idle_check = round(core["total_account_balance"] - core["total_current"], 2)
 
     # ---- 账户级勾稽：每个记账账户 期望余额 vs 实际余额 ----
     from ..models.account import Account
@@ -879,7 +909,7 @@ async def get_reconciliation(
         "auxiliary": {
             "market_value": core["total_current"],
             "idle_cash": core["idle_cash"],
-            "idle_cash_check": {"label": "记账余额 + 当月盈亏 − 市值", "value": idle_check},
+            "idle_cash_check": {"label": "记账余额 − 市值（投资账户真实现金）", "value": idle_check},
             "status": core["status"],
             "warnings": core["warnings"],
         },

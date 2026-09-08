@@ -349,7 +349,36 @@ async def compute_portfolio_overview(
             realized_pnl += s + d - b - f
         total_pnl += mv_i + s + d - b - f
 
-    idle_cash = principal - holdings_cost
+    # 未投资现金（推算）= 记账 tab 投资账户余额 − 当前持仓市值。
+    # 投资账户余额经「投资月度盈亏」流水已滚动计入基金市值，所以
+    # 现金 = 账户余额 − 市值；旧公式「净入金 − 持仓成本」混淆了
+    # 成本与市值，在落袋再投入场景下出现 −2,032 的伪负值（2026-09-05 修正）。
+    from ..models.account import Account
+    from ..models.transaction import Transaction
+    from ..models.investment_cash_flow import InvestmentCashFlow
+    account_balance = 0.0
+    acc_rows = (await db.execute(
+        select(Account).where(Account.user_id == user_id, Account.account_type == "investment")
+    )).scalars().all()
+    for acc in acc_rows:
+        inc = (await db.execute(
+            select(func.coalesce(func.sum(Transaction.amount), 0)).where(
+                Transaction.account_id == acc.id, Transaction.type == "income")
+        )).scalar() or 0
+        exp = (await db.execute(
+            select(func.coalesce(func.sum(Transaction.amount), 0)).where(
+                Transaction.account_id == acc.id, Transaction.type == "expense")
+        )).scalar() or 0
+        tin = (await db.execute(
+            select(func.coalesce(func.sum(Transaction.amount), 0)).where(
+                Transaction.dest_account_id == acc.id, Transaction.type == "transfer")
+        )).scalar() or 0
+        tout = (await db.execute(
+            select(func.coalesce(func.sum(Transaction.amount), 0)).where(
+                Transaction.account_id == acc.id, Transaction.type == "transfer")
+        )).scalar() or 0
+        account_balance += (acc.initial_balance or 0) + float(inc) - float(exp) + float(tin) - float(tout)
+    idle_cash = account_balance - market_value
 
     portfolio_xirr: Optional[float] = None
     days_held = 0
