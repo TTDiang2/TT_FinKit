@@ -139,8 +139,9 @@ async def get_overview(
     fixed_plus_other = asset_cur_map.get("fixed_asset", 0) + asset_cur_map.get("other_asset", 0)
     liabilities = asset_cur_map.get("liability", 0)
 
-    # 总资产 = 各账户余额（含转账处理）+ 持仓当前市值 + 固定资产/其他资产 - 负债
-    # 使用 get_account_balance 同款公式（initial + income - expense + transfer_in - transfer_out）
+    # 总资产 = 各账户余额（含转账处理）+ 固定资产/其他资产 - 负债
+    # 注意：不再单独加持仓市值 total_current —— 投资账户余额经「投资月度盈亏」流水
+    # 已滚动计入基金市值，否则投资部分被双算（2026-09-05 修正）。
     account_balances_sum = 0.0
     for acc in accounts:
         inc_res = await db.execute(
@@ -169,7 +170,7 @@ async def get_overview(
         acc_transfer_in = float(tin_res.scalar() or 0)
         account_balances_sum += acc.initial_balance + acc_income - acc_expense + acc_transfer_in - acc_transfer_out
 
-    total_assets = account_balances_sum + total_current + fixed_plus_other - liabilities
+    total_assets = account_balances_sum + fixed_plus_other - liabilities
 
     vs_income = ((total_income - total_income_last) / total_income_last * 100) if total_income_last else 0
     vs_expense = ((total_expense - total_expense_last) / total_expense_last * 100) if total_expense_last else 0

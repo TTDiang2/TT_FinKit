@@ -54,10 +54,10 @@ class Settings(BaseSettings):
     PRIVATE_DATABASE_URL: str = ""
     DATABASE_URL: str = _sqlite_url(BACKEND_DIR / "finkit.db")
 
-    SECRET_KEY: str = "dev-secret-key-change-in-production"
+    SECRET_KEY: str = ""
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7
-    ENCRYPTION_KEY: str = "dev-encryption-key-change-in-production"
+    ENCRYPTION_KEY: str = ""
 
 
 settings = Settings()

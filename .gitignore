@@ -6,43 +6,50 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .mypy_cache/
+*.pyc
 
 # Node / Frontend
 node_modules/
 npm-debug.log*
 yarn-debug.log*
 pnpm-debug.log*
+frontend/dist/
 
 # 数据库（含用户数据与加密凭证，绝不提交）
 *.db
 *.sqlite
 *.sqlite3
+*.db-journal
 
-# 环境变量 / 密钥
+# 环境变量 / 密钥（保留 .env.example 作为模板）
 .env
 .env.*
 !.env.example
 *.pem
 *.key
+*.p12
+*.pfx
 
 # 日志
 *.log
 backend/uvicorn_*.log
+uvicorn.log
+*.err
 
 # IDE
 .vscode/
 .idea/
 *.swp
 *.swo
+*.sublime-*
 
 # OS
 .DS_Store
 Thumbs.db
+desktop.ini
 
 # Git worktrees
 .worktrees/
-
-# OpenCode / Agent 内部
 .omo/
 
 # 嵌套的独立项目仓库（勿纳入本仓库）
@@ -50,15 +57,15 @@ TT_Automanga/
 
 # Pake 打包产物（二进制不入 git；如需分发走 release）
 build/
+release/
+*.exe
+*.bat
 
 # 临时文件
 *.tmp
 *.bak
 *.orig
-
-# 运行时错误日志（uvicorn 等进程）
-*.err
-backend/uvicorn.*
+*.swp
 
 # 运行时缓存（基金净值序列磁盘缓存，勿入库）
 backend/cache/
@@ -69,7 +76,6 @@ backend/cache/
 bank_data_convertor/
 docs/example_cashflow/
 
-
 # debug artifacts
 backend/portfolio_nav_365d.csv
 backend/export_nav_csv.py
@@ -79,3 +85,39 @@ backend/token.txt
 smoke_out.txt
 smoke_err.txt
 tune_out.txt
+
+# ─── 内部开发文档（开源时不需要，但本地保留供开发使用）────────────────────
+docs/HANDOFF_*.md
+docs/汇报*.md
+docs/TODO*.md
+docs/AGENT_STRATEGY_*.md
+docs/plans/
+docs/superpowers/
+docs/curated_pool*.md
+docs/STRATEGY_API.md
+
+# WorkBuddy 记忆文件（开发过程记录）
+.workbuddy/
+
+# AI 配置和凭证相关文件
+docs/iFinD凭证配置指南.md
+
+# ─── 包含硬编码用户 UID 的开发脚本（不应公开）───────────────────────────
+backend/scripts/_check_assets.py
+backend/scripts/finish_pooling_and_verify.py
+backend/scripts/refresh_factor_evaluations.py
+backend/scripts/pool_watchlist.py
+
+# ─── 其他不应提交的私有数据 ──────────────────────────────────────────────
+# Windows 缩略图缓存
+Thumbs.db
+ehthumbs.db
+
+# macOS Spotlight
+.DS_Store
+.Realsync/
+
+# 编辑器交换文件
+*~
+.*.swp
+.*.swo
