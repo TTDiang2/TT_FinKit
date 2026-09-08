@@ -33,14 +33,27 @@ A self-hosted personal finance and investment tracking application with AI-power
 
 ## 📸 Screenshots
 
-<!-- Add your screenshots here -->
-<!-- Replace the placeholders below with actual screenshots -->
+### Dashboard & Bookkeeping
 
-| Dashboard | Bookkeeping | Statistics | Investments |
-|-----------|-------------|------------|-------------|
-| ![Dashboard](screenshots/dashboard.png) | ![Bookkeeping](screenshots/bookkeeping.png) | ![Statistics](screenshots/statistics.png) | ![Investments](screenshots/investments.png) |
+| Dashboard | Bookkeeping |
+|-----------|-------------|
+| ![首页](docs/image/首页-1.png) | ![记账-1](docs/image/记账-1.png) |
 
-> **Note**: Replace the above image paths with your actual screenshots. See the "Demo Account" section below for guidance on creating sample data.
+| Bookkeeping (cont.) | Statistics |
+|---------------------|------------|
+| ![记账-2](docs/image/记账-2.png) | ![统计-1](docs/image/统计-1.png) |
+
+### Investment Management
+
+| Portfolio Overview | Backtesting | Research |
+|--------------------|-------------|----------|
+| ![投资-1](docs/image/投资-1.png) | ![投资-2-回测](docs/image/投资-2-回测.png) | ![投资-3-标的](docs/image/投资-3-标的.png) |
+
+### AI Analysis
+
+| AI Advisor | AI Investment Analysis |
+|------------|------------------------|
+| ![AI咨询-1](docs/image/AI咨询-1.png) | ![AI咨询-2](docs/image/AI咨询-2.png) |
 
 ## 🛠️ Tech Stack
 
