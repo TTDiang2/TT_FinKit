@@ -1,4 +1,4 @@
-# FinKit (TT_FinKit)
+# TT_FinKit
 
 自托管个人财富管理应用。了解你的钱花在哪、怎么挣的。
 

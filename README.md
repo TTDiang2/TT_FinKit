@@ -1,4 +1,4 @@
-# FinKit (TT_FinKit)
+# TT_FinKit
 
 A self-hosted personal wealth management application. Know where your money goes and how it grows.
 
