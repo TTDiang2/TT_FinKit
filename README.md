@@ -1,6 +1,8 @@
-# FinKit
+# FinKit (TT_FinKit)
 
 A self-hosted personal wealth management application. Know where your money goes and how it grows.
+
+Part of the **TT** application family — self-hosted, local-first, privacy-respecting tools.
 
 Track every expense, understand your income sources, monitor your investment portfolio, and backtest your trading strategies — all on your own machine.
 
