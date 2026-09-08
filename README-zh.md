@@ -31,6 +31,17 @@
 - **双库设计**: 公开数据（行情、策略）与私有数据（用户交易）分离
 - **自托管**: 完全掌控你的数据，无需云端依赖
 
+## 📸 截图
+
+<!-- 在此添加你的截图 -->
+<!-- 用实际截图替换下面的占位符 -->
+
+| 首页 | 记账 | 统计 | 投资 |
+|------|------|------|------|
+| ![首页](screenshots/dashboard.png) | ![记账](screenshots/bookkeeping.png) | ![统计](screenshots/statistics.png) | ![投资](screenshots/investments.png) |
+
+> **注意**: 用实际截图替换上面的图片路径。参见"演示账号"部分了解如何创建示例数据。
+
 ## 🛠️ 技术栈
 
 | 层次 | 技术选型 | 说明 |
@@ -132,6 +143,35 @@ IFIND_PASSWORD=
 2. 浏览器访问 `http://localhost:8100`
 3. 注册新账号
 4. 开始记录财务和投资数据
+
+### 演示账号
+
+为了方便演示，已创建演示账号：
+
+- **邮箱**: `demo@finkit.example`
+- **密码**: `demo123456`
+
+演示账号已预置示例数据：
+- 4 个账户（工资账户、储蓄账户、投资账户、现金）
+- 6 个分类（工资、奖金、餐饮、交通、住房、购物）
+- 60+ 笔示例交易（最近 60 天）
+- 4 个投资产品（沪深 300ETF、黄金 ETF、货币市场基金、美股科技 ETF）
+- 投资入金记录
+
+**在自己的实例上创建演示数据：**
+```powershell
+# 从仓库根目录运行
+powershell -ExecutionPolicy Bypass -File scripts/seed_demo_data.ps1
+```
+
+或通过 API 手动创建演示账号：
+```bash
+curl -X POST http://localhost:8100/api/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"email":"demo@finkit.example","password":"demo123456","name":"演示用户"}'
+```
+
+然后运行 `scripts/seed_demo_data.ps1` 填充示例数据。
 
 ## 📁 项目结构
 

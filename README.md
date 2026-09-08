@@ -31,6 +31,17 @@ A self-hosted personal finance and investment tracking application with AI-power
 - **Dual Database**: Public data (market data, strategies) separated from private data (user transactions)
 - **Self-hosted**: Run on your own infrastructure, no cloud dependency
 
+## 📸 Screenshots
+
+<!-- Add your screenshots here -->
+<!-- Replace the placeholders below with actual screenshots -->
+
+| Dashboard | Bookkeeping | Statistics | Investments |
+|-----------|-------------|------------|-------------|
+| ![Dashboard](screenshots/dashboard.png) | ![Bookkeeping](screenshots/bookkeeping.png) | ![Statistics](screenshots/statistics.png) | ![Investments](screenshots/investments.png) |
+
+> **Note**: Replace the above image paths with your actual screenshots. See the "Demo Account" section below for guidance on creating sample data.
+
 ## 🛠️ Tech Stack
 
 | Layer | Technology | Description |
@@ -132,6 +143,35 @@ IFIND_PASSWORD=
 2. Open browser to `http://localhost:8100`
 3. Register a new account
 4. Start tracking your finances and investments
+
+### Demo Account
+
+For demonstration purposes, a demo account is available:
+
+- **Email**: `demo@finkit.example`
+- **Password**: `demo123456`
+
+The demo account comes pre-loaded with sample data including:
+- 4 accounts (Salary, Savings, Investment, Cash)
+- 6 categories (Salary, Bonus, Food, Transport, Housing, Shopping)
+- 60+ sample transactions over the past 60 days
+- 4 investment products (HS300 ETF, Gold ETF, Money Market Fund, US Tech ETF)
+- Investment cash flows
+
+**To create demo data on your own instance:**
+```powershell
+# Run the seed script (from repository root)
+powershell -ExecutionPolicy Bypass -File scripts/seed_demo_data.ps1
+```
+
+Or manually create a demo account via the API:
+```bash
+curl -X POST http://localhost:8100/api/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"email":"demo@finkit.example","password":"demo123456","name":"Demo User"}'
+```
+
+Then use `scripts/seed_demo_data.ps1` to populate sample data.
 
 ## 📁 Project Structure
 
