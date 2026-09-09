@@ -96,7 +96,16 @@ async def get_credentials(db: AsyncSession, user_id: str) -> tuple[str, str]:
     s = res.scalar_one_or_none()
     if not s:
         return ("", "")
-    return (s.ifind_username or "", decrypt_field(s.ifind_password or ""))
+    try:
+        password = decrypt_field(s.ifind_password or "")
+    except Exception as e:  # noqa: BLE001 — 密文解不开时降级为「未配置」
+        # ENCRYPTION_KEY 变更（例如私有库从另一台机器拷来）会让已存密文无法解密。
+        # 此前这里直接抛异常，导致 /investments、/portfolio-nav、/pnl-history 全部 500、
+        # 持仓显示为 0；改为降级到无 iFinD，走东财/akshare 兜底。
+        print(f"[ifind] credentials undecryptable for user {user_id}: "
+              f"{type(e).__name__}（重新在设置页保存一次 iFinD 密码即可恢复）", flush=True)
+        return ("", "")
+    return (s.ifind_username or "", password)
 
 
 # --------------------------------------------------------------------------- #
