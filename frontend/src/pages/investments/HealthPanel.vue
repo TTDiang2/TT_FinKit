@@ -155,7 +155,7 @@
 import { ref, computed } from 'vue'
 import { Line, Bar } from 'vue-chartjs'
 import { Chart as ChartJS, LineElement, PointElement, BarElement, CategoryScale, LinearScale, Tooltip, Legend, Filler } from 'chart.js'
-import { useApi } from '@/composables/useApi'
+import { useApi, apiLong } from '@/composables/useApi'
 import { useSettingsStore } from '@/stores/settings'
 import type { HealthResult, HealthWarning, NavEvent, PortfolioNavResponse, PnLHistoryResponse } from '@/types'
 
@@ -382,7 +382,7 @@ async function loadNav() {
   navLoading.value = true
   navError.value = ''
   try {
-    const res = await api.get('/investments/portfolio-nav', { params: { days: period.value.days } })
+    const res = await apiLong.get('/investments/portfolio-nav', { params: { days: period.value.days } })
     navData.value = res.data
   } catch (e: any) {
     navData.value = null
@@ -403,7 +403,7 @@ async function loadPnl() {
   pnlLoading.value = true
   pnlError.value = ''
   try {
-    const res = await api.get('/investments/pnl-history', {
+    const res = await apiLong.get('/investments/pnl-history', {
       params: { granularity: pnlGranularity.value, days: period.value.days },
     })
     pnlSeries.value = res.data?.series ?? []

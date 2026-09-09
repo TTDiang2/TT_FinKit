@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { useApi } from '@/composables/useApi'
+import { useApi, apiLong } from '@/composables/useApi'
 import type { Investment, InvestmentCashFlow, PortfolioOverview, LookupCandidate, ClosedPositionsResponse } from '@/types'
 
 export const useInvestmentsStore = defineStore('investments', () => {
@@ -10,7 +10,8 @@ export const useInvestmentsStore = defineStore('investments', () => {
   const closedPositions = ref<ClosedPositionsResponse | null>(null)
   const api = useApi()
 
-  async function fetchInvestments() { const res = await api.get('/investments'); investments.value = res.data }
+  // 持仓接口要为每只基金实时外网拉净值（冷缓存首拉可达 70s+），走 apiLong 避免 30s 超时误显示「持仓 0」
+  async function fetchInvestments() { const res = await apiLong.get('/investments'); investments.value = res.data }
   async function createInvestment(data: Partial<Investment>) { const res = await api.post('/investments', data); investments.value.push(res.data); return res.data }
   async function updateInvestment(id: string, data: Partial<Investment>) { const res = await api.put(`/investments/${id}`, data); const idx = investments.value.findIndex(a => a.id === id); if (idx !== -1) investments.value[idx] = res.data; return res.data }
   async function deleteInvestment(id: string) { await api.delete(`/investments/${id}`); investments.value = investments.value.filter(a => a.id !== id) }
