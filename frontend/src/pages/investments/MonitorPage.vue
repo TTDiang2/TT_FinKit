@@ -59,7 +59,7 @@
           <div v-if="health.live_drift?.since" class="text-xs text-text-secondary mt-1">
             信号日({{ health.live_drift.since }})以来：{{ fmtPct(health.live_drift.ret) }} / 区间回撤 {{ fmtPct(health.live_drift.mdd) }}
           </div>
-          <div v-else class="text-xs text-text-muted mt-1">信号较新，实盘漂移样本积累中（≥126 日后启用滚动年化判定）</div>
+          <div v-else class="text-xs text-text-muted mt-1">信号较新{{ health.signal?.run_date ? `（${health.signal.run_date} 起）` : '' }}，实盘漂移样本积累中（≥126 日后启用滚动年化判定）</div>
         </div>
 
         <!-- 调仓冷却 -->
@@ -327,7 +327,9 @@ function fmtPct(v: number | null | undefined): string {
 async function loadHealth() {
   try {
     const { data } = await api.get('/monitor/strategy-health')
-    health.value = data
+    // 后端把 level/reasons/rules 嵌在 data.health 下，而模板按顶层 health.level 消费：
+    // 不展平的话 level 恒为 undefined → 徽章永远误显「失效」
+    health.value = { ...data, level: data.health?.level ?? 'ok', reasons: data.health?.reasons ?? [] }
   } catch { health.value = null }
 }
 
@@ -345,7 +347,7 @@ async function confirmRebalance() {
   }
 }
 import { Settings2 } from 'lucide-vue-next'
-import { useApi } from '@/composables/useApi'
+import { useApi, apiLong } from '@/composables/useApi'
 import SignalPanel from './SignalPage.vue'
 import type { MonitorOverview, MonitorSettings } from '@/types'
 
@@ -417,7 +419,7 @@ const settings = ref<MonitorSettings>({
 async function loadOverview() {
   loading.value = true
   try {
-    const { data } = await api.get<MonitorOverview>('/monitor/overview')
+    const { data } = await apiLong.get<MonitorOverview>('/monitor/overview')
     overview.value = data
   } finally {
     loading.value = false

@@ -94,21 +94,27 @@ async def _portfolio_context(db: AsyncSession, pub: AsyncSession, user_id: str) 
     symbol_to_asset = {a.symbol: a for a in assets}
     asset_id_to_asset = {a.id: a for a in assets}
 
-    latest_close: dict[str, float] = {}
-    asset_ids = [a.id for a in assets]
-    if asset_ids:
-        rows = (await pub.execute(
-            select(ResearchAssetPrice.asset_id, ResearchAssetPrice.date, ResearchAssetPrice.close)
-            .where(ResearchAssetPrice.asset_id.in_(asset_ids))
-            .order_by(ResearchAssetPrice.date.asc())
-        )).all()
-        for aid, _d, close in rows:
-            latest_close[aid] = float(close)
-
     invs = (await db.execute(
         select(Investment).where(Investment.user_id == user_id, open_position_cond())
     )).scalars().all()
     holdings = [inv for inv in invs if (inv.quantity or 0) > 0]
+
+    # 只拉持仓标的的净值，而非全池 in_：全池（~19k asset / 6.5M 价格行）会把
+    # research_prices 整表扫一遍，实测 /monitor/overview 拖到 57s+，前端 30s 超时
+    # 后整页「暂无数据」。持仓通常只有一只到十几只。
+    latest_close: dict[str, float] = {}
+    held_asset_ids = {
+        symbol_to_asset[inv.symbol or ""].id
+        for inv in holdings if symbol_to_asset.get(inv.symbol or "")
+    }
+    if held_asset_ids:
+        rows = (await pub.execute(
+            select(ResearchAssetPrice.asset_id, ResearchAssetPrice.date, ResearchAssetPrice.close)
+            .where(ResearchAssetPrice.asset_id.in_(held_asset_ids))
+            .order_by(ResearchAssetPrice.date.asc())
+        )).all()
+        for aid, _d, close in rows:
+            latest_close[aid] = float(close)
 
     market_value: dict[str, float] = {}
     name_by_symbol: dict[str, str] = {}
@@ -147,26 +153,32 @@ async def _latest_signal(db: AsyncSession) -> Signal | None:
 
 async def _zone1_portfolio(db: AsyncSession, user_id: str, thresholds: dict, ctx: dict) -> dict:
     sig = await _latest_signal(db)
-    target_by_asset: dict[str, float] = {}
+    tw: dict = {}
     if sig and sig.target_weights:
         try:
-            tw = json.loads(sig.target_weights)
+            parsed = json.loads(sig.target_weights)
+            if isinstance(parsed, dict):
+                tw = parsed
         except (TypeError, ValueError):
-            tw = None
-        if isinstance(tw, dict):
-            for aid, w in tw.items():
-                try:
-                    target_by_asset[str(aid)] = float(w)
-                except (TypeError, ValueError):
-                    pass
+            tw = {}
 
+    # 信号引擎的 target_weights 按 symbol 为键（signal_engine 与 compute_trade_plan
+    # 均如此消费）；旧版曾按 asset_id 为键，两种都兼容，无法识别的键直接丢弃。
     target_by_symbol: dict[str, float] = {}
     target_symbol_to_asset: dict[str, str] = {}
-    for aid, w in target_by_asset.items():
-        a = ctx["asset_id_to_asset"].get(aid)
-        if a:
-            target_by_symbol[a.symbol] = w
-            target_symbol_to_asset[a.symbol] = aid
+    for key, w in tw.items():
+        try:
+            w = float(w)
+        except (TypeError, ValueError):
+            continue
+        if key in ctx["symbol_to_asset"]:
+            target_by_symbol[str(key)] = w
+            target_symbol_to_asset[str(key)] = ctx["symbol_to_asset"][str(key)].id
+        else:
+            a = ctx["asset_id_to_asset"].get(str(key))
+            if a:
+                target_by_symbol[a.symbol] = w
+                target_symbol_to_asset[a.symbol] = a.id
 
     actual_weight = ctx["actual_weight"]
     threshold = float(thresholds.get("weight_deviation_pp", DEFAULT_THRESHOLDS["weight_deviation_pp"])) / 100.0
